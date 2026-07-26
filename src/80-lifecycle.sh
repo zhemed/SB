@@ -1,0 +1,212 @@
+# sb-module: 80-lifecycle
+# Uninstall
+uninstall(){
+  local menu
+  if service_name_conflict; then
+    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝执行卸载"
+    return 1
+  fi
+  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
+    red "无法确认 $SB_DIR 属于本脚本，拒绝执行卸载"
+    return 1
+  fi
+  red "确认卸载sb? sb的配置和数据将被删除!"
+  yellow "1：确认卸载"
+  yellow "0：取消"
+  readp "请选择【0-1】：" menu
+  if [[ $menu == 1 ]]; then
+    if ! cleanup_service; then
+      red "停止或移除sb服务失败，卸载已中止；配置与定时任务均保留"
+      return 1
+    fi
+    if ! remove_all_managed_crons; then
+      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[1]修复"
+      return 1
+    fi
+    if ! rm -rf "$SB_DIR"; then
+      red "删除sb文件失败，请检查文件系统权限"
+      return 1
+    fi
+    if shortcut_is_owned; then
+      if ! rm -f "$SHORTCUT"; then
+        red "删除快捷方式 $SHORTCUT 失败，请检查文件系统权限"
+        return 1
+      fi
+    elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
+      yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
+    fi
+    green "sb卸载完成！"
+    echo
+    exit 0
+  fi
+}
+cronsb(){
+  local current filtered entry
+  if ! cron_daemon_is_active; then
+    red "cron/crond 服务未运行，拒绝写入无法执行的每日重启任务"
+    return 1
+  fi
+  load_current_crontab || return 1
+  current=$CURRENT_CRONTAB
+  filtered=$(printf '%s\n' "$current" | filter_restart_cron_entries || true)
+  if command -v apk >/dev/null 2>&1; then
+    entry="0 1 * * * rc-service $SB_SERVICE restart > /dev/null 2>&1 $RESTART_CRON_MARKER"
+  else
+    entry="0 1 * * * systemctl restart $SB_SERVICE > /dev/null 2>&1 $RESTART_CRON_MARKER"
+  fi
+  { printf '%s\n' "$filtered"; printf '%s\n' "$entry"; } | crontab - >/dev/null 2>&1 || return 1
+  load_current_crontab || return 1
+  printf '%s\n' "$CURRENT_CRONTAB" | grep -Fq "$RESTART_CRON_MARKER"
+}
+
+script_copy_has_identity(){
+  local path=$1
+  [[ -f $path && ! -L $path ]] || return 1
+  grep -Fqx '#!/bin/bash' "$path" 2>/dev/null &&
+    grep -Fqx '# sb-generated-artifact: v1' "$path" 2>/dev/null &&
+    grep -Fqx 'CORE_VERSION="1.10.7"' "$path" 2>/dev/null &&
+    grep -Fqx 'ACME_VERSION="3.1.4"' "$path" 2>/dev/null &&
+    grep -Fqx 'SB_DIR="/etc/sb"' "$path" 2>/dev/null &&
+    grep -Fqx 'SB_SERVICE="sb"' "$path" 2>/dev/null &&
+    grep -Fqx 'SHORTCUT="/usr/bin/sb"' "$path" 2>/dev/null &&
+    grep -Eq '^sb_version="v[0-9]+\.[0-9]+\.[0-9]+"$' "$path" 2>/dev/null
+}
+
+script_copy_version(){
+  local path=$1
+  script_copy_has_identity "$path" || return 1
+  sed -n 's/^sb_version="v\([0-9][0-9]*\.[0-9][0-9]*\.[0-9][0-9]*\)"$/\1/p' "$path" | head -n 1
+}
+
+version_is_older(){
+  local candidate=$1 installed=$2
+  local c_major c_minor c_patch i_major i_minor i_patch
+  IFS=. read -r c_major c_minor c_patch <<< "$candidate"
+  IFS=. read -r i_major i_minor i_patch <<< "$installed"
+  ((10#$c_major < 10#$i_major)) ||
+    ((10#$c_major == 10#$i_major && 10#$c_minor < 10#$i_minor)) ||
+    ((10#$c_major == 10#$i_major && 10#$c_minor == 10#$i_minor && 10#$c_patch < 10#$i_patch))
+}
+
+shortcut_is_owned(){
+  script_copy_has_identity "$SHORTCUT"
+}
+
+script_source_is_valid(){
+  local path=$1
+  script_copy_has_identity "$path"
+}
+
+atomic_install_shortcut(){
+  local source=$1 mode=$2 shortcut_tmp
+  [[ -f $source && ! -L $source && $mode =~ ^[0-7]{3,4}$ ]] || return 1
+  shortcut_tmp=$(mktemp "${SHORTCUT}.tmp.XXXXXX") || return 1
+  if ! install -m "$mode" "$source" "$shortcut_tmp" || ! mv -f "$shortcut_tmp" "$SHORTCUT"; then
+    rm -f "$shortcut_tmp"
+    return 1
+  fi
+}
+
+update_shortcut(){
+  local source_path bash_path source_version shortcut_version
+  [[ -f $0 && $0 != "/dev/fd/"* && $0 != "bash" ]] || return 1
+  source_path=$(readlink -f "$0" 2>/dev/null) || return 1
+  bash_path=$(readlink -f "$(command -v bash)" 2>/dev/null || true)
+  if [[ -n $bash_path && $source_path == "$bash_path" ]] || ! script_source_is_valid "$source_path"; then
+    red "当前运行源不是完整的 sb.sh 文件，拒绝创建快捷方式 $SHORTCUT"
+    return 1
+  fi
+  if [[ $source_path != "$SHORTCUT" ]]; then
+    if [[ -e $SHORTCUT || -L $SHORTCUT ]] && ! shortcut_is_owned; then
+      red "检测到非本脚本管理的 $SHORTCUT，拒绝覆盖；请先处理该命令冲突"
+      return 1
+    fi
+    if shortcut_is_owned; then
+      source_version=$(script_copy_version "$source_path") || return 1
+      shortcut_version=$(script_copy_version "$SHORTCUT") || return 1
+      if version_is_older "$source_version" "$shortcut_version"; then
+        red "当前脚本 v${source_version} 旧于快捷命令 v${shortcut_version}，拒绝降级覆盖"
+        return 1
+      fi
+    fi
+    atomic_install_shortcut "$source_path" 755 || return 1
+  elif ! shortcut_is_owned; then
+    red "$SHORTCUT 归属校验失败，拒绝更新快捷方式"
+    return 1
+  fi
+  return 0
+}
+
+prepare_runtime_state(){
+  if formal_service_present && ! service_is_owned; then
+    red "检测到不属于本脚本的 $SB_SERVICE 服务，拒绝继续"
+    return 1
+  fi
+  prepare_managed_directory
+}
+
+cron_daemon_is_active(){
+  if command -v apk >/dev/null 2>&1; then
+    rc-service crond status >/dev/null 2>&1
+  else
+    systemctl is-active --quiet cron 2>/dev/null ||
+      systemctl is-active --quiet crond 2>/dev/null
+  fi
+}
+
+enable_cron_daemon(){
+  local cron_service
+  if command -v apk >/dev/null 2>&1; then
+    rc-update add crond default >/dev/null 2>&1 ||
+      rc-update show default 2>/dev/null | grep -qE '(^|[[:space:]])crond([[:space:]]|$)' || return 1
+    rc-service crond start >/dev/null 2>&1 || cron_daemon_is_active || return 1
+  else
+    if systemctl cat cron.service >/dev/null 2>&1; then
+      cron_service=cron
+    elif systemctl cat crond.service >/dev/null 2>&1; then
+      cron_service=crond
+    else
+      return 1
+    fi
+    systemctl enable --now "$cron_service" >/dev/null 2>&1 || return 1
+  fi
+  cron_daemon_is_active
+}
+
+dependencies_ready(){
+  local cmd
+  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum; do
+    command -v "$cmd" >/dev/null 2>&1 || return 1
+  done
+  if command -v apk >/dev/null 2>&1; then
+    command -v rc-service >/dev/null 2>&1 && command -v rc-update >/dev/null 2>&1 || return 1
+  else
+    command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] || return 1
+  fi
+  cron_daemon_is_active
+}
+
+install_dependencies(){
+  green "安装依赖……"
+  if command -v apk >/dev/null 2>&1; then
+    apk update && apk add bash jq openssl iproute2 coreutils grep tar tzdata util-linux curl qrencode || return 1
+  elif command -v apt-get >/dev/null 2>&1; then
+    apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y jq cron coreutils util-linux curl openssl iproute2 tar qrencode || return 1
+  elif command -v dnf >/dev/null 2>&1; then
+    dnf install -y epel-release && dnf install -y jq cronie coreutils util-linux curl openssl iproute tar qrencode || return 1
+  elif command -v yum >/dev/null 2>&1; then
+    yum install -y epel-release && yum install -y jq cronie coreutils util-linux curl openssl iproute tar qrencode || return 1
+  else
+    red "未找到受支持的包管理器"
+    return 1
+  fi
+  if ! enable_cron_daemon; then
+    red "cron/crond 服务启动失败，无法保证证书自动续期"
+    return 1
+  fi
+  if ! dependencies_ready; then
+    red "依赖安装不完整，请检查上方包管理器错误"
+    return 1
+  fi
+  touch "$SB_DIR/.deps_ok"
+}
