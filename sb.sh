@@ -1463,16 +1463,16 @@ restore_acme_state_backup(){
     rm -f -- "$destination" || { rm -rf -- "$stage"; return 1; }
   done
   if [[ -d $stage/acme ]]; then
-    mv -- "$stage/acme" "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+    mv -fT -- "$stage/acme" "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
   fi
   if [[ -d $stage/live ]]; then
-    mv -- "$stage/live" "$ACME_LIVE" || { rm -rf -- "$stage"; return 1; }
+    mv -fT -- "$stage/live" "$ACME_LIVE" || { rm -rf -- "$stage"; return 1; }
   fi
   for index in "${!state_names[@]}"; do
     entry="$stage/files/${state_names[$index]}"
-    [[ -e $entry ]] || continue
+    [[ -e $entry || -L $entry ]] || continue
     destination=${state_paths[$index]}
-    mv -- "$entry" "$destination" || { rm -rf -- "$stage"; return 1; }
+    mv -fT -- "$entry" "$destination" || { rm -rf -- "$stage"; return 1; }
   done
   rm -rf -- "$stage" || return 1
   if [[ $retain_backup == 0 ]]; then
