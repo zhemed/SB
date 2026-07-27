@@ -26,10 +26,16 @@ ACME_CERT="$SB_DIR/acme-cert.pem"
 ACME_KEY="$SB_DIR/acme-private.key"
 ACME_IDENTITY="$SB_DIR/acme_server_name"
 ACME_RELOAD="$SB_DIR/acme_reload.sh"
+ACME_LOCK="$SB_DIR/acme.lock"
 ACME_RELOAD_IDENTITY="# sb-acme-reload-v1"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 INSTALL_TRANSACTION_ACTIVE=0
+ACME_STATE_BACKUP=
+ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+ACME_LOCK_FD=
+ACME_LOCK_HELD=0
+CERT_ACTIVATION_MAINTENANCE_OK=1
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -73,7 +79,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v1.7.0"
+sb_version="v1.8.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -263,15 +269,158 @@ certificate_key_matches(){
   [[ -n $cert_public && $cert_public == "$key_public" ]]
 }
 
+format_epoch_utc(){
+  local epoch=$1
+  [[ $epoch =~ ^[0-9]{1,12}$ ]] || return 1
+  date -u -d "@$epoch" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null
+}
+
+certificate_dns_names(){
+  local cert=$1 san
+  san=$(certificate_san_text "$cert") || return 1
+  printf '%s\n' "$san" | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2- |
+    awk 'NF { if (result != "") result = result ", "; result = result $0 }
+         END { if (result == "") exit 1; print result }'
+}
+
+load_certificate_metadata(){
+  local cert=$1 key=$2 not_before not_after now remaining issuer subject
+  CERT_META_NOT_BEFORE_EPOCH=
+  CERT_META_NOT_AFTER_EPOCH=
+  CERT_META_NOT_BEFORE=
+  CERT_META_NOT_AFTER=
+  CERT_META_REMAINING_DAYS=
+  CERT_META_ISSUER=
+  CERT_META_SUBJECT=
+  CERT_META_DNS_NAMES=
+  CERT_META_FINGERPRINT=
+  CERT_META_KEY_MATCH=0
+  CERT_META_STATE=invalid
+
+  [[ -f $cert && ! -L $cert && -f $key && ! -L $key ]] || return 1
+  openssl x509 -in "$cert" -noout >/dev/null 2>&1 || return 1
+  not_before=$(openssl x509 -in "$cert" -noout -startdate 2>/dev/null | cut -d= -f2-) || return 1
+  not_after=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2-) || return 1
+  CERT_META_NOT_BEFORE_EPOCH=$(date -d "$not_before" +%s 2>/dev/null) || return 1
+  CERT_META_NOT_AFTER_EPOCH=$(date -d "$not_after" +%s 2>/dev/null) || return 1
+  CERT_META_NOT_BEFORE=$(format_epoch_utc "$CERT_META_NOT_BEFORE_EPOCH") || return 1
+  CERT_META_NOT_AFTER=$(format_epoch_utc "$CERT_META_NOT_AFTER_EPOCH") || return 1
+  now=$(date +%s) || return 1
+  if ((CERT_META_NOT_AFTER_EPOCH >= now)); then
+    remaining=$(((CERT_META_NOT_AFTER_EPOCH - now + 86399) / 86400))
+  else
+    remaining=$((-((now - CERT_META_NOT_AFTER_EPOCH + 86399) / 86400)))
+  fi
+  CERT_META_REMAINING_DAYS=$remaining
+
+  issuer=$(openssl x509 -in "$cert" -noout -issuer -nameopt RFC2253 2>/dev/null ||
+    openssl x509 -in "$cert" -noout -issuer 2>/dev/null) || return 1
+  subject=$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253 2>/dev/null ||
+    openssl x509 -in "$cert" -noout -subject 2>/dev/null) || return 1
+  CERT_META_ISSUER=$(printf '%s\n' "${issuer#issuer=}" | sanitize_location)
+  CERT_META_SUBJECT=$(printf '%s\n' "${subject#subject=}" | sanitize_location)
+  CERT_META_DNS_NAMES=$(certificate_dns_names "$cert" 2>/dev/null || true)
+  CERT_META_FINGERPRINT=$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null |
+    cut -d= -f2- | tr -d '\r\n')
+  [[ -n $CERT_META_ISSUER && -n $CERT_META_SUBJECT && -n $CERT_META_FINGERPRINT ]] || return 1
+
+  if certificate_key_matches "$cert" "$key"; then
+    CERT_META_KEY_MATCH=1
+  fi
+  if ((CERT_META_NOT_BEFORE_EPOCH > now)); then
+    CERT_META_STATE=not_yet_valid
+  elif ((CERT_META_NOT_AFTER_EPOCH < now)); then
+    CERT_META_STATE=expired
+  elif [[ $CERT_META_KEY_MATCH -ne 1 ]]; then
+    CERT_META_STATE=key_mismatch
+  else
+    CERT_META_STATE=valid
+  fi
+}
+
+acme_domain_conf_path(){
+  local identity=$1
+  valid_hostname "$identity" || return 1
+  printf '%s/certs/%s_ecc/%s.conf\n' "$ACME_HOME" "$identity" "$identity"
+}
+
+read_acme_domain_conf_value(){
+  local identity=$1 key=$2 conf prefix line value='' count=0
+  case "$key" in
+    Le_Domain|Le_API|Le_CertCreateTime|Le_NextRenewTime|Le_InstallCertSuccessTime) ;;
+    *) return 1 ;;
+  esac
+  conf=$(acme_domain_conf_path "$identity") || return 1
+  [[ -f $conf && ! -L $conf ]] || return 1
+  prefix="${key}='"
+  while IFS= read -r line; do
+    [[ $line == "$prefix"* ]] || continue
+    [[ $line == *"'" ]] || return 1
+    value=${line#"$prefix"}
+    value=${value%"'"}
+    [[ $value != *"'"* && $value != *$'\r'* ]] || return 1
+    count=$((count + 1))
+  done < "$conf"
+  [[ $count -eq 1 ]] || return 1
+  case "$key" in
+    Le_Domain) valid_hostname "$value" ;;
+    Le_API) [[ $value == 'https://acme-v02.api.letsencrypt.org/directory' ]] ;;
+    *) [[ $value =~ ^[0-9]{1,12}$ ]] ;;
+  esac || return 1
+  printf '%s\n' "$value"
+}
+
+load_acme_certificate_schedule(){
+  local identity=$1 configured_domain
+  ACME_META_CREATED_EPOCH=
+  ACME_META_NEXT_RENEW_EPOCH=
+  ACME_META_DEPLOYED_EPOCH=
+  ACME_META_CREATED=
+  ACME_META_NEXT_RENEW=
+  ACME_META_DEPLOYED=
+  ACME_META_CA=
+  configured_domain=$(read_acme_domain_conf_value "$identity" Le_Domain) || return 1
+  [[ $configured_domain == "$identity" ]] || return 1
+  read_acme_domain_conf_value "$identity" Le_API >/dev/null || return 1
+  ACME_META_CA="Let's Encrypt"
+  ACME_META_CREATED_EPOCH=$(read_acme_domain_conf_value "$identity" Le_CertCreateTime) || return 1
+  ACME_META_NEXT_RENEW_EPOCH=$(read_acme_domain_conf_value "$identity" Le_NextRenewTime) || return 1
+  ACME_META_CREATED=$(format_epoch_utc "$ACME_META_CREATED_EPOCH") || return 1
+  ACME_META_NEXT_RENEW=$(format_epoch_utc "$ACME_META_NEXT_RENEW_EPOCH") || return 1
+  if ACME_META_DEPLOYED_EPOCH=$(read_acme_domain_conf_value "$identity" Le_InstallCertSuccessTime); then
+    ACME_META_DEPLOYED=$(format_epoch_utc "$ACME_META_DEPLOYED_EPOCH") || ACME_META_DEPLOYED=
+  else
+    ACME_META_DEPLOYED_EPOCH=
+  fi
+}
+
+cloudflare_acme_credentials_present(){
+  local account_conf="$ACME_HOME/account.conf" token_count account_count
+  [[ -f $account_conf && ! -L $account_conf ]] || return 1
+  token_count=$(grep -Ec "^SAVED_CF_Token='[A-Za-z0-9_-]+'$" "$account_conf" 2>/dev/null || true)
+  account_count=$(grep -Ec "^SAVED_CF_Account_ID='[0-9A-Fa-f]{32}'$" "$account_conf" 2>/dev/null || true)
+  [[ $token_count -eq 1 && $account_count -eq 1 ]]
+}
+
+read_acme_identity(){
+  local identity
+  local -a identity_lines=()
+  [[ -f $ACME_IDENTITY && ! -L $ACME_IDENTITY ]] || return 1
+  mapfile -t identity_lines < "$ACME_IDENTITY" || return 1
+  [[ ${#identity_lines[@]} -eq 1 ]] || return 1
+  identity=${identity_lines[0]}
+  valid_hostname "$identity" || return 1
+  printf '%s\n' "$identity"
+}
+
 detect_acme_identity(){
   local identity san
   [[ -s $ACME_CERT && -s $ACME_KEY ]] || return 1
   openssl x509 -in "$ACME_CERT" -noout >/dev/null 2>&1 || return 1
   certificate_time_valid "$ACME_CERT" || return 1
   certificate_key_matches "$ACME_CERT" "$ACME_KEY" || return 1
-  if [[ -s $ACME_IDENTITY ]]; then
-    identity=$(head -n 1 "$ACME_IDENTITY" | tr -d '\r' | awk '{print $1}')
-    if valid_hostname "$identity" && certificate_identity_matches "$ACME_CERT" "$identity"; then
+  if identity=$(read_acme_identity 2>/dev/null); then
+    if certificate_identity_matches "$ACME_CERT" "$identity"; then
       printf '%s\n' "$identity"
       return 0
     fi
@@ -519,12 +668,102 @@ config_references_acme_state(){
   ' "$SB_CONFIG" >/dev/null 2>&1
 }
 
+begin_acme_state_backup(){
+  local backup path
+  local -a state_paths=(
+    "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD"
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state"
+    "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  )
+  ACME_STATE_BACKUP=
+  backup=$(mktemp -d "$SB_DIR/.acme-backup.XXXXXX") || return 1
+  chmod 700 "$backup" || { rm -rf -- "$backup"; return 1; }
+  mkdir "$backup/files" || { rm -rf -- "$backup"; return 1; }
+  if [[ -e $ACME_HOME || -L $ACME_HOME ]]; then
+    if [[ ! -d $ACME_HOME || -L $ACME_HOME ]] || ! cp -a -- "$ACME_HOME" "$backup/acme"; then
+      rm -rf -- "$backup"
+      return 1
+    fi
+  fi
+  for path in "${state_paths[@]}"; do
+    [[ -e $path || -L $path ]] || continue
+    if [[ ! -f $path || -L $path ]] || ! cp -p -- "$path" "$backup/files/${path##*/}"; then
+      rm -rf -- "$backup"
+      return 1
+    fi
+  done
+  ACME_STATE_BACKUP=$backup
+}
+
+clear_acme_state_backup(){
+  local backup=${ACME_STATE_BACKUP:-}
+  [[ -n $backup ]] || return 0
+  [[ $backup == "$SB_DIR"/.acme-backup.* && -d $backup && ! -L $backup ]] || return 1
+  rm -rf -- "$backup" || return 1
+  ACME_STATE_BACKUP=
+}
+
+restore_acme_state_backup(){
+  local backup=${ACME_STATE_BACKUP:-} stage entry name destination index
+  local -a state_names=(
+    acme-cert.pem acme-private.key acme_server_name acme_reload.sh
+    acme_renew.sh acme_renew.state cert_renew.sh .cert_mtime
+  )
+  local -a state_paths=(
+    "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD"
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state"
+    "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  )
+  [[ -n $backup ]] || return 0
+  [[ $backup == "$SB_DIR"/.acme-backup.* && -d $backup && ! -L $backup ]] || return 1
+  [[ -d $backup/files && ! -L $backup/files ]] || return 1
+  stage=$(mktemp -d "$SB_DIR/.acme-restore.XXXXXX") || return 1
+  chmod 700 "$stage" || { rm -rf -- "$stage"; return 1; }
+  mkdir "$stage/files" || { rm -rf -- "$stage"; return 1; }
+  if [[ -e $backup/acme || -L $backup/acme ]]; then
+    if [[ ! -d $backup/acme || -L $backup/acme ]] ||
+       ! cp -a -- "$backup/acme" "$stage/acme"; then
+      rm -rf -- "$stage"
+      return 1
+    fi
+  fi
+  for entry in "$backup/files"/* "$backup/files"/.[!.]* "$backup/files"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    [[ -f $entry && ! -L $entry ]] || { rm -rf -- "$stage"; return 1; }
+    printf '%s\n' "${state_names[@]}" | grep -Fxq -- "$name" || {
+      rm -rf -- "$stage"
+      return 1
+    }
+    cp -p -- "$entry" "$stage/files/$name" || { rm -rf -- "$stage"; return 1; }
+  done
+
+  rm -rf -- "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+  for destination in "${state_paths[@]}"; do
+    rm -f -- "$destination" || { rm -rf -- "$stage"; return 1; }
+  done
+  if [[ -d $stage/acme ]]; then
+    mv -- "$stage/acme" "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+  fi
+  for index in "${!state_names[@]}"; do
+    entry="$stage/files/${state_names[$index]}"
+    [[ -e $entry ]] || continue
+    destination=${state_paths[$index]}
+    mv -- "$entry" "$destination" || { rm -rf -- "$stage"; return 1; }
+  done
+  rm -rf -- "$stage" || return 1
+  rm -rf -- "$backup" || return 1
+  ACME_STATE_BACKUP=
+}
+
 discard_acme_state(){
   local path failed=0
   rm -rf "$ACME_HOME" || failed=1
   rm -f "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state" \
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime" || failed=1
   for path in "$ACME_HOME" "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state" \
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"; do
     [[ ! -e $path && ! -L $path ]] || failed=1
   done
@@ -549,9 +788,12 @@ reset_acme_state(){
 }
 
 issue_cloudflare_certificate(){
-  local domain_input account_id cf_token identity_tmp initial_install=${1:-0}
+  local domain_input account_id cf_token identity_tmp backup_path
+  local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
   local -a issue_args
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
+  [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
+  [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
     readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 1
     if normalize_acme_domain "$domain_input"; then
@@ -577,13 +819,29 @@ issue_cloudflare_certificate(){
     red "API Token 不能为空"
     return 1
   fi
-  reset_acme_state || return 1
+  if [[ $reuse_backup == 1 ]]; then
+    if [[ -z ${ACME_STATE_BACKUP:-} ]]; then
+      red "原 ACME 状态备份不存在，已取消申请"
+      return 1
+    fi
+  else
+    if [[ -n ${ACME_STATE_BACKUP:-} ]] || ! begin_acme_state_backup; then
+      red "无法安全备份现有 ACME 状态，已取消申请"
+      return 1
+    fi
+  fi
+  if ! reset_acme_state; then
+    restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
+    return 1
+  fi
   if ! install_official_acme; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
   if ! write_acme_reload_hook; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
   issue_args=(--home "$ACME_HOME" --config-home "$ACME_HOME" --issue --server letsencrypt \
@@ -599,15 +857,29 @@ issue_cloudflare_certificate(){
       "$ACME_BIN" "${issue_args[@]}"; then
     cf_token=
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "Cloudflare DNS 验证或证书签发失败"
     return 1
   fi
   cf_token=
+  identity_tmp=$(mktemp "$SB_DIR/.acme-identity.XXXXXX") || {
+    discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
+    return 1
+  }
+  if ! printf '%s\n' "$ACME_PRIMARY_DOMAIN" > "$identity_tmp" || \
+     ! chmod 600 "$identity_tmp" || ! mv -f "$identity_tmp" "$ACME_IDENTITY"; then
+    rm -f "$identity_tmp"
+    discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
+    return 1
+  fi
   if [[ $initial_install == 1 ]]; then
     if ! SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
         --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
         --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
       discard_acme_state
+      restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
       red "证书签发成功，但安装到 $SB_DIR 失败"
       return 1
     fi
@@ -615,24 +887,27 @@ issue_cloudflare_certificate(){
       --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
       --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "证书签发成功，但安装到 $SB_DIR 失败"
     return 1
   fi
   if ! chmod 600 "$ACME_CERT" "$ACME_KEY"; then
     discard_acme_state
-    return 1
-  fi
-  identity_tmp=$(mktemp "$SB_DIR/.acme-identity.XXXXXX") || { discard_acme_state; return 1; }
-  if ! printf '%s\n' "$ACME_PRIMARY_DOMAIN" > "$identity_tmp" || \
-     ! chmod 600 "$identity_tmp" || ! mv -f "$identity_tmp" "$ACME_IDENTITY"; then
-    rm -f "$identity_tmp"
-    discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
   if ! cert_acme; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "证书有效性、域名或公私钥校验失败"
     return 1
+  fi
+  if [[ $retain_backup == 0 ]]; then
+    if ! clear_acme_state_backup; then
+      backup_path=$ACME_STATE_BACKUP
+      ACME_STATE_BACKUP=
+      yellow "新证书已签发，但临时备份未能删除：$backup_path"
+    fi
   fi
   green "Cloudflare DNS API 证书申请完成"
 }
@@ -1971,30 +2246,170 @@ load_current_crontab(){
   return 1
 }
 
+acme_lock_path(){
+  printf '%s\n' "${ACME_LOCK:-$SB_DIR/acme.lock}"
+}
+
+acquire_acme_lock(){
+  local lock
+  [[ ${ACME_LOCK_HELD:-0} -eq 1 ]] && return 0
+  lock=$(acme_lock_path)
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  if [[ -e $lock || -L $lock ]]; then
+    [[ -f $lock && ! -L $lock ]] || return 1
+  fi
+  exec {ACME_LOCK_FD}> "$lock" || return 1
+  if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
+    exec {ACME_LOCK_FD}>&-
+    ACME_LOCK_FD=
+    return 1
+  fi
+  ACME_LOCK_HELD=1
+}
+
+release_acme_lock(){
+  [[ ${ACME_LOCK_HELD:-0} -eq 1 && ${ACME_LOCK_FD:-} =~ ^[0-9]+$ ]] || return 0
+  flock -u "$ACME_LOCK_FD" || return 1
+  exec {ACME_LOCK_FD}>&-
+  ACME_LOCK_FD=
+  ACME_LOCK_HELD=0
+}
+
+with_acme_lock(){
+  local owned=0 status
+  if [[ ${ACME_LOCK_HELD:-0} -ne 1 ]]; then
+    acquire_acme_lock || {
+      red "另一个证书或续期操作正在执行，请稍后重试"
+      return 1
+    }
+    owned=1
+  fi
+  if "$@"; then status=0; else status=$?; fi
+  if [[ $owned -eq 1 ]] && ! release_acme_lock; then
+    red "释放 ACME 操作锁失败"
+    [[ $status -ne 0 ]] || status=1
+  fi
+  return "$status"
+}
+
+acme_renew_runner_path(){
+  printf '%s\n' "${ACME_RENEW_RUNNER:-$SB_DIR/acme_renew.sh}"
+}
+
+acme_renew_state_path(){
+  printf '%s\n' "${ACME_RENEW_STATE:-$SB_DIR/acme_renew.state}"
+}
+
+acme_renew_runner_identity(){
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v1}"
+}
+
+# Parsed values are consumed by the certificate management module.
+# shellcheck disable=SC2034
+load_acme_renew_state(){
+  local state line key value mode
+  local check_epoch='' result='' exit_code='' renewal_epoch='' fingerprint=''
+  local check_count=0 result_count=0 exit_count=0 renewal_count=0 fingerprint_count=0
+  ACME_RENEW_LAST_CHECK_EPOCH=
+  ACME_RENEW_LAST_CHECK=
+  ACME_RENEW_LAST_RESULT=
+  ACME_RENEW_LAST_EXIT_CODE=
+  ACME_RENEW_LAST_RENEWAL_EPOCH=
+  ACME_RENEW_LAST_RENEWAL=
+  ACME_RENEW_FINGERPRINT=
+  state=$(acme_renew_state_path)
+  [[ -f $state && ! -L $state ]] || return 1
+  mode=$(stat -c '%a' "$state" 2>/dev/null || true)
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) ;;
+    *) [[ $mode == 600 ]] || return 1 ;;
+  esac
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    case $key in
+      last_check_epoch)
+        check_count=$((check_count + 1))
+        check_epoch=$value
+        ;;
+      last_result)
+        result_count=$((result_count + 1))
+        result=$value
+        ;;
+      last_exit_code)
+        exit_count=$((exit_count + 1))
+        exit_code=$value
+        ;;
+      last_renewal_epoch)
+        renewal_count=$((renewal_count + 1))
+        renewal_epoch=$value
+        ;;
+      cert_fingerprint)
+        fingerprint_count=$((fingerprint_count + 1))
+        fingerprint=$value
+        ;;
+      *) return 1 ;;
+    esac
+  done < "$state"
+  [[ $check_count -eq 1 && $result_count -eq 1 && $exit_count -eq 1 &&
+     $renewal_count -eq 1 && $fingerprint_count -eq 1 ]] || return 1
+  [[ $check_epoch =~ ^[1-9][0-9]{0,11}$ ]] || return 1
+  [[ $result == renewed || $result == unchanged || $result == failed ]] || return 1
+  [[ $exit_code =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((exit_code <= 255)) || return 1
+  [[ $renewal_epoch =~ ^(0|[1-9][0-9]{0,11})$ ]] &&
+    ((renewal_epoch <= check_epoch)) || return 1
+  [[ -z $fingerprint || $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
+  if [[ $result != failed ]]; then
+    [[ $exit_code -eq 0 && -n $fingerprint ]] || return 1
+  else
+    [[ $exit_code -ne 0 ]] || return 1
+  fi
+  [[ $result != renewed || $renewal_epoch -eq $check_epoch ]] || return 1
+  ACME_RENEW_LAST_CHECK=$(format_epoch_utc "$check_epoch") || return 1
+  if [[ $renewal_epoch -ne 0 ]]; then
+    ACME_RENEW_LAST_RENEWAL=$(format_epoch_utc "$renewal_epoch") || return 1
+  fi
+  ACME_RENEW_LAST_CHECK_EPOCH=$check_epoch
+  ACME_RENEW_LAST_RESULT=$result
+  ACME_RENEW_LAST_EXIT_CODE=$exit_code
+  ACME_RENEW_LAST_RENEWAL_EPOCH=$renewal_epoch
+  ACME_RENEW_FINGERPRINT=$fingerprint
+}
+
 crontab_has_acme_entries(){
-  local content=$1
+  local content=$1 runner
+  runner=$(acme_renew_runner_path)
   printf '%s\n' "$content" | grep -Fq "$ACME_CRON_MARKER" ||
     printf '%s\n' "$content" | grep -Fq "$ACME_BIN --cron" ||
+    printf '%s\n' "$content" | grep -Fq "$runner" ||
     printf '%s\n' "$content" | grep -Fq "$SB_DIR/cert_renew.sh"
 }
 
 acme_renew_cron_entry(){
-  printf '%s\n' "17 3,9,15,21 * * * HOME=$SB_DIR $ACME_BIN --cron --home $ACME_HOME --config-home $ACME_HOME > /dev/null 2>&1 $ACME_CRON_MARKER"
+  local runner
+  runner=$(acme_renew_runner_path)
+  printf '%s\n' "17 3,9,15,21 * * * $runner > /dev/null 2>&1 $ACME_CRON_MARKER"
 }
 
 acme_renew_cron_is_current(){
-  local content=$1 entry exact_count marker_count command_count
+  local content=$1 entry runner exact_count marker_count runner_count direct_count
   entry=$(acme_renew_cron_entry)
+  runner=$(acme_renew_runner_path)
   exact_count=$(printf '%s\n' "$content" | grep -Fxc -- "$entry" || true)
   marker_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_CRON_MARKER" || true)
-  command_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_BIN --cron" || true)
-  [[ $exact_count -eq 1 && $marker_count -eq 1 && $command_count -eq 1 ]] &&
+  runner_count=$(printf '%s\n' "$content" | grep -Fc -- "$runner" || true)
+  direct_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_BIN --cron" || true)
+  [[ $exact_count -eq 1 && $marker_count -eq 1 && $runner_count -eq 1 && $direct_count -eq 0 ]] &&
     ! printf '%s\n' "$content" | grep -Fq "$SB_DIR/cert_renew.sh"
 }
 
 filter_acme_cron_entries(){
+  local runner
+  runner=$(acme_renew_runner_path)
   grep -Fv "$ACME_CRON_MARKER" |
     grep -Fv "$ACME_BIN --cron" |
+    grep -Fv "$runner" |
     grep -Fv "$SB_DIR/cert_renew.sh"
 }
 
@@ -2007,12 +2422,199 @@ filter_restart_cron_entries(){
   grep -Fv "$RESTART_CRON_MARKER"
 }
 
+acme_renew_runner_is_current(){
+  local runner identity mode expected_cron_command expected_force_command expected_sb_dir
+  local expected_acme_bin expected_acme_home expected_cert_file expected_state_file
+  local expected_identity_file expected_lock_file
+  runner=$(acme_renew_runner_path)
+  identity=$(acme_renew_runner_identity)
+  expected_cron_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --cron --home \"\$acme_home\" --config-home \"\$acme_home\""
+  expected_force_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --home \"\$acme_home\" --config-home \"\$acme_home\" --renew -d \"\$acme_identity\" --ecc --force"
+  printf -v expected_sb_dir 'sb_dir=%q' "$SB_DIR"
+  printf -v expected_acme_bin 'acme_bin=%q' "$ACME_BIN"
+  printf -v expected_acme_home 'acme_home=%q' "$ACME_HOME"
+  printf -v expected_cert_file 'cert_file=%q' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
+  printf -v expected_state_file 'state_file=%q' "$(acme_renew_state_path)"
+  printf -v expected_identity_file 'identity_file=%q' "$ACME_IDENTITY"
+  printf -v expected_lock_file 'lock_file=%q' "$(acme_lock_path)"
+  [[ -f $runner && ! -L $runner && -x $runner ]] || return 1
+  mode=$(stat -c '%a' "$runner" 2>/dev/null || true)
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) ;;
+    *) [[ $mode == 700 ]] || return 1 ;;
+  esac
+  # Dollar-prefixed names below are literal generated-runner text.
+  # shellcheck disable=SC2016
+  [[ $(grep -Fxc -- "$identity" "$runner" 2>/dev/null || true) -eq 1 ]] &&
+    grep -Fqx -- "$expected_sb_dir" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_acme_bin" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_acme_home" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_cert_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_state_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_identity_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_lock_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "  1) [[ \${1-} == --force ]] || exit 2; force=1 ;;" "$runner" 2>/dev/null &&
+    grep -Fqx -- '  *) exit 2 ;;' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'exec 9> "$lock_file" || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'flock -n 9 || exit 75' "$runner" 2>/dev/null &&
+    grep -Fqx -- "  acme_identity=\$(read_runner_acme_identity) || exit 1" "$runner" 2>/dev/null &&
+    grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_cron_command" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_force_command" "$runner" 2>/dev/null &&
+    grep -Fqx -- "before_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
+    grep -Fqx -- "after_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
+    grep -Fqx -- "state_tmp=\$(mktemp \"\$sb_dir/.acme_renew.state.XXXXXX\") || exit 1" "$runner" 2>/dev/null &&
+    grep -Fq -- "mv -f \"\$state_tmp\" \"\$state_file\"" "$runner" 2>/dev/null &&
+    bash -n "$runner" >/dev/null 2>&1
+}
+
+write_acme_renew_runner(){
+  local runner state identity runner_tmp
+  runner=$(acme_renew_runner_path)
+  state=$(acme_renew_state_path)
+  identity=$(acme_renew_runner_identity)
+  if acme_renew_runner_is_current; then
+    return 0
+  fi
+  runner_tmp=$(mktemp "$SB_DIR/.acme_renew.XXXXXX") || return 1
+  if ! {
+    printf '%s\n' '#!/bin/bash' "$identity" 'set -u' 'umask 077'
+    printf 'sb_dir=%q\n' "$SB_DIR"
+    printf 'acme_bin=%q\n' "$ACME_BIN"
+    printf 'acme_home=%q\n' "$ACME_HOME"
+    printf 'cert_file=%q\n' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
+    printf 'state_file=%q\n' "$state"
+    printf 'identity_file=%q\n' "$ACME_IDENTITY"
+    printf 'lock_file=%q\n' "$(acme_lock_path)"
+    cat <<'ACMERENEW'
+
+certificate_fingerprint(){
+  local fingerprint
+  [[ -s $cert_file ]] || return 1
+  fingerprint=$(sha256sum "$cert_file" 2>/dev/null | awk '{print $1}') || return 1
+  [[ $fingerprint =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s\n' "${fingerprint,,}"
+}
+
+valid_acme_identity(){
+  local name=$1 label
+  local -a labels
+  [[ ${#name} -le 253 && $name == *.* && $name != .* && $name != *. ]] || return 1
+  IFS='.' read -r -a labels <<< "$name"
+  for label in "${labels[@]}"; do
+    [[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
+    [[ $label =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+read_runner_acme_identity(){
+  local identity
+  local -a identity_lines=()
+  [[ -f $identity_file && ! -L $identity_file ]] || return 1
+  mapfile -t identity_lines < "$identity_file" || return 1
+  [[ ${#identity_lines[@]} -eq 1 ]] || return 1
+  identity=${identity_lines[0]}
+  valid_acme_identity "$identity" || return 1
+  printf '%s\n' "$identity"
+}
+
+force=0
+case $# in
+  0) ;;
+  1) [[ ${1-} == --force ]] || exit 2; force=1 ;;
+  *) exit 2 ;;
+esac
+if [[ -e $lock_file || -L $lock_file ]]; then
+  [[ -f $lock_file && ! -L $lock_file ]] || exit 1
+fi
+exec 9> "$lock_file" || exit 1
+chmod 600 "$lock_file" || exit 1
+flock -n 9 || exit 75
+if ((force)); then
+  acme_identity=$(read_runner_acme_identity) || exit 1
+fi
+
+last_renewal_epoch=0
+state_read_epoch=$(date +%s) || exit 1
+if [[ -f $state_file && ! -L $state_file ]]; then
+  previous_renewal=$(awk -F= '$1 == "last_renewal_epoch" && $2 ~ /^[0-9]+$/ &&
+    length($2) <= 12 && ($2 == "0" || $2 !~ /^0/) { print $2; exit }' "$state_file" 2>/dev/null)
+  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then
+    last_renewal_epoch=$previous_renewal
+  fi
+fi
+
+before_fingerprint=$(certificate_fingerprint || true)
+if ((force)); then
+  HOME="$sb_dir" "$acme_bin" --home "$acme_home" --config-home "$acme_home" --renew -d "$acme_identity" --ecc --force
+else
+  HOME="$sb_dir" "$acme_bin" --cron --home "$acme_home" --config-home "$acme_home"
+fi
+exit_code=$?
+after_fingerprint=$(certificate_fingerprint || true)
+check_epoch=$(date +%s)
+
+if [[ -n $after_fingerprint && $before_fingerprint != "$after_fingerprint" ]]; then
+  last_renewal_epoch=$check_epoch
+fi
+
+if ((exit_code != 0)); then
+  result=failed
+elif [[ -z $after_fingerprint ]]; then
+  result=failed
+  exit_code=1
+elif [[ $before_fingerprint != "$after_fingerprint" ]]; then
+  result=renewed
+else
+  result=unchanged
+fi
+
+state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
+trap 'rm -f -- "$state_tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+if ! printf '%s\n' \
+  "last_check_epoch=$check_epoch" \
+  "last_result=$result" \
+  "last_exit_code=$exit_code" \
+  "last_renewal_epoch=$last_renewal_epoch" \
+  "cert_fingerprint=$after_fingerprint" > "$state_tmp" ||
+   ! chmod 600 "$state_tmp" ||
+   ! mv -f "$state_tmp" "$state_file"; then
+  exit 1
+fi
+trap - EXIT HUP INT TERM
+exit "$exit_code"
+ACMERENEW
+  } > "$runner_tmp" || ! chmod 700 "$runner_tmp" || ! mv -f "$runner_tmp" "$runner"; then
+    rm -f "$runner_tmp"
+    return 1
+  fi
+  acme_renew_runner_is_current
+}
+
+remove_acme_renew_artifacts(){
+  local runner state
+  runner=$(acme_renew_runner_path)
+  state=$(acme_renew_state_path)
+  rm -f "$runner" "$state" "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+}
+
+acme_renew_artifacts_exist(){
+  local runner state
+  runner=$(acme_renew_runner_path)
+  state=$(acme_renew_state_path)
+  [[ -e $runner || -L $runner || -e $state || -L $state ||
+     -e $SB_DIR/cert_renew.sh || -L $SB_DIR/cert_renew.sh ||
+     -e $SB_DIR/.cert_mtime || -L $SB_DIR/.cert_mtime ]]
+}
+
 remove_acme_renew_cron(){
   local current filtered
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if ! crontab_has_acme_entries "$current"; then
-    rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+    remove_acme_renew_artifacts
     return
   fi
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
@@ -2021,7 +2623,7 @@ remove_acme_renew_cron(){
   if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
     return 1
   fi
-  rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  remove_acme_renew_artifacts
 }
 
 remove_current_acme_cron(){
@@ -2029,12 +2631,16 @@ remove_current_acme_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if ! crontab_has_acme_entries "$current"; then
+    remove_acme_renew_artifacts
     return 0
   fi
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
-  ! crontab_has_acme_entries "$CURRENT_CRONTAB"
+  if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
+    return 1
+  fi
+  remove_acme_renew_artifacts
 }
 
 remove_all_managed_crons(){
@@ -2042,7 +2648,7 @@ remove_all_managed_crons(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if ! crontab_has_acme_entries "$current" && ! crontab_has_restart_entries "$current"; then
-    rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+    remove_acme_renew_artifacts
     return
   fi
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries | filter_restart_cron_entries || true)
@@ -2051,7 +2657,7 @@ remove_all_managed_crons(){
   if crontab_has_acme_entries "$CURRENT_CRONTAB" || crontab_has_restart_entries "$CURRENT_CRONTAB"; then
     return 1
   fi
-  rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  remove_acme_renew_artifacts
 }
 
 setup_acme_renew_cron(){
@@ -2062,17 +2668,16 @@ setup_acme_renew_cron(){
   fi
   config_uses_acme_certificate || return 1
   [[ -x $ACME_BIN && -f $ACME_HOME/dnsapi/dns_cf.sh && -s $ACME_IDENTITY ]] || return 1
+  cloudflare_acme_credentials_present || return 1
   write_acme_reload_hook || return 1
+  write_acme_renew_runner || return 1
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
   entry=$(acme_renew_cron_entry)
   { printf '%s\n' "$filtered"; printf '%s\n' "$entry"; } | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
-  if ! acme_renew_cron_is_current "$CURRENT_CRONTAB"; then
-    return 1
-  fi
-  rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  acme_renew_runner_is_current && acme_renew_cron_is_current "$CURRENT_CRONTAB"
 }
 
 ensure_acme_renew_cron(){
@@ -2084,16 +2689,19 @@ ensure_acme_renew_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if config_uses_acme_certificate; then
-    if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]]; then
+    if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]] ||
+       ! cloudflare_acme_credentials_present; then
       red "当前配置正在使用 ACME 证书，但续期组件不完整；已保留现有 cron，请立即修复"
       return 1
     fi
-    if ! acme_reload_hook_is_current || ! acme_renew_cron_is_current "$current"; then
+    if ! acme_reload_hook_is_current || ! acme_renew_runner_is_current ||
+       ! acme_renew_cron_is_current "$current"; then
       setup_acme_renew_cron
     fi
-  elif config_uses_self_signed_certificate && { \
-       crontab_has_acme_entries "$current"; }; then
-    remove_acme_renew_cron
+  elif config_uses_self_signed_certificate; then
+    if crontab_has_acme_entries "$current" || acme_renew_artifacts_exist; then
+      remove_acme_renew_cron
+    fi
   elif crontab_has_acme_entries "$current"; then
     red "无法确认当前证书模式；为避免中断续期，已保留现有 ACME cron"
     return 1
@@ -2101,164 +2709,498 @@ ensure_acme_renew_cron(){
 }
 # sb-module: 70-management
 # Certificate management
-change_cert_mode(){
-  local current_key c_c d_d candidate acme_name menu retry commit_status
-  if ! sbactive; then
-    readp "按回车返回主菜单..."
+current_certificate_mode(){
+  if config_uses_acme_certificate; then
+    printf '%s\n' acme
+  elif config_uses_self_signed_certificate; then
+    printf '%s\n' self_signed
+  else
+    printf '%s\n' unknown
+  fi
+}
+
+certificate_action_service_ready(){
+  if [[ -x $SB_BIN && -s $SB_CONFIG ]]; then
+    return 0
+  fi
+  red "Sing-box 内核或配置文件不完整，无法安全修改证书；请先使用菜单[2]修复"
+  return 1
+}
+
+activate_managed_certificate(){
+  local cert=$1 key=$2 candidate commit_status
+  CERT_ACTIVATION_MAINTENANCE_OK=1
+  if ! load_certificate_metadata "$cert" "$key" || [[ $CERT_META_STATE != valid ]]; then
+    red "目标证书无效、已过期或与私钥不匹配，拒绝切换"
     return 1
   fi
-  echo
-  green "证书管理"
-  if ! current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前证书失败，配置未修改"
-    readp "按回车返回主菜单..."
+  candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX") || return 1
+  if ! jq --arg cert "$cert" --arg key "$key" '
+    if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
+    then error("hy2 inbound missing or duplicated")
+    else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path) = $cert |
+         (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path) = $key
+    end
+  ' "$SB_CONFIG" > "$candidate" ||
+     ! jq -e --arg cert "$cert" --arg key "$key" '
+       [.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and
+       .tls.certificate_path == $cert and .tls.key_path == $key)] | length == 1
+     ' "$candidate" >/dev/null; then
+    rm -f "$candidate"
+    red "生成证书候选配置失败，原配置未修改"
     return 1
   fi
-
-  while true; do
-    c_c=
-    d_d=
-    if [[ $current_key == "$SB_DIR/private.key" ]]; then
-      echo "当前证书: 自签bing证书"
-      if acme_name=$(detect_acme_identity); then
-        while true; do
-          green "1：切换为已有 ACME 域名证书 ($acme_name)"
-          green "2：通过 Cloudflare 重新申请并切换 ACME 证书"
-          yellow "   重新申请会删除旧 ACME 状态，请避免频繁签发"
-          green "0：返回主菜单"
-          readp "请选择【0-2】：" menu || return 1
-          case "$menu" in
-            1)
-              if cert_acme; then
-                c_c="$ACME_CERT"
-                d_d="$ACME_KEY"
-                break
-              fi
-              red "已有ACME证书不可用，请重新选择"
-              ;;
-            2)
-              if issue_cloudflare_certificate; then
-                c_c="$ACME_CERT"
-                d_d="$ACME_KEY"
-                break
-              fi
-              red "ACME证书申请失败，请重新选择"
-              ;;
-            ""|0) return 0 ;;
-            *) red "请输入0、1或2" ;;
-          esac
-        done
-      else
-        while true; do
-          green "1：通过 Cloudflare 申请并切换 ACME 域名证书"
-          green "0：返回主菜单"
-          readp "请选择【0-1】：" menu || return 1
-          case "$menu" in
-            1)
-              if issue_cloudflare_certificate; then
-                c_c="$ACME_CERT"
-                d_d="$ACME_KEY"
-                break
-              fi
-              red "ACME证书申请失败，请重新选择"
-              ;;
-            ""|0) return 0 ;;
-            *) red "请输入0或1" ;;
-          esac
-        done
-      fi
-    elif [[ $current_key == "$ACME_KEY" ]]; then
-      acme_name=$(detect_acme_identity 2>/dev/null || echo "身份校验失败")
-      echo "当前证书: ACME 域名证书 ($acme_name)"
-      while true; do
-        green "1：切换为自签bing证书"
-        green "0：返回主菜单"
-        yellow "如需更换域名或 Token，请先切换为自签证书，再进入本菜单重新申请"
-        readp "请选择【0-1】：" menu || return 1
-        case "$menu" in
-          1)
-            c_c="$SB_DIR/cert.pem"
-            d_d="$SB_DIR/private.key"
-            break
-            ;;
-          ""|0) return 0 ;;
-          *) red "请输入0或1" ;;
-        esac
-      done
-    else
-      yellow "当前配置使用未知证书路径：$current_key"
-      while true; do
-        green "1：切换为自签bing证书"
-        green "2：申请并切换为 Cloudflare ACME 证书"
-        green "0：返回主菜单"
-        readp "请选择【0-2】：" menu || return 1
-        case "$menu" in
-          1)
-            c_c="$SB_DIR/cert.pem"
-            d_d="$SB_DIR/private.key"
-            break
-            ;;
-          2)
-            if issue_cloudflare_certificate; then
-              c_c="$ACME_CERT"
-              d_d="$ACME_KEY"
-              break
-            fi
-            red "ACME证书申请失败，请重新选择"
-            ;;
-          ""|0) return 0 ;;
-          *) red "请输入0、1或2" ;;
-        esac
-      done
-    fi
-
-    if [[ ! -s $c_c || ! -s $d_d ]]; then
-      red "目标证书或私钥不存在，原配置未修改"
-      readp "按回车重新选择，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建证书候选配置失败，原配置未修改"
-      readp "按回车重试，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! jq --arg cert "$c_c" --arg key "$d_d" '
-      if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
-      then error("hy2 inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path) = $cert |
-           (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path) = $key
-      end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg cert "$c_c" --arg key "$d_d" '[.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .tls.certificate_path == $cert and .tls.key_path == $key)] | length == 1' "$candidate" >/dev/null; then
-      rm -f "$candidate"
-      red "生成证书候选配置失败，原配置未修改"
-      readp "按回车重新选择，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if commit_config "$candidate"; then
-      if [[ $d_d == "$ACME_KEY" ]]; then
-        setup_acme_renew_cron || yellow "证书已切换，但自动续期任务设置失败，请手动检查 root crontab"
-      elif ! remove_acme_renew_cron; then
-        yellow "证书已切换，但 ACME 自动续期任务清理失败，请手动检查 root crontab"
-      fi
-      refresh_share_files_after_change || true
-      green "证书模式切换成功"
-      readp "按回车返回主菜单..."
-      return 0
-    else
-      commit_status=$?
-    fi
+  if commit_config "$candidate"; then
+    :
+  else
+    commit_status=$?
     if [[ $commit_status -eq 2 ]]; then
-      red "证书切换失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回主菜单..."
+      red "证书切换失败且自动回滚失败，请立即检查服务和配置备份"
       return 2
     fi
     red "证书切换失败，原配置未修改或已恢复"
-    readp "按回车重新选择，输入0返回主菜单：" retry || return 1
-    [[ $retry == 0 ]] && return 1
+    return 1
+  fi
+  if [[ $key == "$ACME_KEY" ]]; then
+    if ! setup_acme_renew_cron; then
+      CERT_ACTIVATION_MAINTENANCE_OK=0
+      yellow "证书已切换，但自动续期任务异常，请使用本菜单修复"
+    fi
+  elif ! remove_acme_renew_cron; then
+    CERT_ACTIVATION_MAINTENANCE_OK=0
+    yellow "证书已切换，但 ACME 自动续期任务清理失败"
+  fi
+  refresh_share_files_after_change || true
+  green "证书模式切换成功"
+}
+
+show_certificate_metadata(){
+  local label=$1 cert=$2 key=$3 identity=${4:-}
+  green "证书类型: $label"
+  if ! load_certificate_metadata "$cert" "$key"; then
+    red "证书状态: 无法读取或文件不完整"
+    return 1
+  fi
+  case $CERT_META_STATE in
+    valid) green "证书状态: 有效" ;;
+    expired) red "证书状态: 已过期" ;;
+    not_yet_valid) red "证书状态: 尚未生效" ;;
+    key_mismatch) red "证书状态: 证书与私钥不匹配" ;;
+    *) red "证书状态: 无效" ;;
+  esac
+  printf '覆盖域名: %s\n' "${CERT_META_DNS_NAMES:-未提供 SAN}"
+  printf '签发机构: %s\n' "$CERT_META_ISSUER"
+  printf '生效时间: %s\n' "$CERT_META_NOT_BEFORE"
+  printf '到期时间: %s\n' "$CERT_META_NOT_AFTER"
+  if ((CERT_META_REMAINING_DAYS < 0)); then
+    red "剩余有效期: 已过期 $((-CERT_META_REMAINING_DAYS)) 天"
+  elif ((CERT_META_REMAINING_DAYS <= 30)); then
+    yellow "剩余有效期: ${CERT_META_REMAINING_DAYS} 天"
+  else
+    green "剩余有效期: ${CERT_META_REMAINING_DAYS} 天"
+  fi
+  if [[ $CERT_META_KEY_MATCH -eq 1 ]]; then
+    green "证书/私钥: 匹配"
+  else
+    red "证书/私钥: 不匹配"
+  fi
+  if [[ -n $identity ]]; then
+    if certificate_identity_matches "$cert" "$identity"; then
+      green "TLS 身份: $identity（证书已覆盖）"
+    else
+      red "TLS 身份: $identity（证书未覆盖）"
+    fi
+  fi
+  printf 'SHA-256 指纹: %s\n' "$CERT_META_FINGERPRINT"
+}
+
+show_acme_certificate_schedule(){
+  local identity=$1
+  if load_acme_certificate_schedule "$identity"; then
+    printf 'ACME 服务: %s\n' "$ACME_META_CA"
+    printf '最近签发/续期: %s\n' "$ACME_META_CREATED"
+    printf '当前计划续期: %s\n' "$ACME_META_NEXT_RENEW"
+    printf '最近部署成功: %s\n' "${ACME_META_DEPLOYED:-暂无记录}"
+  else
+    yellow "ACME 时间记录: 无法安全读取"
+    return 1
+  fi
+}
+
+inspect_acme_renewal_health(){
+  local current state now identity reference_epoch
+  ACME_RENEW_HEALTH=normal
+  ACME_RENEW_HEALTH_DETAIL=正常
+  if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]]; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="acme.sh 组件不完整"
+  elif ! cloudflare_acme_credentials_present; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="Cloudflare 凭据缺失或格式异常"
+  elif ! identity=$(read_acme_identity 2>/dev/null); then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="ACME 身份文件损坏"
+  elif ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" ||
+       [[ $CERT_META_STATE != valid ]] ||
+       ! certificate_identity_matches "$ACME_CERT" "$identity"; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="当前证书无效或未覆盖 ACME 身份"
+  elif ! load_acme_certificate_schedule "$identity"; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="ACME 域名配置或续期时间记录异常"
+  elif ! cron_daemon_is_active; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="cron/crond 未运行"
+  elif ! acme_reload_hook_is_current; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="证书生效回调缺失或过期"
+  elif ! acme_renew_runner_is_current; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="续期检查器缺失或过期"
+  elif ! load_current_crontab; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="无法读取 root crontab"
+  else
+    current=$CURRENT_CRONTAB
+    if ! acme_renew_cron_is_current "$current"; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="定时任务缺失或不规范"
+    fi
+  fi
+  if [[ $ACME_RENEW_HEALTH == normal ]]; then
+    state=$(acme_renew_state_path)
+    if load_acme_renew_state; then
+      now=$(date +%s 2>/dev/null || true)
+      if [[ $ACME_RENEW_LAST_RESULT == failed ]]; then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="最近一次检查失败，退出码 $ACME_RENEW_LAST_EXIT_CODE"
+      elif [[ $now =~ ^[0-9]+$ ]] && ((now - ACME_RENEW_LAST_CHECK_EPOCH > 86400)); then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="超过 24 小时没有成功检查"
+      elif [[ $now =~ ^[0-9]+$ ]] && ((ACME_RENEW_LAST_CHECK_EPOCH > now + 300)); then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="最近检查时间晚于系统时间"
+      fi
+    elif [[ -e $state || -L $state ]]; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="续期状态记录损坏或权限异常"
+    else
+      now=$(date +%s 2>/dev/null || true)
+      reference_epoch=${ACME_META_DEPLOYED_EPOCH:-$ACME_META_CREATED_EPOCH}
+      if [[ $now =~ ^[0-9]+$ && $reference_epoch =~ ^[0-9]+$ ]] &&
+         ((now - reference_epoch > 28800)); then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="证书部署超过 8 小时但没有续期检查记录"
+      fi
+    fi
+  fi
+}
+
+show_acme_renewal_status(){
+  local identity=$1 state
+  show_acme_certificate_schedule "$identity" || true
+  printf '定时检查: 每天 03:17 / 09:17 / 15:17 / 21:17（服务器时间）\n'
+  inspect_acme_renewal_health
+  if [[ $ACME_RENEW_HEALTH == normal ]]; then
+    green "自动续期: 正常"
+  else
+    red "自动续期: 异常（$ACME_RENEW_HEALTH_DETAIL）"
+  fi
+  if load_acme_renew_state; then
+    printf '最近自动检查: %s\n' "$ACME_RENEW_LAST_CHECK"
+    case $ACME_RENEW_LAST_RESULT in
+      renewed) green "最近检查结果: 已续期并执行证书生效回调" ;;
+      unchanged) green "最近检查结果: 成功，暂不需要续期" ;;
+      failed) red "最近检查结果: 失败（退出码 $ACME_RENEW_LAST_EXIT_CODE）" ;;
+    esac
+    if [[ $ACME_RENEW_LAST_RENEWAL_EPOCH != 0 ]]; then
+      printf '最近自动续期: %s\n' "$ACME_RENEW_LAST_RENEWAL"
+    fi
+  else
+    state=$(acme_renew_state_path)
+    if [[ -e $state || -L $state ]]; then
+      red "最近自动检查: 状态记录损坏或权限异常"
+    else
+      yellow "最近自动检查: 暂无记录"
+    fi
+  fi
+  if service_is_active; then
+    green "续期生效方式: 成功续期后自动重启 sb"
+  else
+    yellow "续期生效方式: 服务当前未运行，续期不会强制启动服务"
+  fi
+}
+
+show_certificate_dashboard(){
+  local mode identity='' current_cert current_key standby_identity
+  mode=$(current_certificate_mode)
+  current_cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$SB_CONFIG" 2>/dev/null || true)
+  current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null || true)
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  green "证书管理"
+  if service_is_active; then
+    green "服务状态: 运行中"
+  else
+    yellow "服务状态: 未运行"
+  fi
+  case $mode in
+    acme)
+      identity=$(read_acme_identity 2>/dev/null || true)
+      show_certificate_metadata "ACME 域名证书" "$ACME_CERT" "$ACME_KEY" "$identity" || true
+      if [[ -n $identity ]]; then
+        show_acme_renewal_status "$identity"
+      else
+        red "ACME 身份文件与证书不一致"
+      fi
+      ;;
+    self_signed)
+      show_certificate_metadata "自签 bing 证书" "$SB_DIR/cert.pem" "$SB_DIR/private.key" www.bing.com || true
+      yellow "自动续期: 不适用（自签证书不会通过 ACME 续期）"
+      if standby_identity=$(read_acme_identity 2>/dev/null); then
+        echo
+        yellow "备用 ACME 证书（当前未使用）"
+        show_certificate_metadata "备用 ACME 域名证书" "$ACME_CERT" "$ACME_KEY" "$standby_identity" || true
+        show_acme_certificate_schedule "$standby_identity" || true
+        yellow "备用证书自动续期: 已暂停；切换为该证书后会自动恢复"
+      fi
+      ;;
+    *)
+      red "当前模式: 未知或配置不完整"
+      printf '证书路径: %s\n私钥路径: %s\n' "${current_cert:-无法读取}" "${current_key:-无法读取}"
+      ;;
+  esac
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  CURRENT_CERT_MODE=$mode
+}
+
+finish_acme_replacement(){
+  local backup_path
+  if ! clear_acme_state_backup; then
+    backup_path=$ACME_STATE_BACKUP
+    ACME_STATE_BACKUP=
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    yellow "新证书已生效，但旧状态临时备份未能删除：$backup_path"
+    return 1
+  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+}
+
+rollback_new_acme_state(){
+  local had_backup=0
+  [[ -n ${ACME_STATE_BACKUP:-} ]] && had_backup=1
+  discard_acme_state || yellow "清理未生效的新 ACME 状态不完整"
+  if [[ $had_backup -eq 1 ]]; then
+    restore_acme_state_backup || {
+      red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+      return 1
+    }
+  fi
+}
+
+restore_previous_active_acme(){
+  local old_identity=$1
+  [[ -n $old_identity ]] || return 1
+  yellow "正在恢复原 ACME 证书和自动续期……"
+  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+    if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+      green "原 ACME 证书和自动续期已恢复"
+    else
+      yellow "原 ACME 证书已恢复，但自动续期仍需修复"
+    fi
+    return 0
+  fi
+  red "原 ACME 证书自动恢复失败，请立即检查证书状态"
+  return 1
+}
+
+apply_new_cloudflare_certificate(){
+  certificate_action_service_ready || return 1
+  if ! issue_cloudflare_certificate 0 1; then
+    red "新证书申请失败，当前证书未改变"
+    return 1
+  fi
+  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+    finish_acme_replacement || true
+    if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+      green "新 ACME 证书已切换并启用自动续期"
+    else
+      yellow "新 ACME 证书已切换，但自动续期配置异常，请使用修复功能"
+    fi
+    return 0
+  fi
+  red "新证书已签发，但服务切换失败，正在恢复申请前的 ACME 状态"
+  rollback_new_acme_state || true
+  return 1
+}
+
+replace_active_acme_certificate(){
+  local choice old_identity
+  old_identity=$(read_acme_identity 2>/dev/null || true)
+  yellow "更换期间服务会短暂切换为自签证书；任一步失败都会尝试恢复原 ACME 证书"
+  readp "输入1继续，输入0取消：" choice || return 1
+  [[ $choice == 1 ]] || return 0
+  certificate_action_service_ready || return 1
+  if ! begin_acme_state_backup; then
+    red "无法安全备份原 ACME 状态，已取消更换"
+    return 1
+  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
+  if ! activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"; then
+    clear_acme_state_backup || true
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    return 1
+  fi
+  if issue_cloudflare_certificate 0 1 1; then
+    if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+      finish_acme_replacement || true
+      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+        green "ACME 证书与 Cloudflare 凭据更换完成"
+      else
+        yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+      fi
+      return 0
+    fi
+    red "新证书已签发，但服务切换失败"
+    rollback_new_acme_state || true
+  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+    rollback_new_acme_state || true
+  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+  red "新证书申请或切换失败"
+  restore_previous_active_acme "$old_identity" || true
+  return 1
+}
+
+run_acme_renewal_check(){
+  local runner
+  config_uses_acme_certificate || { red "当前未使用 ACME 证书"; return 1; }
+  if ! with_acme_lock setup_acme_renew_cron; then
+    red "自动续期组件修复失败，无法执行检查"
+    return 1
+  fi
+  runner=$(acme_renew_runner_path) || return 1
+  green "正在执行 ACME 续期检查；未到计划时间时不会重复签发……"
+  if "$runner"; then
+    green "续期检查完成"
+  else
+    red "续期检查失败，请查看上方 acme.sh 输出"
+    return 1
+  fi
+}
+
+force_acme_reissue(){
+  local runner choice
+  config_uses_acme_certificate || { red "当前未使用 ACME 证书"; return 1; }
+  yellow "强制重签会立即联系 Let's Encrypt，并计入证书签发频率限制"
+  readp "输入1确认强制重签，输入0取消：" choice || return 1
+  [[ $choice == 1 ]] || return 0
+  if ! with_acme_lock setup_acme_renew_cron; then
+    red "自动续期组件修复失败，无法执行强制重签"
+    return 1
+  fi
+  runner=$(acme_renew_runner_path) || return 1
+  green "正在强制重新签发当前 ACME 证书……"
+  if "$runner" --force; then
+    if ! load_acme_renew_state || [[ $ACME_RENEW_LAST_RESULT != renewed ]]; then
+      red "重签命令已结束，但托管证书没有发生变化，不能确认重签成功"
+      return 1
+    fi
+    if service_is_active; then
+      green "证书已重新签发，sb 已通过回调重启并加载新证书"
+    else
+      yellow "证书已重新签发；sb 当前未运行，下次启动时会加载新证书"
+    fi
+  else
+    red "强制重签失败，请查看上方 acme.sh 输出"
+    return 1
+  fi
+}
+
+change_cert_mode(){
+  local menu acme_name
+  while true; do
+    echo
+    show_certificate_dashboard
+    case $CURRENT_CERT_MODE in
+      acme)
+        green "1：立即执行计划续期检查"
+        green "2：强制重新签发当前证书"
+        green "3：修复自动续期"
+        green "4：更换域名、Account ID 或 Token"
+        green "5：切换为自签 bing 证书"
+        green "0：返回主菜单"
+        readp "请选择【0-5】：" menu || return 1
+        case $menu in
+          1) run_acme_renewal_check; readp "按回车返回证书管理..." ;;
+          2) force_acme_reissue; readp "按回车返回证书管理..." ;;
+          3)
+            if with_acme_lock setup_acme_renew_cron; then green "自动续期修复成功"; else red "自动续期修复失败"; fi
+            readp "按回车返回证书管理..."
+            ;;
+          4) with_acme_lock replace_active_acme_certificate; readp "按回车返回证书管理..." ;;
+          5)
+            certificate_action_service_ready &&
+              with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+            readp "按回车返回证书管理..."
+            ;;
+          ""|0) return 0 ;;
+          *) red "请输入0、1、2、3、4或5"; sleep 1 ;;
+        esac
+        ;;
+      self_signed)
+        if acme_name=$(detect_acme_identity 2>/dev/null); then
+          green "1：切换为已有 ACME 证书 ($acme_name)"
+          green "2：申请新的 Cloudflare ACME 证书"
+          green "0：返回主菜单"
+          readp "请选择【0-2】：" menu || return 1
+          case $menu in
+            1)
+              certificate_action_service_ready && cert_acme &&
+                with_acme_lock activate_managed_certificate "$ACME_CERT" "$ACME_KEY"
+              readp "按回车返回证书管理..."
+              ;;
+            2)
+              with_acme_lock apply_new_cloudflare_certificate
+              readp "按回车返回证书管理..."
+              ;;
+            ""|0) return 0 ;;
+            *) red "请输入0、1或2"; sleep 1 ;;
+          esac
+        else
+          green "1：申请 Cloudflare ACME 证书"
+          green "0：返回主菜单"
+          readp "请选择【0-1】：" menu || return 1
+          case $menu in
+            1)
+              with_acme_lock apply_new_cloudflare_certificate
+              readp "按回车返回证书管理..."
+              ;;
+            ""|0) return 0 ;;
+            *) red "请输入0或1"; sleep 1 ;;
+          esac
+        fi
+        ;;
+      *)
+        green "1：切换为自签 bing 证书"
+        green "2：申请并切换为 Cloudflare ACME 证书"
+        green "0：返回主菜单"
+        readp "请选择【0-2】：" menu || return 1
+        case $menu in
+          1)
+            certificate_action_service_ready &&
+              with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+            readp "按回车返回证书管理..."
+            ;;
+          2)
+            with_acme_lock apply_new_cloudflare_certificate
+            readp "按回车返回证书管理..."
+            ;;
+          ""|0) return 0 ;;
+          *) red "请输入0、1或2"; sleep 1 ;;
+        esac
+        ;;
+    esac
   done
 }
 
@@ -2878,7 +3820,7 @@ enable_cron_daemon(){
 
 dependencies_ready(){
   local cmd
-  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum; do
+  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum flock; do
     command -v "$cmd" >/dev/null 2>&1 || return 1
   done
   if command -v apk >/dev/null 2>&1; then
@@ -2987,7 +3929,7 @@ install_singbox(){
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_vl_re}/tcp、${port_socks5}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
-    setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
+    with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
   fi
   if update_shortcut; then
     shortcut_ready=1
@@ -3071,7 +4013,7 @@ repair_singbox(){
   else
     yellow "服务已恢复，但快捷方式 $SHORTCUT 更新失败"
   fi
-  ensure_acme_renew_cron || yellow "服务已恢复，但ACME续期状态需要手动检查"
+  with_acme_lock ensure_acme_renew_cron || yellow "服务已恢复，但ACME续期状态需要手动检查"
   cronsb || yellow "服务已恢复，但每日重启任务设置失败"
   if [[ $shortcut_ready -eq 1 ]]; then
     green "sb服务修复成功，快捷方式: sb"
@@ -3174,9 +4116,23 @@ menu(){
 prepare_runtime_state || exit 1
 
 handle_install_interrupt(){
+  trap '' INT TERM HUP
   echo
   if [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+    clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
+  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+    yellow "证书操作已中断，正在恢复原 ACME 状态……"
+    if restore_acme_state_backup; then
+      if [[ ${ACME_RESTORE_ACTIVE_ON_INTERRUPT:-0} -eq 1 ]]; then
+        yellow "正在恢复中断前使用的 ACME 证书……"
+        if ! cert_acme || ! activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+          red "ACME 证书模式恢复失败，请立即检查证书和服务状态"
+        fi
+      fi
+    else
+      red "ACME 状态恢复失败，请立即检查 $SB_DIR"
+    fi
   fi
   exit 130
 }
@@ -3184,7 +4140,7 @@ trap handle_install_interrupt INT TERM HUP
 
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
-  ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
+  with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
 fi
 
 # Start

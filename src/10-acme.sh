@@ -55,15 +55,158 @@ certificate_key_matches(){
   [[ -n $cert_public && $cert_public == "$key_public" ]]
 }
 
+format_epoch_utc(){
+  local epoch=$1
+  [[ $epoch =~ ^[0-9]{1,12}$ ]] || return 1
+  date -u -d "@$epoch" '+%Y-%m-%d %H:%M:%S UTC' 2>/dev/null
+}
+
+certificate_dns_names(){
+  local cert=$1 san
+  san=$(certificate_san_text "$cert") || return 1
+  printf '%s\n' "$san" | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2- |
+    awk 'NF { if (result != "") result = result ", "; result = result $0 }
+         END { if (result == "") exit 1; print result }'
+}
+
+load_certificate_metadata(){
+  local cert=$1 key=$2 not_before not_after now remaining issuer subject
+  CERT_META_NOT_BEFORE_EPOCH=
+  CERT_META_NOT_AFTER_EPOCH=
+  CERT_META_NOT_BEFORE=
+  CERT_META_NOT_AFTER=
+  CERT_META_REMAINING_DAYS=
+  CERT_META_ISSUER=
+  CERT_META_SUBJECT=
+  CERT_META_DNS_NAMES=
+  CERT_META_FINGERPRINT=
+  CERT_META_KEY_MATCH=0
+  CERT_META_STATE=invalid
+
+  [[ -f $cert && ! -L $cert && -f $key && ! -L $key ]] || return 1
+  openssl x509 -in "$cert" -noout >/dev/null 2>&1 || return 1
+  not_before=$(openssl x509 -in "$cert" -noout -startdate 2>/dev/null | cut -d= -f2-) || return 1
+  not_after=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2-) || return 1
+  CERT_META_NOT_BEFORE_EPOCH=$(date -d "$not_before" +%s 2>/dev/null) || return 1
+  CERT_META_NOT_AFTER_EPOCH=$(date -d "$not_after" +%s 2>/dev/null) || return 1
+  CERT_META_NOT_BEFORE=$(format_epoch_utc "$CERT_META_NOT_BEFORE_EPOCH") || return 1
+  CERT_META_NOT_AFTER=$(format_epoch_utc "$CERT_META_NOT_AFTER_EPOCH") || return 1
+  now=$(date +%s) || return 1
+  if ((CERT_META_NOT_AFTER_EPOCH >= now)); then
+    remaining=$(((CERT_META_NOT_AFTER_EPOCH - now + 86399) / 86400))
+  else
+    remaining=$((-((now - CERT_META_NOT_AFTER_EPOCH + 86399) / 86400)))
+  fi
+  CERT_META_REMAINING_DAYS=$remaining
+
+  issuer=$(openssl x509 -in "$cert" -noout -issuer -nameopt RFC2253 2>/dev/null ||
+    openssl x509 -in "$cert" -noout -issuer 2>/dev/null) || return 1
+  subject=$(openssl x509 -in "$cert" -noout -subject -nameopt RFC2253 2>/dev/null ||
+    openssl x509 -in "$cert" -noout -subject 2>/dev/null) || return 1
+  CERT_META_ISSUER=$(printf '%s\n' "${issuer#issuer=}" | sanitize_location)
+  CERT_META_SUBJECT=$(printf '%s\n' "${subject#subject=}" | sanitize_location)
+  CERT_META_DNS_NAMES=$(certificate_dns_names "$cert" 2>/dev/null || true)
+  CERT_META_FINGERPRINT=$(openssl x509 -in "$cert" -noout -fingerprint -sha256 2>/dev/null |
+    cut -d= -f2- | tr -d '\r\n')
+  [[ -n $CERT_META_ISSUER && -n $CERT_META_SUBJECT && -n $CERT_META_FINGERPRINT ]] || return 1
+
+  if certificate_key_matches "$cert" "$key"; then
+    CERT_META_KEY_MATCH=1
+  fi
+  if ((CERT_META_NOT_BEFORE_EPOCH > now)); then
+    CERT_META_STATE=not_yet_valid
+  elif ((CERT_META_NOT_AFTER_EPOCH < now)); then
+    CERT_META_STATE=expired
+  elif [[ $CERT_META_KEY_MATCH -ne 1 ]]; then
+    CERT_META_STATE=key_mismatch
+  else
+    CERT_META_STATE=valid
+  fi
+}
+
+acme_domain_conf_path(){
+  local identity=$1
+  valid_hostname "$identity" || return 1
+  printf '%s/certs/%s_ecc/%s.conf\n' "$ACME_HOME" "$identity" "$identity"
+}
+
+read_acme_domain_conf_value(){
+  local identity=$1 key=$2 conf prefix line value='' count=0
+  case "$key" in
+    Le_Domain|Le_API|Le_CertCreateTime|Le_NextRenewTime|Le_InstallCertSuccessTime) ;;
+    *) return 1 ;;
+  esac
+  conf=$(acme_domain_conf_path "$identity") || return 1
+  [[ -f $conf && ! -L $conf ]] || return 1
+  prefix="${key}='"
+  while IFS= read -r line; do
+    [[ $line == "$prefix"* ]] || continue
+    [[ $line == *"'" ]] || return 1
+    value=${line#"$prefix"}
+    value=${value%"'"}
+    [[ $value != *"'"* && $value != *$'\r'* ]] || return 1
+    count=$((count + 1))
+  done < "$conf"
+  [[ $count -eq 1 ]] || return 1
+  case "$key" in
+    Le_Domain) valid_hostname "$value" ;;
+    Le_API) [[ $value == 'https://acme-v02.api.letsencrypt.org/directory' ]] ;;
+    *) [[ $value =~ ^[0-9]{1,12}$ ]] ;;
+  esac || return 1
+  printf '%s\n' "$value"
+}
+
+load_acme_certificate_schedule(){
+  local identity=$1 configured_domain
+  ACME_META_CREATED_EPOCH=
+  ACME_META_NEXT_RENEW_EPOCH=
+  ACME_META_DEPLOYED_EPOCH=
+  ACME_META_CREATED=
+  ACME_META_NEXT_RENEW=
+  ACME_META_DEPLOYED=
+  ACME_META_CA=
+  configured_domain=$(read_acme_domain_conf_value "$identity" Le_Domain) || return 1
+  [[ $configured_domain == "$identity" ]] || return 1
+  read_acme_domain_conf_value "$identity" Le_API >/dev/null || return 1
+  ACME_META_CA="Let's Encrypt"
+  ACME_META_CREATED_EPOCH=$(read_acme_domain_conf_value "$identity" Le_CertCreateTime) || return 1
+  ACME_META_NEXT_RENEW_EPOCH=$(read_acme_domain_conf_value "$identity" Le_NextRenewTime) || return 1
+  ACME_META_CREATED=$(format_epoch_utc "$ACME_META_CREATED_EPOCH") || return 1
+  ACME_META_NEXT_RENEW=$(format_epoch_utc "$ACME_META_NEXT_RENEW_EPOCH") || return 1
+  if ACME_META_DEPLOYED_EPOCH=$(read_acme_domain_conf_value "$identity" Le_InstallCertSuccessTime); then
+    ACME_META_DEPLOYED=$(format_epoch_utc "$ACME_META_DEPLOYED_EPOCH") || ACME_META_DEPLOYED=
+  else
+    ACME_META_DEPLOYED_EPOCH=
+  fi
+}
+
+cloudflare_acme_credentials_present(){
+  local account_conf="$ACME_HOME/account.conf" token_count account_count
+  [[ -f $account_conf && ! -L $account_conf ]] || return 1
+  token_count=$(grep -Ec "^SAVED_CF_Token='[A-Za-z0-9_-]+'$" "$account_conf" 2>/dev/null || true)
+  account_count=$(grep -Ec "^SAVED_CF_Account_ID='[0-9A-Fa-f]{32}'$" "$account_conf" 2>/dev/null || true)
+  [[ $token_count -eq 1 && $account_count -eq 1 ]]
+}
+
+read_acme_identity(){
+  local identity
+  local -a identity_lines=()
+  [[ -f $ACME_IDENTITY && ! -L $ACME_IDENTITY ]] || return 1
+  mapfile -t identity_lines < "$ACME_IDENTITY" || return 1
+  [[ ${#identity_lines[@]} -eq 1 ]] || return 1
+  identity=${identity_lines[0]}
+  valid_hostname "$identity" || return 1
+  printf '%s\n' "$identity"
+}
+
 detect_acme_identity(){
   local identity san
   [[ -s $ACME_CERT && -s $ACME_KEY ]] || return 1
   openssl x509 -in "$ACME_CERT" -noout >/dev/null 2>&1 || return 1
   certificate_time_valid "$ACME_CERT" || return 1
   certificate_key_matches "$ACME_CERT" "$ACME_KEY" || return 1
-  if [[ -s $ACME_IDENTITY ]]; then
-    identity=$(head -n 1 "$ACME_IDENTITY" | tr -d '\r' | awk '{print $1}')
-    if valid_hostname "$identity" && certificate_identity_matches "$ACME_CERT" "$identity"; then
+  if identity=$(read_acme_identity 2>/dev/null); then
+    if certificate_identity_matches "$ACME_CERT" "$identity"; then
       printf '%s\n' "$identity"
       return 0
     fi
@@ -311,12 +454,102 @@ config_references_acme_state(){
   ' "$SB_CONFIG" >/dev/null 2>&1
 }
 
+begin_acme_state_backup(){
+  local backup path
+  local -a state_paths=(
+    "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD"
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state"
+    "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  )
+  ACME_STATE_BACKUP=
+  backup=$(mktemp -d "$SB_DIR/.acme-backup.XXXXXX") || return 1
+  chmod 700 "$backup" || { rm -rf -- "$backup"; return 1; }
+  mkdir "$backup/files" || { rm -rf -- "$backup"; return 1; }
+  if [[ -e $ACME_HOME || -L $ACME_HOME ]]; then
+    if [[ ! -d $ACME_HOME || -L $ACME_HOME ]] || ! cp -a -- "$ACME_HOME" "$backup/acme"; then
+      rm -rf -- "$backup"
+      return 1
+    fi
+  fi
+  for path in "${state_paths[@]}"; do
+    [[ -e $path || -L $path ]] || continue
+    if [[ ! -f $path || -L $path ]] || ! cp -p -- "$path" "$backup/files/${path##*/}"; then
+      rm -rf -- "$backup"
+      return 1
+    fi
+  done
+  ACME_STATE_BACKUP=$backup
+}
+
+clear_acme_state_backup(){
+  local backup=${ACME_STATE_BACKUP:-}
+  [[ -n $backup ]] || return 0
+  [[ $backup == "$SB_DIR"/.acme-backup.* && -d $backup && ! -L $backup ]] || return 1
+  rm -rf -- "$backup" || return 1
+  ACME_STATE_BACKUP=
+}
+
+restore_acme_state_backup(){
+  local backup=${ACME_STATE_BACKUP:-} stage entry name destination index
+  local -a state_names=(
+    acme-cert.pem acme-private.key acme_server_name acme_reload.sh
+    acme_renew.sh acme_renew.state cert_renew.sh .cert_mtime
+  )
+  local -a state_paths=(
+    "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD"
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state"
+    "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  )
+  [[ -n $backup ]] || return 0
+  [[ $backup == "$SB_DIR"/.acme-backup.* && -d $backup && ! -L $backup ]] || return 1
+  [[ -d $backup/files && ! -L $backup/files ]] || return 1
+  stage=$(mktemp -d "$SB_DIR/.acme-restore.XXXXXX") || return 1
+  chmod 700 "$stage" || { rm -rf -- "$stage"; return 1; }
+  mkdir "$stage/files" || { rm -rf -- "$stage"; return 1; }
+  if [[ -e $backup/acme || -L $backup/acme ]]; then
+    if [[ ! -d $backup/acme || -L $backup/acme ]] ||
+       ! cp -a -- "$backup/acme" "$stage/acme"; then
+      rm -rf -- "$stage"
+      return 1
+    fi
+  fi
+  for entry in "$backup/files"/* "$backup/files"/.[!.]* "$backup/files"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    [[ -f $entry && ! -L $entry ]] || { rm -rf -- "$stage"; return 1; }
+    printf '%s\n' "${state_names[@]}" | grep -Fxq -- "$name" || {
+      rm -rf -- "$stage"
+      return 1
+    }
+    cp -p -- "$entry" "$stage/files/$name" || { rm -rf -- "$stage"; return 1; }
+  done
+
+  rm -rf -- "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+  for destination in "${state_paths[@]}"; do
+    rm -f -- "$destination" || { rm -rf -- "$stage"; return 1; }
+  done
+  if [[ -d $stage/acme ]]; then
+    mv -- "$stage/acme" "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+  fi
+  for index in "${!state_names[@]}"; do
+    entry="$stage/files/${state_names[$index]}"
+    [[ -e $entry ]] || continue
+    destination=${state_paths[$index]}
+    mv -- "$entry" "$destination" || { rm -rf -- "$stage"; return 1; }
+  done
+  rm -rf -- "$stage" || return 1
+  rm -rf -- "$backup" || return 1
+  ACME_STATE_BACKUP=
+}
+
 discard_acme_state(){
   local path failed=0
   rm -rf "$ACME_HOME" || failed=1
   rm -f "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state" \
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime" || failed=1
   for path in "$ACME_HOME" "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
+    "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state" \
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"; do
     [[ ! -e $path && ! -L $path ]] || failed=1
   done
@@ -341,9 +574,12 @@ reset_acme_state(){
 }
 
 issue_cloudflare_certificate(){
-  local domain_input account_id cf_token identity_tmp initial_install=${1:-0}
+  local domain_input account_id cf_token identity_tmp backup_path
+  local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
   local -a issue_args
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
+  [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
+  [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
     readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 1
     if normalize_acme_domain "$domain_input"; then
@@ -369,13 +605,29 @@ issue_cloudflare_certificate(){
     red "API Token 不能为空"
     return 1
   fi
-  reset_acme_state || return 1
+  if [[ $reuse_backup == 1 ]]; then
+    if [[ -z ${ACME_STATE_BACKUP:-} ]]; then
+      red "原 ACME 状态备份不存在，已取消申请"
+      return 1
+    fi
+  else
+    if [[ -n ${ACME_STATE_BACKUP:-} ]] || ! begin_acme_state_backup; then
+      red "无法安全备份现有 ACME 状态，已取消申请"
+      return 1
+    fi
+  fi
+  if ! reset_acme_state; then
+    restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
+    return 1
+  fi
   if ! install_official_acme; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
   if ! write_acme_reload_hook; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
   issue_args=(--home "$ACME_HOME" --config-home "$ACME_HOME" --issue --server letsencrypt \
@@ -391,15 +643,29 @@ issue_cloudflare_certificate(){
       "$ACME_BIN" "${issue_args[@]}"; then
     cf_token=
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "Cloudflare DNS 验证或证书签发失败"
     return 1
   fi
   cf_token=
+  identity_tmp=$(mktemp "$SB_DIR/.acme-identity.XXXXXX") || {
+    discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
+    return 1
+  }
+  if ! printf '%s\n' "$ACME_PRIMARY_DOMAIN" > "$identity_tmp" || \
+     ! chmod 600 "$identity_tmp" || ! mv -f "$identity_tmp" "$ACME_IDENTITY"; then
+    rm -f "$identity_tmp"
+    discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
+    return 1
+  fi
   if [[ $initial_install == 1 ]]; then
     if ! SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
         --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
         --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
       discard_acme_state
+      restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
       red "证书签发成功，但安装到 $SB_DIR 失败"
       return 1
     fi
@@ -407,24 +673,27 @@ issue_cloudflare_certificate(){
       --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
       --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "证书签发成功，但安装到 $SB_DIR 失败"
     return 1
   fi
   if ! chmod 600 "$ACME_CERT" "$ACME_KEY"; then
     discard_acme_state
-    return 1
-  fi
-  identity_tmp=$(mktemp "$SB_DIR/.acme-identity.XXXXXX") || { discard_acme_state; return 1; }
-  if ! printf '%s\n' "$ACME_PRIMARY_DOMAIN" > "$identity_tmp" || \
-     ! chmod 600 "$identity_tmp" || ! mv -f "$identity_tmp" "$ACME_IDENTITY"; then
-    rm -f "$identity_tmp"
-    discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
   if ! cert_acme; then
     discard_acme_state
+    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "证书有效性、域名或公私钥校验失败"
     return 1
+  fi
+  if [[ $retain_backup == 0 ]]; then
+    if ! clear_acme_state_backup; then
+      backup_path=$ACME_STATE_BACKUP
+      ACME_STATE_BACKUP=
+      yellow "新证书已签发，但临时备份未能删除：$backup_path"
+    fi
   fi
   green "Cloudflare DNS API 证书申请完成"
 }

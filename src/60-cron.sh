@@ -22,30 +22,170 @@ load_current_crontab(){
   return 1
 }
 
+acme_lock_path(){
+  printf '%s\n' "${ACME_LOCK:-$SB_DIR/acme.lock}"
+}
+
+acquire_acme_lock(){
+  local lock
+  [[ ${ACME_LOCK_HELD:-0} -eq 1 ]] && return 0
+  lock=$(acme_lock_path)
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  if [[ -e $lock || -L $lock ]]; then
+    [[ -f $lock && ! -L $lock ]] || return 1
+  fi
+  exec {ACME_LOCK_FD}> "$lock" || return 1
+  if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
+    exec {ACME_LOCK_FD}>&-
+    ACME_LOCK_FD=
+    return 1
+  fi
+  ACME_LOCK_HELD=1
+}
+
+release_acme_lock(){
+  [[ ${ACME_LOCK_HELD:-0} -eq 1 && ${ACME_LOCK_FD:-} =~ ^[0-9]+$ ]] || return 0
+  flock -u "$ACME_LOCK_FD" || return 1
+  exec {ACME_LOCK_FD}>&-
+  ACME_LOCK_FD=
+  ACME_LOCK_HELD=0
+}
+
+with_acme_lock(){
+  local owned=0 status
+  if [[ ${ACME_LOCK_HELD:-0} -ne 1 ]]; then
+    acquire_acme_lock || {
+      red "另一个证书或续期操作正在执行，请稍后重试"
+      return 1
+    }
+    owned=1
+  fi
+  if "$@"; then status=0; else status=$?; fi
+  if [[ $owned -eq 1 ]] && ! release_acme_lock; then
+    red "释放 ACME 操作锁失败"
+    [[ $status -ne 0 ]] || status=1
+  fi
+  return "$status"
+}
+
+acme_renew_runner_path(){
+  printf '%s\n' "${ACME_RENEW_RUNNER:-$SB_DIR/acme_renew.sh}"
+}
+
+acme_renew_state_path(){
+  printf '%s\n' "${ACME_RENEW_STATE:-$SB_DIR/acme_renew.state}"
+}
+
+acme_renew_runner_identity(){
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v1}"
+}
+
+# Parsed values are consumed by the certificate management module.
+# shellcheck disable=SC2034
+load_acme_renew_state(){
+  local state line key value mode
+  local check_epoch='' result='' exit_code='' renewal_epoch='' fingerprint=''
+  local check_count=0 result_count=0 exit_count=0 renewal_count=0 fingerprint_count=0
+  ACME_RENEW_LAST_CHECK_EPOCH=
+  ACME_RENEW_LAST_CHECK=
+  ACME_RENEW_LAST_RESULT=
+  ACME_RENEW_LAST_EXIT_CODE=
+  ACME_RENEW_LAST_RENEWAL_EPOCH=
+  ACME_RENEW_LAST_RENEWAL=
+  ACME_RENEW_FINGERPRINT=
+  state=$(acme_renew_state_path)
+  [[ -f $state && ! -L $state ]] || return 1
+  mode=$(stat -c '%a' "$state" 2>/dev/null || true)
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) ;;
+    *) [[ $mode == 600 ]] || return 1 ;;
+  esac
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ $line == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    case $key in
+      last_check_epoch)
+        check_count=$((check_count + 1))
+        check_epoch=$value
+        ;;
+      last_result)
+        result_count=$((result_count + 1))
+        result=$value
+        ;;
+      last_exit_code)
+        exit_count=$((exit_count + 1))
+        exit_code=$value
+        ;;
+      last_renewal_epoch)
+        renewal_count=$((renewal_count + 1))
+        renewal_epoch=$value
+        ;;
+      cert_fingerprint)
+        fingerprint_count=$((fingerprint_count + 1))
+        fingerprint=$value
+        ;;
+      *) return 1 ;;
+    esac
+  done < "$state"
+  [[ $check_count -eq 1 && $result_count -eq 1 && $exit_count -eq 1 &&
+     $renewal_count -eq 1 && $fingerprint_count -eq 1 ]] || return 1
+  [[ $check_epoch =~ ^[1-9][0-9]{0,11}$ ]] || return 1
+  [[ $result == renewed || $result == unchanged || $result == failed ]] || return 1
+  [[ $exit_code =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((exit_code <= 255)) || return 1
+  [[ $renewal_epoch =~ ^(0|[1-9][0-9]{0,11})$ ]] &&
+    ((renewal_epoch <= check_epoch)) || return 1
+  [[ -z $fingerprint || $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
+  if [[ $result != failed ]]; then
+    [[ $exit_code -eq 0 && -n $fingerprint ]] || return 1
+  else
+    [[ $exit_code -ne 0 ]] || return 1
+  fi
+  [[ $result != renewed || $renewal_epoch -eq $check_epoch ]] || return 1
+  ACME_RENEW_LAST_CHECK=$(format_epoch_utc "$check_epoch") || return 1
+  if [[ $renewal_epoch -ne 0 ]]; then
+    ACME_RENEW_LAST_RENEWAL=$(format_epoch_utc "$renewal_epoch") || return 1
+  fi
+  ACME_RENEW_LAST_CHECK_EPOCH=$check_epoch
+  ACME_RENEW_LAST_RESULT=$result
+  ACME_RENEW_LAST_EXIT_CODE=$exit_code
+  ACME_RENEW_LAST_RENEWAL_EPOCH=$renewal_epoch
+  ACME_RENEW_FINGERPRINT=$fingerprint
+}
+
 crontab_has_acme_entries(){
-  local content=$1
+  local content=$1 runner
+  runner=$(acme_renew_runner_path)
   printf '%s\n' "$content" | grep -Fq "$ACME_CRON_MARKER" ||
     printf '%s\n' "$content" | grep -Fq "$ACME_BIN --cron" ||
+    printf '%s\n' "$content" | grep -Fq "$runner" ||
     printf '%s\n' "$content" | grep -Fq "$SB_DIR/cert_renew.sh"
 }
 
 acme_renew_cron_entry(){
-  printf '%s\n' "17 3,9,15,21 * * * HOME=$SB_DIR $ACME_BIN --cron --home $ACME_HOME --config-home $ACME_HOME > /dev/null 2>&1 $ACME_CRON_MARKER"
+  local runner
+  runner=$(acme_renew_runner_path)
+  printf '%s\n' "17 3,9,15,21 * * * $runner > /dev/null 2>&1 $ACME_CRON_MARKER"
 }
 
 acme_renew_cron_is_current(){
-  local content=$1 entry exact_count marker_count command_count
+  local content=$1 entry runner exact_count marker_count runner_count direct_count
   entry=$(acme_renew_cron_entry)
+  runner=$(acme_renew_runner_path)
   exact_count=$(printf '%s\n' "$content" | grep -Fxc -- "$entry" || true)
   marker_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_CRON_MARKER" || true)
-  command_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_BIN --cron" || true)
-  [[ $exact_count -eq 1 && $marker_count -eq 1 && $command_count -eq 1 ]] &&
+  runner_count=$(printf '%s\n' "$content" | grep -Fc -- "$runner" || true)
+  direct_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_BIN --cron" || true)
+  [[ $exact_count -eq 1 && $marker_count -eq 1 && $runner_count -eq 1 && $direct_count -eq 0 ]] &&
     ! printf '%s\n' "$content" | grep -Fq "$SB_DIR/cert_renew.sh"
 }
 
 filter_acme_cron_entries(){
+  local runner
+  runner=$(acme_renew_runner_path)
   grep -Fv "$ACME_CRON_MARKER" |
     grep -Fv "$ACME_BIN --cron" |
+    grep -Fv "$runner" |
     grep -Fv "$SB_DIR/cert_renew.sh"
 }
 
@@ -58,12 +198,199 @@ filter_restart_cron_entries(){
   grep -Fv "$RESTART_CRON_MARKER"
 }
 
+acme_renew_runner_is_current(){
+  local runner identity mode expected_cron_command expected_force_command expected_sb_dir
+  local expected_acme_bin expected_acme_home expected_cert_file expected_state_file
+  local expected_identity_file expected_lock_file
+  runner=$(acme_renew_runner_path)
+  identity=$(acme_renew_runner_identity)
+  expected_cron_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --cron --home \"\$acme_home\" --config-home \"\$acme_home\""
+  expected_force_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --home \"\$acme_home\" --config-home \"\$acme_home\" --renew -d \"\$acme_identity\" --ecc --force"
+  printf -v expected_sb_dir 'sb_dir=%q' "$SB_DIR"
+  printf -v expected_acme_bin 'acme_bin=%q' "$ACME_BIN"
+  printf -v expected_acme_home 'acme_home=%q' "$ACME_HOME"
+  printf -v expected_cert_file 'cert_file=%q' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
+  printf -v expected_state_file 'state_file=%q' "$(acme_renew_state_path)"
+  printf -v expected_identity_file 'identity_file=%q' "$ACME_IDENTITY"
+  printf -v expected_lock_file 'lock_file=%q' "$(acme_lock_path)"
+  [[ -f $runner && ! -L $runner && -x $runner ]] || return 1
+  mode=$(stat -c '%a' "$runner" 2>/dev/null || true)
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) ;;
+    *) [[ $mode == 700 ]] || return 1 ;;
+  esac
+  # Dollar-prefixed names below are literal generated-runner text.
+  # shellcheck disable=SC2016
+  [[ $(grep -Fxc -- "$identity" "$runner" 2>/dev/null || true) -eq 1 ]] &&
+    grep -Fqx -- "$expected_sb_dir" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_acme_bin" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_acme_home" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_cert_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_state_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_identity_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_lock_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "  1) [[ \${1-} == --force ]] || exit 2; force=1 ;;" "$runner" 2>/dev/null &&
+    grep -Fqx -- '  *) exit 2 ;;' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'exec 9> "$lock_file" || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'flock -n 9 || exit 75' "$runner" 2>/dev/null &&
+    grep -Fqx -- "  acme_identity=\$(read_runner_acme_identity) || exit 1" "$runner" 2>/dev/null &&
+    grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_cron_command" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_force_command" "$runner" 2>/dev/null &&
+    grep -Fqx -- "before_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
+    grep -Fqx -- "after_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
+    grep -Fqx -- "state_tmp=\$(mktemp \"\$sb_dir/.acme_renew.state.XXXXXX\") || exit 1" "$runner" 2>/dev/null &&
+    grep -Fq -- "mv -f \"\$state_tmp\" \"\$state_file\"" "$runner" 2>/dev/null &&
+    bash -n "$runner" >/dev/null 2>&1
+}
+
+write_acme_renew_runner(){
+  local runner state identity runner_tmp
+  runner=$(acme_renew_runner_path)
+  state=$(acme_renew_state_path)
+  identity=$(acme_renew_runner_identity)
+  if acme_renew_runner_is_current; then
+    return 0
+  fi
+  runner_tmp=$(mktemp "$SB_DIR/.acme_renew.XXXXXX") || return 1
+  if ! {
+    printf '%s\n' '#!/bin/bash' "$identity" 'set -u' 'umask 077'
+    printf 'sb_dir=%q\n' "$SB_DIR"
+    printf 'acme_bin=%q\n' "$ACME_BIN"
+    printf 'acme_home=%q\n' "$ACME_HOME"
+    printf 'cert_file=%q\n' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
+    printf 'state_file=%q\n' "$state"
+    printf 'identity_file=%q\n' "$ACME_IDENTITY"
+    printf 'lock_file=%q\n' "$(acme_lock_path)"
+    cat <<'ACMERENEW'
+
+certificate_fingerprint(){
+  local fingerprint
+  [[ -s $cert_file ]] || return 1
+  fingerprint=$(sha256sum "$cert_file" 2>/dev/null | awk '{print $1}') || return 1
+  [[ $fingerprint =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s\n' "${fingerprint,,}"
+}
+
+valid_acme_identity(){
+  local name=$1 label
+  local -a labels
+  [[ ${#name} -le 253 && $name == *.* && $name != .* && $name != *. ]] || return 1
+  IFS='.' read -r -a labels <<< "$name"
+  for label in "${labels[@]}"; do
+    [[ ${#label} -ge 1 && ${#label} -le 63 ]] || return 1
+    [[ $label =~ ^[A-Za-z0-9]([A-Za-z0-9-]*[A-Za-z0-9])?$ ]] || return 1
+  done
+}
+
+read_runner_acme_identity(){
+  local identity
+  local -a identity_lines=()
+  [[ -f $identity_file && ! -L $identity_file ]] || return 1
+  mapfile -t identity_lines < "$identity_file" || return 1
+  [[ ${#identity_lines[@]} -eq 1 ]] || return 1
+  identity=${identity_lines[0]}
+  valid_acme_identity "$identity" || return 1
+  printf '%s\n' "$identity"
+}
+
+force=0
+case $# in
+  0) ;;
+  1) [[ ${1-} == --force ]] || exit 2; force=1 ;;
+  *) exit 2 ;;
+esac
+if [[ -e $lock_file || -L $lock_file ]]; then
+  [[ -f $lock_file && ! -L $lock_file ]] || exit 1
+fi
+exec 9> "$lock_file" || exit 1
+chmod 600 "$lock_file" || exit 1
+flock -n 9 || exit 75
+if ((force)); then
+  acme_identity=$(read_runner_acme_identity) || exit 1
+fi
+
+last_renewal_epoch=0
+state_read_epoch=$(date +%s) || exit 1
+if [[ -f $state_file && ! -L $state_file ]]; then
+  previous_renewal=$(awk -F= '$1 == "last_renewal_epoch" && $2 ~ /^[0-9]+$/ &&
+    length($2) <= 12 && ($2 == "0" || $2 !~ /^0/) { print $2; exit }' "$state_file" 2>/dev/null)
+  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then
+    last_renewal_epoch=$previous_renewal
+  fi
+fi
+
+before_fingerprint=$(certificate_fingerprint || true)
+if ((force)); then
+  HOME="$sb_dir" "$acme_bin" --home "$acme_home" --config-home "$acme_home" --renew -d "$acme_identity" --ecc --force
+else
+  HOME="$sb_dir" "$acme_bin" --cron --home "$acme_home" --config-home "$acme_home"
+fi
+exit_code=$?
+after_fingerprint=$(certificate_fingerprint || true)
+check_epoch=$(date +%s)
+
+if [[ -n $after_fingerprint && $before_fingerprint != "$after_fingerprint" ]]; then
+  last_renewal_epoch=$check_epoch
+fi
+
+if ((exit_code != 0)); then
+  result=failed
+elif [[ -z $after_fingerprint ]]; then
+  result=failed
+  exit_code=1
+elif [[ $before_fingerprint != "$after_fingerprint" ]]; then
+  result=renewed
+else
+  result=unchanged
+fi
+
+state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
+trap 'rm -f -- "$state_tmp"' EXIT
+trap 'exit 1' HUP INT TERM
+if ! printf '%s\n' \
+  "last_check_epoch=$check_epoch" \
+  "last_result=$result" \
+  "last_exit_code=$exit_code" \
+  "last_renewal_epoch=$last_renewal_epoch" \
+  "cert_fingerprint=$after_fingerprint" > "$state_tmp" ||
+   ! chmod 600 "$state_tmp" ||
+   ! mv -f "$state_tmp" "$state_file"; then
+  exit 1
+fi
+trap - EXIT HUP INT TERM
+exit "$exit_code"
+ACMERENEW
+  } > "$runner_tmp" || ! chmod 700 "$runner_tmp" || ! mv -f "$runner_tmp" "$runner"; then
+    rm -f "$runner_tmp"
+    return 1
+  fi
+  acme_renew_runner_is_current
+}
+
+remove_acme_renew_artifacts(){
+  local runner state
+  runner=$(acme_renew_runner_path)
+  state=$(acme_renew_state_path)
+  rm -f "$runner" "$state" "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+}
+
+acme_renew_artifacts_exist(){
+  local runner state
+  runner=$(acme_renew_runner_path)
+  state=$(acme_renew_state_path)
+  [[ -e $runner || -L $runner || -e $state || -L $state ||
+     -e $SB_DIR/cert_renew.sh || -L $SB_DIR/cert_renew.sh ||
+     -e $SB_DIR/.cert_mtime || -L $SB_DIR/.cert_mtime ]]
+}
+
 remove_acme_renew_cron(){
   local current filtered
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if ! crontab_has_acme_entries "$current"; then
-    rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+    remove_acme_renew_artifacts
     return
   fi
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
@@ -72,7 +399,7 @@ remove_acme_renew_cron(){
   if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
     return 1
   fi
-  rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  remove_acme_renew_artifacts
 }
 
 remove_current_acme_cron(){
@@ -80,12 +407,16 @@ remove_current_acme_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if ! crontab_has_acme_entries "$current"; then
+    remove_acme_renew_artifacts
     return 0
   fi
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
-  ! crontab_has_acme_entries "$CURRENT_CRONTAB"
+  if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
+    return 1
+  fi
+  remove_acme_renew_artifacts
 }
 
 remove_all_managed_crons(){
@@ -93,7 +424,7 @@ remove_all_managed_crons(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if ! crontab_has_acme_entries "$current" && ! crontab_has_restart_entries "$current"; then
-    rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+    remove_acme_renew_artifacts
     return
   fi
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries | filter_restart_cron_entries || true)
@@ -102,7 +433,7 @@ remove_all_managed_crons(){
   if crontab_has_acme_entries "$CURRENT_CRONTAB" || crontab_has_restart_entries "$CURRENT_CRONTAB"; then
     return 1
   fi
-  rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  remove_acme_renew_artifacts
 }
 
 setup_acme_renew_cron(){
@@ -113,17 +444,16 @@ setup_acme_renew_cron(){
   fi
   config_uses_acme_certificate || return 1
   [[ -x $ACME_BIN && -f $ACME_HOME/dnsapi/dns_cf.sh && -s $ACME_IDENTITY ]] || return 1
+  cloudflare_acme_credentials_present || return 1
   write_acme_reload_hook || return 1
+  write_acme_renew_runner || return 1
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
   entry=$(acme_renew_cron_entry)
   { printf '%s\n' "$filtered"; printf '%s\n' "$entry"; } | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
-  if ! acme_renew_cron_is_current "$CURRENT_CRONTAB"; then
-    return 1
-  fi
-  rm -f "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
+  acme_renew_runner_is_current && acme_renew_cron_is_current "$CURRENT_CRONTAB"
 }
 
 ensure_acme_renew_cron(){
@@ -135,16 +465,19 @@ ensure_acme_renew_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if config_uses_acme_certificate; then
-    if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]]; then
+    if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]] ||
+       ! cloudflare_acme_credentials_present; then
       red "当前配置正在使用 ACME 证书，但续期组件不完整；已保留现有 cron，请立即修复"
       return 1
     fi
-    if ! acme_reload_hook_is_current || ! acme_renew_cron_is_current "$current"; then
+    if ! acme_reload_hook_is_current || ! acme_renew_runner_is_current ||
+       ! acme_renew_cron_is_current "$current"; then
       setup_acme_renew_cron
     fi
-  elif config_uses_self_signed_certificate && { \
-       crontab_has_acme_entries "$current"; }; then
-    remove_acme_renew_cron
+  elif config_uses_self_signed_certificate; then
+    if crontab_has_acme_entries "$current" || acme_renew_artifacts_exist; then
+      remove_acme_renew_cron
+    fi
   elif crontab_has_acme_entries "$current"; then
     red "无法确认当前证书模式；为避免中断续期，已保留现有 ACME cron"
     return 1

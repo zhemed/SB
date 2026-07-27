@@ -44,12 +44,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v1.7.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 1.7.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '1.7.0' ]] ||
-  fail "VERSION file is not 1.7.0"
-grep -Fq -- "当前项目版本：\`1.7.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 1.7.0"
+[[ $(grep -Fxc 'sb_version="v1.8.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 1.8.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '1.8.0' ]] ||
+  fail "VERSION file is not 1.8.0"
+grep -Fq -- "当前项目版本：\`1.8.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 1.8.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \

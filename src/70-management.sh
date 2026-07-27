@@ -1,163 +1,497 @@
 # sb-module: 70-management
 # Certificate management
-change_cert_mode(){
-  local current_key c_c d_d candidate acme_name menu retry commit_status
-  if ! sbactive; then
-    readp "按回车返回主菜单..."
+current_certificate_mode(){
+  if config_uses_acme_certificate; then
+    printf '%s\n' acme
+  elif config_uses_self_signed_certificate; then
+    printf '%s\n' self_signed
+  else
+    printf '%s\n' unknown
+  fi
+}
+
+certificate_action_service_ready(){
+  if [[ -x $SB_BIN && -s $SB_CONFIG ]]; then
+    return 0
+  fi
+  red "Sing-box 内核或配置文件不完整，无法安全修改证书；请先使用菜单[2]修复"
+  return 1
+}
+
+activate_managed_certificate(){
+  local cert=$1 key=$2 candidate commit_status
+  CERT_ACTIVATION_MAINTENANCE_OK=1
+  if ! load_certificate_metadata "$cert" "$key" || [[ $CERT_META_STATE != valid ]]; then
+    red "目标证书无效、已过期或与私钥不匹配，拒绝切换"
     return 1
   fi
-  echo
-  green "证书管理"
-  if ! current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前证书失败，配置未修改"
-    readp "按回车返回主菜单..."
+  candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX") || return 1
+  if ! jq --arg cert "$cert" --arg key "$key" '
+    if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
+    then error("hy2 inbound missing or duplicated")
+    else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path) = $cert |
+         (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path) = $key
+    end
+  ' "$SB_CONFIG" > "$candidate" ||
+     ! jq -e --arg cert "$cert" --arg key "$key" '
+       [.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and
+       .tls.certificate_path == $cert and .tls.key_path == $key)] | length == 1
+     ' "$candidate" >/dev/null; then
+    rm -f "$candidate"
+    red "生成证书候选配置失败，原配置未修改"
     return 1
   fi
-
-  while true; do
-    c_c=
-    d_d=
-    if [[ $current_key == "$SB_DIR/private.key" ]]; then
-      echo "当前证书: 自签bing证书"
-      if acme_name=$(detect_acme_identity); then
-        while true; do
-          green "1：切换为已有 ACME 域名证书 ($acme_name)"
-          green "2：通过 Cloudflare 重新申请并切换 ACME 证书"
-          yellow "   重新申请会删除旧 ACME 状态，请避免频繁签发"
-          green "0：返回主菜单"
-          readp "请选择【0-2】：" menu || return 1
-          case "$menu" in
-            1)
-              if cert_acme; then
-                c_c="$ACME_CERT"
-                d_d="$ACME_KEY"
-                break
-              fi
-              red "已有ACME证书不可用，请重新选择"
-              ;;
-            2)
-              if issue_cloudflare_certificate; then
-                c_c="$ACME_CERT"
-                d_d="$ACME_KEY"
-                break
-              fi
-              red "ACME证书申请失败，请重新选择"
-              ;;
-            ""|0) return 0 ;;
-            *) red "请输入0、1或2" ;;
-          esac
-        done
-      else
-        while true; do
-          green "1：通过 Cloudflare 申请并切换 ACME 域名证书"
-          green "0：返回主菜单"
-          readp "请选择【0-1】：" menu || return 1
-          case "$menu" in
-            1)
-              if issue_cloudflare_certificate; then
-                c_c="$ACME_CERT"
-                d_d="$ACME_KEY"
-                break
-              fi
-              red "ACME证书申请失败，请重新选择"
-              ;;
-            ""|0) return 0 ;;
-            *) red "请输入0或1" ;;
-          esac
-        done
-      fi
-    elif [[ $current_key == "$ACME_KEY" ]]; then
-      acme_name=$(detect_acme_identity 2>/dev/null || echo "身份校验失败")
-      echo "当前证书: ACME 域名证书 ($acme_name)"
-      while true; do
-        green "1：切换为自签bing证书"
-        green "0：返回主菜单"
-        yellow "如需更换域名或 Token，请先切换为自签证书，再进入本菜单重新申请"
-        readp "请选择【0-1】：" menu || return 1
-        case "$menu" in
-          1)
-            c_c="$SB_DIR/cert.pem"
-            d_d="$SB_DIR/private.key"
-            break
-            ;;
-          ""|0) return 0 ;;
-          *) red "请输入0或1" ;;
-        esac
-      done
-    else
-      yellow "当前配置使用未知证书路径：$current_key"
-      while true; do
-        green "1：切换为自签bing证书"
-        green "2：申请并切换为 Cloudflare ACME 证书"
-        green "0：返回主菜单"
-        readp "请选择【0-2】：" menu || return 1
-        case "$menu" in
-          1)
-            c_c="$SB_DIR/cert.pem"
-            d_d="$SB_DIR/private.key"
-            break
-            ;;
-          2)
-            if issue_cloudflare_certificate; then
-              c_c="$ACME_CERT"
-              d_d="$ACME_KEY"
-              break
-            fi
-            red "ACME证书申请失败，请重新选择"
-            ;;
-          ""|0) return 0 ;;
-          *) red "请输入0、1或2" ;;
-        esac
-      done
-    fi
-
-    if [[ ! -s $c_c || ! -s $d_d ]]; then
-      red "目标证书或私钥不存在，原配置未修改"
-      readp "按回车重新选择，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建证书候选配置失败，原配置未修改"
-      readp "按回车重试，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! jq --arg cert "$c_c" --arg key "$d_d" '
-      if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
-      then error("hy2 inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path) = $cert |
-           (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path) = $key
-      end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg cert "$c_c" --arg key "$d_d" '[.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .tls.certificate_path == $cert and .tls.key_path == $key)] | length == 1' "$candidate" >/dev/null; then
-      rm -f "$candidate"
-      red "生成证书候选配置失败，原配置未修改"
-      readp "按回车重新选择，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if commit_config "$candidate"; then
-      if [[ $d_d == "$ACME_KEY" ]]; then
-        setup_acme_renew_cron || yellow "证书已切换，但自动续期任务设置失败，请手动检查 root crontab"
-      elif ! remove_acme_renew_cron; then
-        yellow "证书已切换，但 ACME 自动续期任务清理失败，请手动检查 root crontab"
-      fi
-      refresh_share_files_after_change || true
-      green "证书模式切换成功"
-      readp "按回车返回主菜单..."
-      return 0
-    else
-      commit_status=$?
-    fi
+  if commit_config "$candidate"; then
+    :
+  else
+    commit_status=$?
     if [[ $commit_status -eq 2 ]]; then
-      red "证书切换失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回主菜单..."
+      red "证书切换失败且自动回滚失败，请立即检查服务和配置备份"
       return 2
     fi
     red "证书切换失败，原配置未修改或已恢复"
-    readp "按回车重新选择，输入0返回主菜单：" retry || return 1
-    [[ $retry == 0 ]] && return 1
+    return 1
+  fi
+  if [[ $key == "$ACME_KEY" ]]; then
+    if ! setup_acme_renew_cron; then
+      CERT_ACTIVATION_MAINTENANCE_OK=0
+      yellow "证书已切换，但自动续期任务异常，请使用本菜单修复"
+    fi
+  elif ! remove_acme_renew_cron; then
+    CERT_ACTIVATION_MAINTENANCE_OK=0
+    yellow "证书已切换，但 ACME 自动续期任务清理失败"
+  fi
+  refresh_share_files_after_change || true
+  green "证书模式切换成功"
+}
+
+show_certificate_metadata(){
+  local label=$1 cert=$2 key=$3 identity=${4:-}
+  green "证书类型: $label"
+  if ! load_certificate_metadata "$cert" "$key"; then
+    red "证书状态: 无法读取或文件不完整"
+    return 1
+  fi
+  case $CERT_META_STATE in
+    valid) green "证书状态: 有效" ;;
+    expired) red "证书状态: 已过期" ;;
+    not_yet_valid) red "证书状态: 尚未生效" ;;
+    key_mismatch) red "证书状态: 证书与私钥不匹配" ;;
+    *) red "证书状态: 无效" ;;
+  esac
+  printf '覆盖域名: %s\n' "${CERT_META_DNS_NAMES:-未提供 SAN}"
+  printf '签发机构: %s\n' "$CERT_META_ISSUER"
+  printf '生效时间: %s\n' "$CERT_META_NOT_BEFORE"
+  printf '到期时间: %s\n' "$CERT_META_NOT_AFTER"
+  if ((CERT_META_REMAINING_DAYS < 0)); then
+    red "剩余有效期: 已过期 $((-CERT_META_REMAINING_DAYS)) 天"
+  elif ((CERT_META_REMAINING_DAYS <= 30)); then
+    yellow "剩余有效期: ${CERT_META_REMAINING_DAYS} 天"
+  else
+    green "剩余有效期: ${CERT_META_REMAINING_DAYS} 天"
+  fi
+  if [[ $CERT_META_KEY_MATCH -eq 1 ]]; then
+    green "证书/私钥: 匹配"
+  else
+    red "证书/私钥: 不匹配"
+  fi
+  if [[ -n $identity ]]; then
+    if certificate_identity_matches "$cert" "$identity"; then
+      green "TLS 身份: $identity（证书已覆盖）"
+    else
+      red "TLS 身份: $identity（证书未覆盖）"
+    fi
+  fi
+  printf 'SHA-256 指纹: %s\n' "$CERT_META_FINGERPRINT"
+}
+
+show_acme_certificate_schedule(){
+  local identity=$1
+  if load_acme_certificate_schedule "$identity"; then
+    printf 'ACME 服务: %s\n' "$ACME_META_CA"
+    printf '最近签发/续期: %s\n' "$ACME_META_CREATED"
+    printf '当前计划续期: %s\n' "$ACME_META_NEXT_RENEW"
+    printf '最近部署成功: %s\n' "${ACME_META_DEPLOYED:-暂无记录}"
+  else
+    yellow "ACME 时间记录: 无法安全读取"
+    return 1
+  fi
+}
+
+inspect_acme_renewal_health(){
+  local current state now identity reference_epoch
+  ACME_RENEW_HEALTH=normal
+  ACME_RENEW_HEALTH_DETAIL=正常
+  if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]]; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="acme.sh 组件不完整"
+  elif ! cloudflare_acme_credentials_present; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="Cloudflare 凭据缺失或格式异常"
+  elif ! identity=$(read_acme_identity 2>/dev/null); then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="ACME 身份文件损坏"
+  elif ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" ||
+       [[ $CERT_META_STATE != valid ]] ||
+       ! certificate_identity_matches "$ACME_CERT" "$identity"; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="当前证书无效或未覆盖 ACME 身份"
+  elif ! load_acme_certificate_schedule "$identity"; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="ACME 域名配置或续期时间记录异常"
+  elif ! cron_daemon_is_active; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="cron/crond 未运行"
+  elif ! acme_reload_hook_is_current; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="证书生效回调缺失或过期"
+  elif ! acme_renew_runner_is_current; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="续期检查器缺失或过期"
+  elif ! load_current_crontab; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="无法读取 root crontab"
+  else
+    current=$CURRENT_CRONTAB
+    if ! acme_renew_cron_is_current "$current"; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="定时任务缺失或不规范"
+    fi
+  fi
+  if [[ $ACME_RENEW_HEALTH == normal ]]; then
+    state=$(acme_renew_state_path)
+    if load_acme_renew_state; then
+      now=$(date +%s 2>/dev/null || true)
+      if [[ $ACME_RENEW_LAST_RESULT == failed ]]; then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="最近一次检查失败，退出码 $ACME_RENEW_LAST_EXIT_CODE"
+      elif [[ $now =~ ^[0-9]+$ ]] && ((now - ACME_RENEW_LAST_CHECK_EPOCH > 86400)); then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="超过 24 小时没有成功检查"
+      elif [[ $now =~ ^[0-9]+$ ]] && ((ACME_RENEW_LAST_CHECK_EPOCH > now + 300)); then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="最近检查时间晚于系统时间"
+      fi
+    elif [[ -e $state || -L $state ]]; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="续期状态记录损坏或权限异常"
+    else
+      now=$(date +%s 2>/dev/null || true)
+      reference_epoch=${ACME_META_DEPLOYED_EPOCH:-$ACME_META_CREATED_EPOCH}
+      if [[ $now =~ ^[0-9]+$ && $reference_epoch =~ ^[0-9]+$ ]] &&
+         ((now - reference_epoch > 28800)); then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="证书部署超过 8 小时但没有续期检查记录"
+      fi
+    fi
+  fi
+}
+
+show_acme_renewal_status(){
+  local identity=$1 state
+  show_acme_certificate_schedule "$identity" || true
+  printf '定时检查: 每天 03:17 / 09:17 / 15:17 / 21:17（服务器时间）\n'
+  inspect_acme_renewal_health
+  if [[ $ACME_RENEW_HEALTH == normal ]]; then
+    green "自动续期: 正常"
+  else
+    red "自动续期: 异常（$ACME_RENEW_HEALTH_DETAIL）"
+  fi
+  if load_acme_renew_state; then
+    printf '最近自动检查: %s\n' "$ACME_RENEW_LAST_CHECK"
+    case $ACME_RENEW_LAST_RESULT in
+      renewed) green "最近检查结果: 已续期并执行证书生效回调" ;;
+      unchanged) green "最近检查结果: 成功，暂不需要续期" ;;
+      failed) red "最近检查结果: 失败（退出码 $ACME_RENEW_LAST_EXIT_CODE）" ;;
+    esac
+    if [[ $ACME_RENEW_LAST_RENEWAL_EPOCH != 0 ]]; then
+      printf '最近自动续期: %s\n' "$ACME_RENEW_LAST_RENEWAL"
+    fi
+  else
+    state=$(acme_renew_state_path)
+    if [[ -e $state || -L $state ]]; then
+      red "最近自动检查: 状态记录损坏或权限异常"
+    else
+      yellow "最近自动检查: 暂无记录"
+    fi
+  fi
+  if service_is_active; then
+    green "续期生效方式: 成功续期后自动重启 sb"
+  else
+    yellow "续期生效方式: 服务当前未运行，续期不会强制启动服务"
+  fi
+}
+
+show_certificate_dashboard(){
+  local mode identity='' current_cert current_key standby_identity
+  mode=$(current_certificate_mode)
+  current_cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$SB_CONFIG" 2>/dev/null || true)
+  current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null || true)
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  green "证书管理"
+  if service_is_active; then
+    green "服务状态: 运行中"
+  else
+    yellow "服务状态: 未运行"
+  fi
+  case $mode in
+    acme)
+      identity=$(read_acme_identity 2>/dev/null || true)
+      show_certificate_metadata "ACME 域名证书" "$ACME_CERT" "$ACME_KEY" "$identity" || true
+      if [[ -n $identity ]]; then
+        show_acme_renewal_status "$identity"
+      else
+        red "ACME 身份文件与证书不一致"
+      fi
+      ;;
+    self_signed)
+      show_certificate_metadata "自签 bing 证书" "$SB_DIR/cert.pem" "$SB_DIR/private.key" www.bing.com || true
+      yellow "自动续期: 不适用（自签证书不会通过 ACME 续期）"
+      if standby_identity=$(read_acme_identity 2>/dev/null); then
+        echo
+        yellow "备用 ACME 证书（当前未使用）"
+        show_certificate_metadata "备用 ACME 域名证书" "$ACME_CERT" "$ACME_KEY" "$standby_identity" || true
+        show_acme_certificate_schedule "$standby_identity" || true
+        yellow "备用证书自动续期: 已暂停；切换为该证书后会自动恢复"
+      fi
+      ;;
+    *)
+      red "当前模式: 未知或配置不完整"
+      printf '证书路径: %s\n私钥路径: %s\n' "${current_cert:-无法读取}" "${current_key:-无法读取}"
+      ;;
+  esac
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  CURRENT_CERT_MODE=$mode
+}
+
+finish_acme_replacement(){
+  local backup_path
+  if ! clear_acme_state_backup; then
+    backup_path=$ACME_STATE_BACKUP
+    ACME_STATE_BACKUP=
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    yellow "新证书已生效，但旧状态临时备份未能删除：$backup_path"
+    return 1
+  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+}
+
+rollback_new_acme_state(){
+  local had_backup=0
+  [[ -n ${ACME_STATE_BACKUP:-} ]] && had_backup=1
+  discard_acme_state || yellow "清理未生效的新 ACME 状态不完整"
+  if [[ $had_backup -eq 1 ]]; then
+    restore_acme_state_backup || {
+      red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+      return 1
+    }
+  fi
+}
+
+restore_previous_active_acme(){
+  local old_identity=$1
+  [[ -n $old_identity ]] || return 1
+  yellow "正在恢复原 ACME 证书和自动续期……"
+  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+    if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+      green "原 ACME 证书和自动续期已恢复"
+    else
+      yellow "原 ACME 证书已恢复，但自动续期仍需修复"
+    fi
+    return 0
+  fi
+  red "原 ACME 证书自动恢复失败，请立即检查证书状态"
+  return 1
+}
+
+apply_new_cloudflare_certificate(){
+  certificate_action_service_ready || return 1
+  if ! issue_cloudflare_certificate 0 1; then
+    red "新证书申请失败，当前证书未改变"
+    return 1
+  fi
+  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+    finish_acme_replacement || true
+    if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+      green "新 ACME 证书已切换并启用自动续期"
+    else
+      yellow "新 ACME 证书已切换，但自动续期配置异常，请使用修复功能"
+    fi
+    return 0
+  fi
+  red "新证书已签发，但服务切换失败，正在恢复申请前的 ACME 状态"
+  rollback_new_acme_state || true
+  return 1
+}
+
+replace_active_acme_certificate(){
+  local choice old_identity
+  old_identity=$(read_acme_identity 2>/dev/null || true)
+  yellow "更换期间服务会短暂切换为自签证书；任一步失败都会尝试恢复原 ACME 证书"
+  readp "输入1继续，输入0取消：" choice || return 1
+  [[ $choice == 1 ]] || return 0
+  certificate_action_service_ready || return 1
+  if ! begin_acme_state_backup; then
+    red "无法安全备份原 ACME 状态，已取消更换"
+    return 1
+  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
+  if ! activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"; then
+    clear_acme_state_backup || true
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    return 1
+  fi
+  if issue_cloudflare_certificate 0 1 1; then
+    if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+      finish_acme_replacement || true
+      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+        green "ACME 证书与 Cloudflare 凭据更换完成"
+      else
+        yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+      fi
+      return 0
+    fi
+    red "新证书已签发，但服务切换失败"
+    rollback_new_acme_state || true
+  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+    rollback_new_acme_state || true
+  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+  red "新证书申请或切换失败"
+  restore_previous_active_acme "$old_identity" || true
+  return 1
+}
+
+run_acme_renewal_check(){
+  local runner
+  config_uses_acme_certificate || { red "当前未使用 ACME 证书"; return 1; }
+  if ! with_acme_lock setup_acme_renew_cron; then
+    red "自动续期组件修复失败，无法执行检查"
+    return 1
+  fi
+  runner=$(acme_renew_runner_path) || return 1
+  green "正在执行 ACME 续期检查；未到计划时间时不会重复签发……"
+  if "$runner"; then
+    green "续期检查完成"
+  else
+    red "续期检查失败，请查看上方 acme.sh 输出"
+    return 1
+  fi
+}
+
+force_acme_reissue(){
+  local runner choice
+  config_uses_acme_certificate || { red "当前未使用 ACME 证书"; return 1; }
+  yellow "强制重签会立即联系 Let's Encrypt，并计入证书签发频率限制"
+  readp "输入1确认强制重签，输入0取消：" choice || return 1
+  [[ $choice == 1 ]] || return 0
+  if ! with_acme_lock setup_acme_renew_cron; then
+    red "自动续期组件修复失败，无法执行强制重签"
+    return 1
+  fi
+  runner=$(acme_renew_runner_path) || return 1
+  green "正在强制重新签发当前 ACME 证书……"
+  if "$runner" --force; then
+    if ! load_acme_renew_state || [[ $ACME_RENEW_LAST_RESULT != renewed ]]; then
+      red "重签命令已结束，但托管证书没有发生变化，不能确认重签成功"
+      return 1
+    fi
+    if service_is_active; then
+      green "证书已重新签发，sb 已通过回调重启并加载新证书"
+    else
+      yellow "证书已重新签发；sb 当前未运行，下次启动时会加载新证书"
+    fi
+  else
+    red "强制重签失败，请查看上方 acme.sh 输出"
+    return 1
+  fi
+}
+
+change_cert_mode(){
+  local menu acme_name
+  while true; do
+    echo
+    show_certificate_dashboard
+    case $CURRENT_CERT_MODE in
+      acme)
+        green "1：立即执行计划续期检查"
+        green "2：强制重新签发当前证书"
+        green "3：修复自动续期"
+        green "4：更换域名、Account ID 或 Token"
+        green "5：切换为自签 bing 证书"
+        green "0：返回主菜单"
+        readp "请选择【0-5】：" menu || return 1
+        case $menu in
+          1) run_acme_renewal_check; readp "按回车返回证书管理..." ;;
+          2) force_acme_reissue; readp "按回车返回证书管理..." ;;
+          3)
+            if with_acme_lock setup_acme_renew_cron; then green "自动续期修复成功"; else red "自动续期修复失败"; fi
+            readp "按回车返回证书管理..."
+            ;;
+          4) with_acme_lock replace_active_acme_certificate; readp "按回车返回证书管理..." ;;
+          5)
+            certificate_action_service_ready &&
+              with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+            readp "按回车返回证书管理..."
+            ;;
+          ""|0) return 0 ;;
+          *) red "请输入0、1、2、3、4或5"; sleep 1 ;;
+        esac
+        ;;
+      self_signed)
+        if acme_name=$(detect_acme_identity 2>/dev/null); then
+          green "1：切换为已有 ACME 证书 ($acme_name)"
+          green "2：申请新的 Cloudflare ACME 证书"
+          green "0：返回主菜单"
+          readp "请选择【0-2】：" menu || return 1
+          case $menu in
+            1)
+              certificate_action_service_ready && cert_acme &&
+                with_acme_lock activate_managed_certificate "$ACME_CERT" "$ACME_KEY"
+              readp "按回车返回证书管理..."
+              ;;
+            2)
+              with_acme_lock apply_new_cloudflare_certificate
+              readp "按回车返回证书管理..."
+              ;;
+            ""|0) return 0 ;;
+            *) red "请输入0、1或2"; sleep 1 ;;
+          esac
+        else
+          green "1：申请 Cloudflare ACME 证书"
+          green "0：返回主菜单"
+          readp "请选择【0-1】：" menu || return 1
+          case $menu in
+            1)
+              with_acme_lock apply_new_cloudflare_certificate
+              readp "按回车返回证书管理..."
+              ;;
+            ""|0) return 0 ;;
+            *) red "请输入0或1"; sleep 1 ;;
+          esac
+        fi
+        ;;
+      *)
+        green "1：切换为自签 bing 证书"
+        green "2：申请并切换为 Cloudflare ACME 证书"
+        green "0：返回主菜单"
+        readp "请选择【0-2】：" menu || return 1
+        case $menu in
+          1)
+            certificate_action_service_ready &&
+              with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+            readp "按回车返回证书管理..."
+            ;;
+          2)
+            with_acme_lock apply_new_cloudflare_certificate
+            readp "按回车返回证书管理..."
+            ;;
+          ""|0) return 0 ;;
+          *) red "请输入0、1或2"; sleep 1 ;;
+        esac
+        ;;
+    esac
   done
 }
 

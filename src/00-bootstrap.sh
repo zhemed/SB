@@ -26,10 +26,16 @@ ACME_CERT="$SB_DIR/acme-cert.pem"
 ACME_KEY="$SB_DIR/acme-private.key"
 ACME_IDENTITY="$SB_DIR/acme_server_name"
 ACME_RELOAD="$SB_DIR/acme_reload.sh"
+ACME_LOCK="$SB_DIR/acme.lock"
 ACME_RELOAD_IDENTITY="# sb-acme-reload-v1"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 INSTALL_TRANSACTION_ACTIVE=0
+ACME_STATE_BACKUP=
+ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+ACME_LOCK_FD=
+ACME_LOCK_HELD=0
+CERT_ACTIVATION_MAINTENANCE_OK=1
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -73,7 +79,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v1.7.0"
+sb_version="v1.8.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet

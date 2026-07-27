@@ -59,14 +59,18 @@ bash tests/verify.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`1.7.0`。
+- 当前项目版本：`1.8.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
 - DNS API 默认使用 Cloudflare `Account ID + API Token`。
 - API Token 使用普通可见输入，Zone ID 由 acme.sh 自动识别。
+- 证书管理页会显示当前与备用证书的 SAN、签发机构、生效/到期时间、剩余天数、
+  SHA-256 指纹和证书/私钥匹配状态；任何状态页都不会回显 API Token。
 - 单域名与 `*.example.com` 泛域名输入会自动选择对应申请参数。
-- ACME 续期由 root crontab 定时执行；证书更新后，运行中的 sb 服务会通过 reload hook 重启并加载新证书。
+- ACME 续期由 root crontab 定时执行，并记录最近检查、结果和实际换证时间。证书管理支持
+  计划续期检查、强制重签、续期组件修复以及直接更换域名、Account ID 或 Token。
+- 证书更新后，运行中的 sb 服务会通过 reload hook 重启并加载新证书；服务未运行时不会被续期任务强制启动。
 - 服务端同时提供 VLESS Reality、Hysteria2 与 SOCKS5。
 - VLESS 与 Hysteria2 共用 UUID；SOCKS5 使用固定用户名 `sb` 和独立随机密码。
 - SOCKS5 仅允许 TCP，不参与自动测速或负载均衡；它本身不加密，只应在可信链路中使用。

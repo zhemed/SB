@@ -244,7 +244,7 @@ enable_cron_daemon(){
 
 dependencies_ready(){
   local cmd
-  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum; do
+  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum flock; do
     command -v "$cmd" >/dev/null 2>&1 || return 1
   done
   if command -v apk >/dev/null 2>&1; then

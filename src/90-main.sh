@@ -72,7 +72,7 @@ install_singbox(){
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_vl_re}/tcp、${port_socks5}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
-    setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
+    with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
   fi
   if update_shortcut; then
     shortcut_ready=1
@@ -156,7 +156,7 @@ repair_singbox(){
   else
     yellow "服务已恢复，但快捷方式 $SHORTCUT 更新失败"
   fi
-  ensure_acme_renew_cron || yellow "服务已恢复，但ACME续期状态需要手动检查"
+  with_acme_lock ensure_acme_renew_cron || yellow "服务已恢复，但ACME续期状态需要手动检查"
   cronsb || yellow "服务已恢复，但每日重启任务设置失败"
   if [[ $shortcut_ready -eq 1 ]]; then
     green "sb服务修复成功，快捷方式: sb"
@@ -259,9 +259,23 @@ menu(){
 prepare_runtime_state || exit 1
 
 handle_install_interrupt(){
+  trap '' INT TERM HUP
   echo
   if [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+    clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
+  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+    yellow "证书操作已中断，正在恢复原 ACME 状态……"
+    if restore_acme_state_backup; then
+      if [[ ${ACME_RESTORE_ACTIVE_ON_INTERRUPT:-0} -eq 1 ]]; then
+        yellow "正在恢复中断前使用的 ACME 证书……"
+        if ! cert_acme || ! activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+          red "ACME 证书模式恢复失败，请立即检查证书和服务状态"
+        fi
+      fi
+    else
+      red "ACME 状态恢复失败，请立即检查 $SB_DIR"
+    fi
   fi
   exit 130
 }
@@ -269,7 +283,7 @@ trap handle_install_interrupt INT TERM HUP
 
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
-  ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
+  with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
 fi
 
 # Start
