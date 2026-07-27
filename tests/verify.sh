@@ -44,12 +44,28 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v1.6.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 1.6.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '1.6.0' ]] ||
-  fail "VERSION file is not 1.6.0"
-grep -Fq -- "当前项目版本：\`1.6.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 1.6.0"
+[[ $(grep -Fxc 'sb_version="v1.7.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 1.7.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '1.7.0' ]] ||
+  fail "VERSION file is not 1.7.0"
+grep -Fq -- "当前项目版本：\`1.7.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 1.7.0"
+for lifecycle_pattern in \
+  'INSTALL_TRANSACTION_ACTIVE=0' \
+  'cleanup_install_transaction()' \
+  'cleanup_incomplete_install()' \
+  'abort_install_transaction()' \
+  'trap handle_install_interrupt INT TERM HUP' \
+  'green " 1. 安装"' \
+  'green " 2. 修复"' \
+  'green " 9. 卸载"' \
+  'readp "请输入数字 [0-9]: " Input'; do
+  grep -Fq -- "$lifecycle_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "missing installation lifecycle behavior: $lifecycle_pattern"
+done
+if grep -Fq -- 'green " 1. 安装/修复"' "$ROOT_DIR/sb.sh"; then
+  fail "combined install/repair menu remains"
+fi
 [[ $(grep -Fxc 'SHORTCUT="/usr/bin/sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "formal shortcut identity is invalid"
 [[ $(grep -Fxc '  readp "请输入 Cloudflare API Token：" cf_token || return 1' \
@@ -154,6 +170,31 @@ awk '/<<'\''ACMERELOAD'\''/{inside=1; next} /^ACMERELOAD$/{inside=0} inside' \
   "$ROOT_DIR/sb.sh" > "$hook_candidate"
 [[ -s $hook_candidate ]] || fail "ACME reload hook extraction failed"
 bash -n "$hook_candidate"
+awk '
+  $0 == "if [[ ! -s $config ]]; then" {
+    getline initial_guard
+    getline normal_rejection
+    getline block_end
+    valid = initial_guard == "  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0" &&
+      normal_rejection == "  exit 1" && block_end == "fi"
+    exit
+  }
+  END { exit !valid }
+' "$hook_candidate" || fail "ACME reload hook does not limit the missing-config bypass to initial install"
+
+issue_function=$(awk '/^issue_cloudflare_certificate\(\)\{/{inside=1} /^inscertificate\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+[[ -n $issue_function ]] || fail "cannot extract ACME issue function"
+# The dollar-prefixed names below are literal generated-script text.
+# shellcheck disable=SC2016
+[[ $(printf '%s\n' "$issue_function" | grep -Fc -- 'SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN"' || true) -eq 1 ]] ||
+  fail "initial ACME install is not explicitly marked"
+# shellcheck disable=SC2016
+[[ $(printf '%s\n' "$issue_function" | grep -Fc -- 'SB_INITIAL_INSTALL=0 HOME="$SB_DIR" "$ACME_BIN"' || true) -eq 1 ]] ||
+  fail "non-initial ACME install does not clear the initial-install marker"
+inscertificate_function=$(awk '/^inscertificate\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
+[[ $(printf '%s\n' "$inscertificate_function" | grep -Fc -- 'issue_cloudflare_certificate 1' || true) -eq 2 ]] ||
+  fail "only initial installation may mark ACME install hooks as initial"
 
 if command -v shellcheck >/dev/null 2>&1; then
   shellcheck --shell=bash --severity=info "$ROOT_DIR/sb.sh"

@@ -173,7 +173,10 @@ config="/etc/sb/sb.json"
 identity_file="/etc/sb/acme_server_name"
 systemd_unit="/etc/systemd/system/sb.service"
 openrc_unit="/etc/init.d/sb"
-[[ -s $config ]] || exit 1
+if [[ ! -s $config ]]; then
+  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0
+  exit 1
+fi
 command -v jq >/dev/null 2>&1 || exit 1
 current_cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$config" 2>/dev/null) || exit 1
 current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$config" 2>/dev/null) || exit 1
@@ -267,7 +270,17 @@ ACMERELOAD
 acme_reload_hook_is_current(){
   [[ -f $ACME_RELOAD && ! -L $ACME_RELOAD && -x $ACME_RELOAD ]] &&
     [[ $(grep -Fxc "$ACME_RELOAD_IDENTITY" "$ACME_RELOAD" 2>/dev/null || true) -eq 1 ]] &&
-    grep -Fqx "[[ -s \$config ]] || exit 1" "$ACME_RELOAD" 2>/dev/null &&
+    awk '
+      $0 == "if [[ ! -s $config ]]; then" {
+        getline initial_guard
+        getline normal_rejection
+        getline block_end
+        valid = initial_guard == "  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0" &&
+          normal_rejection == "  exit 1" && block_end == "fi"
+        exit
+      }
+      END { exit !valid }
+    ' "$ACME_RELOAD" &&
     grep -Fqx 'command -v jq >/dev/null 2>&1 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx "[[ -n \"\$cert_public\" && \"\$cert_public\" == \"\$key_public\" ]] || exit 1" "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx '  systemctl restart sb >/dev/null 2>&1 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
@@ -328,8 +341,9 @@ reset_acme_state(){
 }
 
 issue_cloudflare_certificate(){
-  local domain_input account_id cf_token identity_tmp
+  local domain_input account_id cf_token identity_tmp initial_install=${1:-0}
   local -a issue_args
+  [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
   while true; do
     readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 1
     if normalize_acme_domain "$domain_input"; then
@@ -381,7 +395,15 @@ issue_cloudflare_certificate(){
     return 1
   fi
   cf_token=
-  if ! HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
+  if [[ $initial_install == 1 ]]; then
+    if ! SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
+        --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
+        --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
+      discard_acme_state
+      red "证书签发成功，但安装到 $SB_DIR 失败"
+      return 1
+    fi
+  elif ! SB_INITIAL_INSTALL=0 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
       --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
       --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
     discard_acme_state
@@ -464,7 +486,7 @@ SELFSIGN
           fi
           ;;
         3)
-          if issue_cloudflare_certificate; then break; fi
+          if issue_cloudflare_certificate 1; then break; fi
           yellow "继续使用自签证书"
           cert_self_signed
           break
@@ -481,7 +503,7 @@ SELFSIGN
       case "$menu" in
         ""|1) cert_self_signed; break ;;
         2)
-          if issue_cloudflare_certificate; then break; fi
+          if issue_cloudflare_certificate 1; then break; fi
           yellow "证书申请失败，继续使用自签证书"
           cert_self_signed
           break

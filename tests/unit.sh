@@ -242,6 +242,28 @@ MOCK_CONFIG_USES_ACME=1
 expect_success "generated ACME hook is current" acme_reload_hook_is_current
 expect_success "generated ACME hook passes bash -n" bash -n "$ACME_RELOAD"
 cp "$ACME_RELOAD" "$TEMP_DIR/good-acme-reload.sh"
+hook_fixture="$TEMP_DIR/acme-reload-fixture.sh"
+sed "s|/etc/sb|$SB_DIR|g" "$ACME_RELOAD" > "$hook_fixture"
+chmod 700 "$hook_fixture"
+rm -f "$SB_CONFIG"
+run_initial_install_acme_hook(){
+  SB_INITIAL_INSTALL=1 "$hook_fixture"
+}
+run_renewal_acme_hook_without_config(){
+  unset SB_INITIAL_INSTALL
+  "$hook_fixture"
+}
+expect_success "initial ACME install hook permits missing config" run_initial_install_acme_hook
+expect_failure "renewal ACME hook rejects missing config" run_renewal_acme_hook_without_config
+awk '
+  $0 == "if [[ ! -s $config ]]; then" { in_config_guard=1; print; next }
+  in_config_guard && $0 == "  exit 1" { in_config_guard=0; next }
+  { print }
+' "$TEMP_DIR/good-acme-reload.sh" > "$ACME_RELOAD"
+chmod 700 "$ACME_RELOAD"
+expect_failure "ACME hook without normal rejection is stale" acme_reload_hook_is_current
+cp "$TEMP_DIR/good-acme-reload.sh" "$ACME_RELOAD"
+chmod 700 "$ACME_RELOAD"
 grep -Fv '  systemctl restart sb >/dev/null 2>&1 || exit 1' \
   "$TEMP_DIR/good-acme-reload.sh" > "$ACME_RELOAD"
 chmod 700 "$ACME_RELOAD"
@@ -505,5 +527,63 @@ expect_success "credential menu dispatches both credential flows" change_credent
 pass "credential menu dispatches both flows exactly once"
 [[ $FLOW_MESSAGES == *'请输入0、1或2'* ]] || fail "credential menu invalid choice was not shown"
 pass "credential menu reports invalid choices"
+
+LIFECYCLE_ROOT="$TEMP_DIR/lifecycle"
+export SB_DIR="$LIFECYCLE_ROOT/sb"
+export SHORTCUT="$LIFECYCLE_ROOT/bin/sb"
+MOCK_SERVICE_CONFLICT=0
+MOCK_SERVICE_CLEANUP=0
+MOCK_CRON_CLEANUP=0
+MOCK_SHORTCUT_OWNED=0
+MOCK_RUNNING_SHORTCUT=0
+service_name_conflict(){ [[ $MOCK_SERVICE_CONFLICT -eq 1 ]]; }
+cleanup_service(){ return "$MOCK_SERVICE_CLEANUP"; }
+remove_all_managed_crons(){ return "$MOCK_CRON_CLEANUP"; }
+managed_directory_is_owned(){
+  [[ -d $SB_DIR && -f $SB_DIR/.sb-managed ]]
+}
+shortcut_is_owned(){ [[ $MOCK_SHORTCUT_OWNED -eq 1 && -f $SHORTCUT ]]; }
+running_from_managed_shortcut(){ [[ $MOCK_RUNNING_SHORTCUT -eq 1 ]]; }
+
+mkdir -p "$SB_DIR"
+printf '%s\n' keep > "$SB_DIR/data"
+INSTALL_TRANSACTION_ACTIVE=0
+expect_success "inactive install transaction cleanup is a no-op" cleanup_install_transaction
+[[ -f $SB_DIR/data ]] || fail "inactive transaction deleted installation data"
+pass "inactive install transaction preserves data"
+
+printf '%s\n' managed > "$SB_DIR/.sb-managed"
+mkdir -p "${SHORTCUT%/*}"
+printf '%s\n' shortcut > "$SHORTCUT"
+MOCK_SHORTCUT_OWNED=1
+INSTALL_TRANSACTION_ACTIVE=1
+expect_success "active install transaction cleanup succeeds" cleanup_install_transaction
+[[ ! -e $SB_DIR && ! -e $SHORTCUT ]] || fail "active transaction left managed artifacts"
+pass "active install transaction removes managed artifacts"
+[[ $INSTALL_TRANSACTION_ACTIVE -eq 0 ]] || fail "active transaction flag was not cleared"
+pass "active install transaction clears its flag"
+
+mkdir -p "$SB_DIR"
+printf '%s\n' foreign > "$SB_DIR/data"
+MOCK_SHORTCUT_OWNED=0
+INSTALL_TRANSACTION_ACTIVE=1
+expect_failure "transaction cleanup rejects an unowned directory" cleanup_install_transaction
+[[ -f $SB_DIR/data ]] || fail "unowned directory was deleted"
+pass "transaction cleanup preserves an unowned directory"
+
+printf '%s\n' managed > "$SB_DIR/.sb-managed"
+MOCK_SERVICE_CLEANUP=1
+expect_failure "incomplete cleanup preserves data when service cleanup fails" cleanup_incomplete_install
+[[ -f $SB_DIR/data ]] || fail "data was deleted after service cleanup failure"
+pass "service cleanup failure preserves installation data"
+
+MOCK_SERVICE_CLEANUP=0
+MOCK_RUNNING_SHORTCUT=1
+MOCK_SHORTCUT_OWNED=1
+mkdir -p "${SHORTCUT%/*}"
+printf '%s\n' shortcut > "$SHORTCUT"
+expect_success "incomplete cleanup preserves the running managed shortcut" cleanup_incomplete_install
+[[ ! -e $SB_DIR && -f $SHORTCUT ]] || fail "running managed shortcut was not preserved"
+pass "running managed shortcut remains available for reinstall"
 
 printf '1..%d\n' "$passed"

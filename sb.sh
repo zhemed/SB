@@ -29,6 +29,7 @@ ACME_RELOAD="$SB_DIR/acme_reload.sh"
 ACME_RELOAD_IDENTITY="# sb-acme-reload-v1"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
+INSTALL_TRANSACTION_ACTIVE=0
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -72,7 +73,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v1.6.0"
+sb_version="v1.7.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -380,7 +381,10 @@ config="/etc/sb/sb.json"
 identity_file="/etc/sb/acme_server_name"
 systemd_unit="/etc/systemd/system/sb.service"
 openrc_unit="/etc/init.d/sb"
-[[ -s $config ]] || exit 1
+if [[ ! -s $config ]]; then
+  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0
+  exit 1
+fi
 command -v jq >/dev/null 2>&1 || exit 1
 current_cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$config" 2>/dev/null) || exit 1
 current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$config" 2>/dev/null) || exit 1
@@ -474,7 +478,17 @@ ACMERELOAD
 acme_reload_hook_is_current(){
   [[ -f $ACME_RELOAD && ! -L $ACME_RELOAD && -x $ACME_RELOAD ]] &&
     [[ $(grep -Fxc "$ACME_RELOAD_IDENTITY" "$ACME_RELOAD" 2>/dev/null || true) -eq 1 ]] &&
-    grep -Fqx "[[ -s \$config ]] || exit 1" "$ACME_RELOAD" 2>/dev/null &&
+    awk '
+      $0 == "if [[ ! -s $config ]]; then" {
+        getline initial_guard
+        getline normal_rejection
+        getline block_end
+        valid = initial_guard == "  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0" &&
+          normal_rejection == "  exit 1" && block_end == "fi"
+        exit
+      }
+      END { exit !valid }
+    ' "$ACME_RELOAD" &&
     grep -Fqx 'command -v jq >/dev/null 2>&1 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx "[[ -n \"\$cert_public\" && \"\$cert_public\" == \"\$key_public\" ]] || exit 1" "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx '  systemctl restart sb >/dev/null 2>&1 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
@@ -535,8 +549,9 @@ reset_acme_state(){
 }
 
 issue_cloudflare_certificate(){
-  local domain_input account_id cf_token identity_tmp
+  local domain_input account_id cf_token identity_tmp initial_install=${1:-0}
   local -a issue_args
+  [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
   while true; do
     readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 1
     if normalize_acme_domain "$domain_input"; then
@@ -588,7 +603,15 @@ issue_cloudflare_certificate(){
     return 1
   fi
   cf_token=
-  if ! HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
+  if [[ $initial_install == 1 ]]; then
+    if ! SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
+        --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
+        --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
+      discard_acme_state
+      red "证书签发成功，但安装到 $SB_DIR 失败"
+      return 1
+    fi
+  elif ! SB_INITIAL_INSTALL=0 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
       --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
       --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
     discard_acme_state
@@ -671,7 +694,7 @@ SELFSIGN
           fi
           ;;
         3)
-          if issue_cloudflare_certificate; then break; fi
+          if issue_cloudflare_certificate 1; then break; fi
           yellow "继续使用自签证书"
           cert_self_signed
           break
@@ -688,7 +711,7 @@ SELFSIGN
       case "$menu" in
         ""|1) cert_self_signed; break ;;
         2)
-          if issue_cloudflare_certificate; then break; fi
+          if issue_cloudflare_certificate 1; then break; fi
           yellow "证书申请失败，继续使用自签证书"
           cert_self_signed
           break
@@ -2456,7 +2479,7 @@ change_ports(){
 # Credential management
 refresh_share_files_after_change(){
   if ! sbshare >/dev/null 2>&1; then
-    yellow "服务端修改成功，但节点文件刷新失败，请稍后通过菜单[2]重试"
+    yellow "服务端修改成功，但节点文件刷新失败，请稍后通过菜单[3]重试"
     return 1
   fi
 }
@@ -2610,6 +2633,75 @@ change_credentials(){
   done
 }
 # sb-module: 80-lifecycle
+# Remove an incomplete installation only after its directory ownership has
+# been proved. Service and cron cleanup must succeed before data is deleted.
+running_from_managed_shortcut(){
+  local source_path shortcut_path
+  shortcut_is_owned || return 1
+  [[ -f $0 && ! -L $0 ]] || return 1
+  source_path=$(readlink -f "$0" 2>/dev/null) || return 1
+  shortcut_path=$(readlink -f "$SHORTCUT" 2>/dev/null) || return 1
+  [[ $source_path == "$shortcut_path" ]]
+}
+
+cleanup_incomplete_install(){
+  local cleanup_failed=0
+
+  if service_name_conflict; then
+    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝清理安装残留"
+    return 1
+  fi
+  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
+    red "无法确认 $SB_DIR 属于本脚本，已保留该目录"
+    return 1
+  fi
+
+  if ! cleanup_service; then
+    red "停止或移除 sb 服务失败，已保留安装残留以避免误删"
+    return 1
+  fi
+  if command -v crontab >/dev/null 2>&1 && ! remove_all_managed_crons; then
+    red "清理 sb 定时任务失败，已保留安装残留以避免误删"
+    return 1
+  fi
+
+  if managed_directory_is_owned; then
+    if ! rm -rf -- "$SB_DIR"; then
+      red "删除 $SB_DIR 失败，请检查文件系统权限"
+      cleanup_failed=1
+    fi
+  fi
+
+  if shortcut_is_owned; then
+    if running_from_managed_shortcut; then
+      yellow "当前正通过 $SHORTCUT 运行，已保留该快捷命令用于继续修复"
+    elif ! rm -f -- "$SHORTCUT"; then
+      red "删除快捷方式 $SHORTCUT 失败"
+      cleanup_failed=1
+    fi
+  elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
+    yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
+  fi
+
+  return "$cleanup_failed"
+}
+
+cleanup_install_transaction(){
+  [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 0
+  INSTALL_TRANSACTION_ACTIVE=0
+  cleanup_incomplete_install
+}
+
+abort_install_transaction(){
+  red "安装未完成，正在清理本次安装产生的文件和服务……"
+  if cleanup_install_transaction; then
+    green "本次安装残留已清理"
+  else
+    red "自动清理未完整完成，请检查上方错误后再使用菜单[2]修复"
+  fi
+  return 1
+}
+
 # Uninstall
 uninstall(){
   local menu
@@ -2631,7 +2723,7 @@ uninstall(){
       return 1
     fi
     if ! remove_all_managed_crons; then
-      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[1]修复"
+      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
       return 1
     fi
     if ! rm -rf "$SB_DIR"; then
@@ -2835,7 +2927,7 @@ install_singbox(){
   fi
   if managed_install_data_present; then
     red "检测到现有或残缺的sb配置数据，拒绝无备份覆盖"
-    yellow "请使用菜单[1]尝试修复；无法修复时请先备份 $SB_DIR，再选择卸载后重装"
+    yellow "请使用菜单[2]修复；残缺安装可在确认后清理并重新安装"
     return 1
   fi
   if [[ -f /etc/systemd/system/sing-box.service || -f /etc/init.d/sing-box || -d /etc/s-box ]]; then
@@ -2847,41 +2939,49 @@ install_singbox(){
     red "清理残留的sb服务失败，请先手动检查"
     return 1
   fi
-  prepare_managed_directory || return 1
+  INSTALL_TRANSACTION_ACTIVE=1
+  prepare_managed_directory || { abort_install_transaction; return 1; }
   if [[ ! -f $SB_DIR/.deps_ok ]] || ! dependencies_ready; then
-    install_dependencies || return 1
+    install_dependencies || { abort_install_transaction; return 1; }
   fi
   v6only
-  inssb || return 1
-  inscertificate || return 1
-  insport || return 1
+  inssb || { abort_install_transaction; return 1; }
+  inscertificate || { abort_install_transaction; return 1; }
+  insport || { abort_install_transaction; return 1; }
   sleep 2
   echo
   blue "Vless-reality相关key与id将自动生成……"
   key_pair=$("$SB_BIN" generate reality-keypair 2>/dev/null)
   if [[ -z "$key_pair" ]]; then
     red "生成reality密钥失败，请检查sing-box内核是否正常"
+    abort_install_transaction
     return 1
   fi
   private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
   public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
   if [[ -z $private_key || -z $public_key ]]; then
     red "解析Reality密钥失败"
+    abort_install_transaction
     return 1
   fi
-  printf '%s\n' "$public_key" > "$SB_DIR/public.key"
-  chmod 600 "$SB_DIR/public.key"
+  if ! printf '%s\n' "$public_key" > "$SB_DIR/public.key" ||
+     ! chmod 600 "$SB_DIR/public.key"; then
+    red "保存Reality公钥失败"
+    abort_install_transaction
+    return 1
+  fi
   short_id=$("$SB_BIN" generate rand --hex 4 2>/dev/null)
   if [[ ! $short_id =~ ^[0-9A-Fa-f]{8}$ ]]; then
     red "生成Reality short_id失败"
+    abort_install_transaction
     return 1
   fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "五、生成配置文件和启动服务"
-  inssbjson || return 1
-  sbservice || return 1
+  inssbjson || { abort_install_transaction; return 1; }
+  sbservice || { abort_install_transaction; return 1; }
   if ! sbactive; then
-    cleanup_service
+    abort_install_transaction
     return 1
   fi
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
@@ -2903,18 +3003,19 @@ install_singbox(){
   cronsb || yellow "每日自动重启定时任务设置失败，请手动检查crontab"
   echo
   if ipuuid; then
-    sbshare || yellow "节点文件生成失败，请通过菜单[2]重试"
+    sbshare || yellow "节点文件生成失败，请通过菜单[3]重试"
   else
     yellow "公网IP检测失败，服务已启动，但暂未生成分享链接"
   fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  blue "可选择菜单 [2] 刷新并显示所有协议配置及分享链接"
+  blue "可选择菜单 [3] 刷新并显示所有协议配置及分享链接"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   echo
+  INSTALL_TRANSACTION_ACTIVE=0
 }
 
 repair_singbox(){
-  local shortcut_ready=0
+  local shortcut_ready=0 repair_choice reinstall_status
   if ! managed_directory_is_owned || ! managed_install_data_present; then
     red "未检测到可修复的sb安装数据"
     readp "按回车返回主菜单..."
@@ -2926,13 +3027,28 @@ repair_singbox(){
     return 1
   fi
   if ! installed_config_is_valid; then
-    red "现有内核或配置未通过 Sing-box v${CORE_VERSION} 检查，拒绝覆盖原数据"
+    red "现有内核或配置未通过 Sing-box v${CORE_VERSION} 检查，无法直接修复"
     if [[ -x $SB_BIN && -s $SB_CONFIG ]]; then
       "$SB_BIN" check -c "$SB_CONFIG" || true
     fi
-    yellow "请先备份 $SB_DIR；确认不再需要旧数据后可卸载并重新安装"
+    yellow "缺失或损坏的配置无法安全还原；继续会删除本脚本管理的 $SB_DIR 并重新安装"
+    yellow "请先备份需要保留的数据"
+    yellow "1：清理残缺安装并重新安装"
+    yellow "0：取消"
+    readp "请选择【0-1】：" repair_choice || return 1
+    if [[ $repair_choice != 1 ]]; then
+      return 1
+    fi
+    if ! cleanup_incomplete_install; then
+      red "残缺安装清理失败，修复已中止"
+      readp "按回车返回主菜单..."
+      return 1
+    fi
+    green "残缺安装已清理，现在重新进入安装流程"
+    install_singbox
+    reinstall_status=$?
     readp "按回车返回主菜单..."
-    return 1
+    return "$reinstall_status"
   fi
   if service_exists; then
     if ! restartsb >/dev/null 2>&1 || ! service_is_active; then
@@ -2988,34 +3104,35 @@ menu(){
     [[ -n $v4 ]] && echo -e "  IPV4: ${blue}${v4}${plain}${v4dq:+ (${v4dq})}"
     [[ -n $v6 ]] && echo -e "  IPV6: ${blue}${v6}${plain}${v6dq:+ (${v6dq})}"
     red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-    green " 1. 安装/修复"
-    green " 2. 查看节点配置"
-    green " 3. 证书管理"
-    green " 4. 更改SNI域名"
-    green " 5. 更改端口"
-    green " 6. 更改协议凭据"
-    green " 7. 切换IP优先级"
-    green " 8. 卸载"
+    green " 1. 安装"
+    green " 2. 修复"
+    green " 3. 查看节点配置"
+    green " 4. 证书管理"
+    green " 5. 更改SNI域名"
+    green " 6. 更改端口"
+    green " 7. 更改协议凭据"
+    green " 8. 切换IP优先级"
+    green " 9. 卸载"
     green " 0. 退出脚本"
     echo
-    readp "请输入数字 [0-8]: " Input || exit 0
+    readp "请输入数字 [0-9]: " Input || exit 0
     case "$Input" in
       1)
         if is_installed; then
-          if service_is_active; then
-            red "sb已安装且服务正在运行"
-            readp "按回车返回主菜单..."
-          else
-            repair_singbox
-          fi
+          red "sb已安装，请使用菜单[2]检查或修复服务"
+          readp "按回车返回主菜单..."
         elif managed_install_data_present; then
-          repair_singbox
+          red "检测到残缺安装，请使用菜单[2]修复"
+          readp "按回车返回主菜单..."
         else
           install_singbox
           readp "按回车返回主菜单..."
         fi
         ;;
       2)
+        repair_singbox
+        ;;
+      3)
         if is_installed; then
           sbshare || red "节点配置生成失败，请检查上方错误"
           readp "按回车返回主菜单..."
@@ -3024,21 +3141,21 @@ menu(){
           sleep 1
         fi
         ;;
-      3|4|5|6|7)
+      4|5|6|7|8)
         if ! is_installed; then
           red "请先安装或修复 Sing-box"
           sleep 1
         else
           case "$Input" in
-            3) change_cert_mode ;;
-            4) change_vl_sni ;;
-            5) change_ports ;;
-            6) change_credentials ;;
-            7) switch_ip_priority ;;
+            4) change_cert_mode ;;
+            5) change_vl_sni ;;
+            6) change_ports ;;
+            7) change_credentials ;;
+            8) switch_ip_priority ;;
           esac
         fi
         ;;
-      8)
+      9)
         if is_installed || service_exists || managed_directory_is_owned || [[ -x $SB_BIN || -s $SB_CONFIG ]]; then
           uninstall
         else
@@ -3055,6 +3172,15 @@ menu(){
 # Make/update shortcut
 # sb-entrypoint
 prepare_runtime_state || exit 1
+
+handle_install_interrupt(){
+  echo
+  if [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+    abort_install_transaction || true
+  fi
+  exit 130
+}
+trap handle_install_interrupt INT TERM HUP
 
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true

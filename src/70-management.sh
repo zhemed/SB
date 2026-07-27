@@ -378,7 +378,7 @@ change_ports(){
 # Credential management
 refresh_share_files_after_change(){
   if ! sbshare >/dev/null 2>&1; then
-    yellow "服务端修改成功，但节点文件刷新失败，请稍后通过菜单[2]重试"
+    yellow "服务端修改成功，但节点文件刷新失败，请稍后通过菜单[3]重试"
     return 1
   fi
 }

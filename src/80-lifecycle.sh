@@ -1,4 +1,73 @@
 # sb-module: 80-lifecycle
+# Remove an incomplete installation only after its directory ownership has
+# been proved. Service and cron cleanup must succeed before data is deleted.
+running_from_managed_shortcut(){
+  local source_path shortcut_path
+  shortcut_is_owned || return 1
+  [[ -f $0 && ! -L $0 ]] || return 1
+  source_path=$(readlink -f "$0" 2>/dev/null) || return 1
+  shortcut_path=$(readlink -f "$SHORTCUT" 2>/dev/null) || return 1
+  [[ $source_path == "$shortcut_path" ]]
+}
+
+cleanup_incomplete_install(){
+  local cleanup_failed=0
+
+  if service_name_conflict; then
+    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝清理安装残留"
+    return 1
+  fi
+  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
+    red "无法确认 $SB_DIR 属于本脚本，已保留该目录"
+    return 1
+  fi
+
+  if ! cleanup_service; then
+    red "停止或移除 sb 服务失败，已保留安装残留以避免误删"
+    return 1
+  fi
+  if command -v crontab >/dev/null 2>&1 && ! remove_all_managed_crons; then
+    red "清理 sb 定时任务失败，已保留安装残留以避免误删"
+    return 1
+  fi
+
+  if managed_directory_is_owned; then
+    if ! rm -rf -- "$SB_DIR"; then
+      red "删除 $SB_DIR 失败，请检查文件系统权限"
+      cleanup_failed=1
+    fi
+  fi
+
+  if shortcut_is_owned; then
+    if running_from_managed_shortcut; then
+      yellow "当前正通过 $SHORTCUT 运行，已保留该快捷命令用于继续修复"
+    elif ! rm -f -- "$SHORTCUT"; then
+      red "删除快捷方式 $SHORTCUT 失败"
+      cleanup_failed=1
+    fi
+  elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
+    yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
+  fi
+
+  return "$cleanup_failed"
+}
+
+cleanup_install_transaction(){
+  [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 0
+  INSTALL_TRANSACTION_ACTIVE=0
+  cleanup_incomplete_install
+}
+
+abort_install_transaction(){
+  red "安装未完成，正在清理本次安装产生的文件和服务……"
+  if cleanup_install_transaction; then
+    green "本次安装残留已清理"
+  else
+    red "自动清理未完整完成，请检查上方错误后再使用菜单[2]修复"
+  fi
+  return 1
+}
+
 # Uninstall
 uninstall(){
   local menu
@@ -20,7 +89,7 @@ uninstall(){
       return 1
     fi
     if ! remove_all_managed_crons; then
-      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[1]修复"
+      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
       return 1
     fi
     if ! rm -rf "$SB_DIR"; then
