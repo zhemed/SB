@@ -1,17 +1,18 @@
 # sb-module: 50-client-output
 # IP detection for share links
 save_server_ip(){
-  local ip=$1
+  local ip=$1 server_value client_value
   if valid_ipv4 "$ip"; then
-    printf '%s\n' "$ip" > "$SB_DIR/server_ip.log"
-    printf '%s\n' "$ip" > "$SB_DIR/server_ipcl.log"
+    server_value=$ip
+    client_value=$ip
   elif valid_ipv6 "$ip"; then
-    printf '[%s]\n' "$ip" > "$SB_DIR/server_ip.log"
-    printf '%s\n' "$ip" > "$SB_DIR/server_ipcl.log"
+    server_value="[$ip]"
+    client_value=$ip
   else
     return 1
   fi
-  chmod 600 "$SB_DIR/server_ip.log" "$SB_DIR/server_ipcl.log"
+  atomic_write_private_text "$SB_DIR/server_ip.log" "$server_value" &&
+    atomic_write_private_text "$SB_DIR/server_ipcl.log" "$client_value"
 }
 
 ipuuid(){
@@ -41,7 +42,10 @@ ipuuid(){
 
 refresh_saved_ip(){
   local previous
-  previous=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
+  previous=
+  if managed_regular_file_is_trusted "$SB_DIR/server_ipcl.log"; then
+    previous=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
+  fi
   v4v6_refresh || true
   if valid_ipv6 "$previous" && [[ -n $v6 ]]; then
     save_server_ip "$v6"
@@ -52,7 +56,9 @@ refresh_saved_ip(){
   elif [[ -n $v6 ]]; then
     save_server_ip "$v6"
   else
-    [[ -s $SB_DIR/server_ip.log && -s $SB_DIR/server_ipcl.log ]]
+    [[ -s $SB_DIR/server_ip.log && -s $SB_DIR/server_ipcl.log ]] &&
+      managed_regular_file_is_trusted "$SB_DIR/server_ip.log" &&
+      managed_regular_file_is_trusted "$SB_DIR/server_ipcl.log"
   fi
 }
 
@@ -79,6 +85,7 @@ result(){
   uuid=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid' "$SB_CONFIG" 2>/dev/null) || return 1
   vl_port=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   vl_name=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name' "$SB_CONFIG" 2>/dev/null) || return 1
+  managed_regular_file_is_trusted "$SB_DIR/public.key" || return 1
   public_key=$(cat "$SB_DIR/public.key" 2>/dev/null)
   short_id=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0]' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
@@ -107,8 +114,7 @@ result(){
     hy2_certificate_json=$(jq -Rs . < "$SB_DIR/cert.pem") || return 1
     [[ -n $hy2_certificate_json ]] || return 1
     hy2_clash_ca="  ca-str: |"$'\n'"$(sed 's/^/    /' "$SB_DIR/cert.pem")"
-    printf '%s\n' "$SHA256" > "$SB_DIR/SHA256.txt"
-    chmod 600 "$SB_DIR/SHA256.txt"
+    atomic_write_private_text "$SB_DIR/SHA256.txt" "$SHA256" || return 1
     hy2_name=www.bing.com
     sb_hy2_ip=$server_ip
     cl_hy2_ip=$server_ipcl
@@ -118,8 +124,7 @@ result(){
       red "Acme证书身份无法确认，不能生成Hysteria2节点"
       return 1
     fi
-    printf '%s\n' "$ym" > "$ACME_IDENTITY" || return 1
-    chmod 600 "$ACME_IDENTITY" || return 1
+    write_acme_identity "$ym" || return 1
     hy2_name=$ym
     sb_hy2_ip=$server_ip
     cl_hy2_ip=$server_ipcl
@@ -513,8 +518,8 @@ EOF
     return 1
   fi
   chmod 600 "$sbox_candidate" "$clash_candidate" || { rm -f "$sbox_candidate" "$clash_candidate"; return 1; }
-  mv -f "$sbox_candidate" "$SB_DIR/sbox.json" || { rm -f "$sbox_candidate" "$clash_candidate"; return 1; }
-  mv -f "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
+  mv -fT -- "$sbox_candidate" "$SB_DIR/sbox.json" || { rm -f "$sbox_candidate" "$clash_candidate"; return 1; }
+  mv -fT -- "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
 }
 
 sbshare(){
@@ -542,11 +547,11 @@ sbshare(){
     rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  mv -f "$vl_tmp" "$SB_DIR/vl_reality.txt" || { rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -f "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -f "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -f "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
-  cp -p "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1
+  mv -fT -- "$vl_tmp" "$SB_DIR/vl_reality.txt" || { rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
+  atomic_copy_private_file "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1
   v2sub=$(cat "$SB_DIR/jhdy.txt" 2>/dev/null) || return 1
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"

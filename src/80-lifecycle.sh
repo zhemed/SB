@@ -10,17 +10,41 @@ running_from_managed_shortcut(){
   [[ $source_path == "$shortcut_path" ]]
 }
 
-cleanup_incomplete_install(){
-  local cleanup_failed=0
+lifecycle_acme_state_exists(){
+  local lock compat_lock path
+  lock=$(acme_lock_path) || return 0
+  compat_lock=$(acme_compat_lock_path) || return 0
+  for path in "$lock" "$compat_lock" "${ACME_HOME:-$SB_DIR/acme}" \
+    "${ACME_CERT:-$SB_DIR/acme-cert.pem}" "${ACME_KEY:-$SB_DIR/acme-private.key}" \
+    "${ACME_IDENTITY:-$SB_DIR/acme_server_name}" "${ACME_RELOAD:-$SB_DIR/acme_reload.sh}" \
+    "${ACME_LIVE:-$SB_DIR/acme-live}"; do
+    [[ ! -e $path && ! -L $path ]] || return 0
+  done
+  acme_renew_artifacts_exist
+}
 
-  if service_name_conflict; then
-    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝清理安装残留"
+with_lifecycle_acme_lock(){
+  if [[ ${ACME_LOCK_HELD:-0} -eq 1 ]]; then
+    with_acme_lock "$@"
+    return
+  fi
+  if [[ ! -e $SB_DIR && ! -L $SB_DIR ]]; then
+    "$@"
+    return
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    with_acme_lock "$@"
+    return
+  fi
+  if lifecycle_acme_state_exists; then
+    red "检测到 ACME 续期状态，但系统缺少 flock，拒绝在无法防止并发续期时清理"
     return 1
   fi
-  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
-    red "无法确认 $SB_DIR 属于本脚本，已保留该目录"
-    return 1
-  fi
+  "$@"
+}
+
+cleanup_incomplete_install_locked(){
+  local cleanup_failed=0
 
   if ! cleanup_service; then
     red "停止或移除 sb 服务失败，已保留安装残留以避免误删"
@@ -52,6 +76,18 @@ cleanup_incomplete_install(){
   return "$cleanup_failed"
 }
 
+cleanup_incomplete_install(){
+  if service_name_conflict; then
+    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝清理安装残留"
+    return 1
+  fi
+  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
+    red "无法确认 $SB_DIR 属于本脚本，已保留该目录"
+    return 1
+  fi
+  with_lifecycle_acme_lock cleanup_incomplete_install_locked
+}
+
 cleanup_install_transaction(){
   [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 0
   INSTALL_TRANSACTION_ACTIVE=0
@@ -66,6 +102,29 @@ abort_install_transaction(){
     red "自动清理未完整完成，请检查上方错误后再使用菜单[2]修复"
   fi
   return 1
+}
+
+uninstall_locked(){
+  if ! cleanup_service; then
+    red "停止或移除sb服务失败，卸载已中止；配置与定时任务均保留"
+    return 1
+  fi
+  if ! remove_all_managed_crons; then
+    red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
+    return 1
+  fi
+  if ! rm -rf "$SB_DIR"; then
+    red "删除sb文件失败，请检查文件系统权限"
+    return 1
+  fi
+  if shortcut_is_owned; then
+    if ! rm -f "$SHORTCUT"; then
+      red "删除快捷方式 $SHORTCUT 失败，请检查文件系统权限"
+      return 1
+    fi
+  elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
+    yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
+  fi
 }
 
 # Uninstall
@@ -84,26 +143,7 @@ uninstall(){
   yellow "0：取消"
   readp "请选择【0-1】：" menu
   if [[ $menu == 1 ]]; then
-    if ! cleanup_service; then
-      red "停止或移除sb服务失败，卸载已中止；配置与定时任务均保留"
-      return 1
-    fi
-    if ! remove_all_managed_crons; then
-      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
-      return 1
-    fi
-    if ! rm -rf "$SB_DIR"; then
-      red "删除sb文件失败，请检查文件系统权限"
-      return 1
-    fi
-    if shortcut_is_owned; then
-      if ! rm -f "$SHORTCUT"; then
-        red "删除快捷方式 $SHORTCUT 失败，请检查文件系统权限"
-        return 1
-      fi
-    elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
-      yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
-    fi
+    with_lifecycle_acme_lock uninstall_locked || return 1
     green "sb卸载完成！"
     echo
     exit 0
@@ -170,7 +210,8 @@ atomic_install_shortcut(){
   local source=$1 mode=$2 shortcut_tmp
   [[ -f $source && ! -L $source && $mode =~ ^[0-7]{3,4}$ ]] || return 1
   shortcut_tmp=$(mktemp "${SHORTCUT}.tmp.XXXXXX") || return 1
-  if ! install -m "$mode" "$source" "$shortcut_tmp" || ! mv -f "$shortcut_tmp" "$SHORTCUT"; then
+  if ! install -m "$mode" "$source" "$shortcut_tmp" ||
+     ! mv -fT -- "$shortcut_tmp" "$SHORTCUT"; then
     rm -f "$shortcut_tmp"
     return 1
   fi
@@ -207,11 +248,18 @@ update_shortcut(){
 }
 
 prepare_runtime_state(){
-  if formal_service_present && ! service_is_owned; then
+  if formal_service_present && ! service_is_owned && ! service_definition_is_repairable; then
     red "检测到不属于本脚本的 $SB_SERVICE 服务，拒绝继续"
     return 1
   fi
-  prepare_managed_directory
+  prepare_managed_directory || return 1
+  if acme_state_backup_candidates_exist; then
+    if ! command -v flock >/dev/null 2>&1; then
+      red "检测到 ACME 恢复点，但系统缺少 flock，无法安全恢复或清理"
+      return 1
+    fi
+    with_acme_lock resolve_orphaned_acme_state_backup || return 1
+  fi
 }
 
 cron_daemon_is_active(){
@@ -242,9 +290,10 @@ enable_cron_daemon(){
   cron_daemon_is_active
 }
 
-dependencies_ready(){
+core_dependencies_ready(){
   local cmd
-  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum flock; do
+  for cmd in awk base64 bash cmp cp curl cut date flock grep install ip jq mktemp mv \
+    openssl rm sed sha256sum shuf ss stat tail tar tr; do
     command -v "$cmd" >/dev/null 2>&1 || return 1
   done
   if command -v apk >/dev/null 2>&1; then
@@ -252,6 +301,14 @@ dependencies_ready(){
   else
     command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] || return 1
   fi
+}
+
+dependencies_ready(){
+  local cmd
+  core_dependencies_ready || return 1
+  for cmd in crontab flock qrencode; do
+    command -v "$cmd" >/dev/null 2>&1 || return 1
+  done
   cron_daemon_is_active
 }
 
@@ -277,5 +334,5 @@ install_dependencies(){
     red "依赖安装不完整，请检查上方包管理器错误"
     return 1
   fi
-  touch "$SB_DIR/.deps_ok"
+  atomic_write_private_text "$SB_DIR/.deps_ok" ready
 }

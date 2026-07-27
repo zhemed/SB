@@ -49,8 +49,7 @@ install_singbox(){
     abort_install_transaction
     return 1
   fi
-  if ! printf '%s\n' "$public_key" > "$SB_DIR/public.key" ||
-     ! chmod 600 "$SB_DIR/public.key"; then
+  if ! atomic_write_private_text "$SB_DIR/public.key" "$public_key"; then
     red "保存Reality公钥失败"
     abort_install_transaction
     return 1
@@ -69,6 +68,7 @@ install_singbox(){
     abort_install_transaction
     return 1
   fi
+  save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_vl_re}/tcp、${port_socks5}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
@@ -97,73 +97,6 @@ install_singbox(){
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   echo
   INSTALL_TRANSACTION_ACTIVE=0
-}
-
-repair_singbox(){
-  local shortcut_ready=0 repair_choice reinstall_status
-  if ! managed_directory_is_owned || ! managed_install_data_present; then
-    red "未检测到可修复的sb安装数据"
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  if service_name_conflict; then
-    red "检测到不属于sb.sh的同名服务，拒绝修复"
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  if ! installed_config_is_valid; then
-    red "现有内核或配置未通过 Sing-box v${CORE_VERSION} 检查，无法直接修复"
-    if [[ -x $SB_BIN && -s $SB_CONFIG ]]; then
-      "$SB_BIN" check -c "$SB_CONFIG" || true
-    fi
-    yellow "缺失或损坏的配置无法安全还原；继续会删除本脚本管理的 $SB_DIR 并重新安装"
-    yellow "请先备份需要保留的数据"
-    yellow "1：清理残缺安装并重新安装"
-    yellow "0：取消"
-    readp "请选择【0-1】：" repair_choice || return 1
-    if [[ $repair_choice != 1 ]]; then
-      return 1
-    fi
-    if ! cleanup_incomplete_install; then
-      red "残缺安装清理失败，修复已中止"
-      readp "按回车返回主菜单..."
-      return 1
-    fi
-    green "残缺安装已清理，现在重新进入安装流程"
-    install_singbox
-    reinstall_status=$?
-    readp "按回车返回主菜单..."
-    return "$reinstall_status"
-  fi
-  if service_exists; then
-    if ! restartsb >/dev/null 2>&1 || ! service_is_active; then
-      cleanup_service || {
-        red "清理损坏的服务定义失败，修复已中止"
-        readp "按回车返回主菜单..."
-        return 1
-      }
-      sbservice || {
-        readp "按回车返回主菜单..."
-        return 1
-      }
-    fi
-  elif ! sbservice; then
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  if update_shortcut; then
-    shortcut_ready=1
-  else
-    yellow "服务已恢复，但快捷方式 $SHORTCUT 更新失败"
-  fi
-  with_acme_lock ensure_acme_renew_cron || yellow "服务已恢复，但ACME续期状态需要手动检查"
-  cronsb || yellow "服务已恢复，但每日重启任务设置失败"
-  if [[ $shortcut_ready -eq 1 ]]; then
-    green "sb服务修复成功，快捷方式: sb"
-  else
-    green "sb服务修复成功"
-  fi
-  readp "按回车返回主菜单..."
 }
 
 # Management menu
@@ -259,9 +192,17 @@ menu(){
 prepare_runtime_state || exit 1
 
 handle_install_interrupt(){
+  if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
+    return 0
+  fi
   trap '' INT TERM HUP
   echo
-  if [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+  if [[ ${REPAIR_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+    yellow "修复已中断，正在恢复修复前可用状态……"
+    if ! abort_repair_transaction; then
+      red "修复状态自动恢复不完整，请立即检查 $SB_DIR 和 $SB_SERVICE 服务"
+    fi
+  elif [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
     clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
   elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
@@ -277,6 +218,7 @@ handle_install_interrupt(){
       red "ACME 状态恢复失败，请立即检查 $SB_DIR"
     fi
   fi
+  cleanup_core_download_temp >/dev/null 2>&1 || true
   exit 130
 }
 trap handle_install_interrupt INT TERM HUP

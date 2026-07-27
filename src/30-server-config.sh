@@ -1,9 +1,9 @@
 # sb-module: 30-server-config
 # Generate server config JSON
-inssbjson(){
-  local candidate
-  candidate=$(mktemp "$SB_DIR/.sb.json.install.XXXXXX") || return 1
-  if ! cat > "$candidate" <<EOF
+render_server_config(){
+  local output=$1
+  [[ -n $output ]] || return 1
+  cat > "$output" <<EOF
 {
   "log": {
     "disabled": false,
@@ -110,7 +110,12 @@ inssbjson(){
   }
 }
 EOF
-  then
+}
+
+inssbjson(){
+  local candidate
+  candidate=$(mktemp "$SB_DIR/.sb.json.install.XXXXXX") || return 1
+  if ! render_server_config "$candidate"; then
     rm -f "$candidate"
     red "写入Sing-box候选配置失败"
     return 1
@@ -122,5 +127,5 @@ EOF
     rm -f "$candidate"
     return 1
   fi
-  mv -f "$candidate" "$SB_CONFIG"
+  mv -fT -- "$candidate" "$SB_CONFIG"
 }

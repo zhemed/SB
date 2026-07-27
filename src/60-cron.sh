@@ -26,29 +26,58 @@ acme_lock_path(){
   printf '%s\n' "${ACME_LOCK:-$SB_DIR/acme.lock}"
 }
 
-acquire_acme_lock(){
-  local lock
-  [[ ${ACME_LOCK_HELD:-0} -eq 1 ]] && return 0
-  lock=$(acme_lock_path)
-  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
-  if [[ -e $lock || -L $lock ]]; then
-    [[ -f $lock && ! -L $lock ]] || return 1
-  fi
-  exec {ACME_LOCK_FD}> "$lock" || return 1
-  if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
-    exec {ACME_LOCK_FD}>&-
-    ACME_LOCK_FD=
-    return 1
-  fi
-  ACME_LOCK_HELD=1
+acme_compat_lock_path(){
+  printf '%s\n' "${ACME_COMPAT_LOCK:-$SB_DIR/acme.lock}"
 }
 
 release_acme_lock(){
-  [[ ${ACME_LOCK_HELD:-0} -eq 1 && ${ACME_LOCK_FD:-} =~ ^[0-9]+$ ]] || return 0
-  flock -u "$ACME_LOCK_FD" || return 1
-  exec {ACME_LOCK_FD}>&-
-  ACME_LOCK_FD=
+  local failed=0
+  if [[ ${ACME_COMPAT_LOCK_FD:-} =~ ^[0-9]+$ ]]; then
+    flock -u "$ACME_COMPAT_LOCK_FD" || failed=1
+    if ! exec {ACME_COMPAT_LOCK_FD}>&-; then
+      failed=1
+    fi
+    ACME_COMPAT_LOCK_FD=
+  fi
+  if [[ ${ACME_LOCK_FD:-} =~ ^[0-9]+$ ]]; then
+    flock -u "$ACME_LOCK_FD" || failed=1
+    if ! exec {ACME_LOCK_FD}>&-; then
+      failed=1
+    fi
+    ACME_LOCK_FD=
+  fi
   ACME_LOCK_HELD=0
+  return "$failed"
+}
+
+acquire_acme_lock(){
+  local lock compat_lock path
+  [[ ${ACME_LOCK_HELD:-0} -eq 1 ]] && return 0
+  lock=$(acme_lock_path)
+  compat_lock=$(acme_compat_lock_path)
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  for path in "$lock" "$compat_lock"; do
+    if [[ -e $path || -L $path ]]; then
+      [[ -f $path && ! -L $path ]] || return 1
+    fi
+  done
+  ACME_LOCK_FD=
+  ACME_COMPAT_LOCK_FD=
+  # All callers and generated runners acquire the global lock before the v1.8.0 lock.
+  exec {ACME_LOCK_FD}> "$lock" || return 1
+  if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
+    release_acme_lock >/dev/null 2>&1 || true
+    return 1
+  fi
+  if [[ $compat_lock != "$lock" ]]; then
+    if ! exec {ACME_COMPAT_LOCK_FD}> "$compat_lock" ||
+       ! chmod 600 "$compat_lock" ||
+       ! flock -w 30 "$ACME_COMPAT_LOCK_FD"; then
+      release_acme_lock >/dev/null 2>&1 || true
+      return 1
+    fi
+  fi
+  ACME_LOCK_HELD=1
 }
 
 with_acme_lock(){
@@ -77,7 +106,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v1}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v2}"
 }
 
 # Parsed values are consumed by the certificate management module.
@@ -201,7 +230,7 @@ filter_restart_cron_entries(){
 acme_renew_runner_is_current(){
   local runner identity mode expected_cron_command expected_force_command expected_sb_dir
   local expected_acme_bin expected_acme_home expected_cert_file expected_state_file
-  local expected_identity_file expected_lock_file
+  local expected_identity_file expected_lock_file expected_compat_lock_file
   runner=$(acme_renew_runner_path)
   identity=$(acme_renew_runner_identity)
   expected_cron_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --cron --home \"\$acme_home\" --config-home \"\$acme_home\""
@@ -213,6 +242,7 @@ acme_renew_runner_is_current(){
   printf -v expected_state_file 'state_file=%q' "$(acme_renew_state_path)"
   printf -v expected_identity_file 'identity_file=%q' "$ACME_IDENTITY"
   printf -v expected_lock_file 'lock_file=%q' "$(acme_lock_path)"
+  printf -v expected_compat_lock_file 'compat_lock_file=%q' "$(acme_compat_lock_path)"
   [[ -f $runner && ! -L $runner && -x $runner ]] || return 1
   mode=$(stat -c '%a' "$runner" 2>/dev/null || true)
   case $(uname -s 2>/dev/null) in
@@ -229,10 +259,13 @@ acme_renew_runner_is_current(){
     grep -Fqx -- "$expected_state_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_identity_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_lock_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_compat_lock_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "  1) [[ \${1-} == --force ]] || exit 2; force=1 ;;" "$runner" 2>/dev/null &&
     grep -Fqx -- '  *) exit 2 ;;' "$runner" 2>/dev/null &&
     grep -Fqx -- 'exec 9> "$lock_file" || exit 1' "$runner" 2>/dev/null &&
-    grep -Fqx -- 'flock -n 9 || exit 75' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'if ! flock -n 9; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if ! flock -n 8; then' "$runner" 2>/dev/null &&
     grep -Fqx -- "  acme_identity=\$(read_runner_acme_identity) || exit 1" "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
@@ -241,7 +274,7 @@ acme_renew_runner_is_current(){
     grep -Fqx -- "before_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
     grep -Fqx -- "after_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
     grep -Fqx -- "state_tmp=\$(mktemp \"\$sb_dir/.acme_renew.state.XXXXXX\") || exit 1" "$runner" 2>/dev/null &&
-    grep -Fq -- "mv -f \"\$state_tmp\" \"\$state_file\"" "$runner" 2>/dev/null &&
+    grep -Fq -- "mv -fT -- \"\$state_tmp\" \"\$state_file\"" "$runner" 2>/dev/null &&
     bash -n "$runner" >/dev/null 2>&1
 }
 
@@ -263,6 +296,7 @@ write_acme_renew_runner(){
     printf 'state_file=%q\n' "$state"
     printf 'identity_file=%q\n' "$ACME_IDENTITY"
     printf 'lock_file=%q\n' "$(acme_lock_path)"
+    printf 'compat_lock_file=%q\n' "$(acme_compat_lock_path)"
     cat <<'ACMERENEW'
 
 certificate_fingerprint(){
@@ -301,12 +335,39 @@ case $# in
   1) [[ ${1-} == --force ]] || exit 2; force=1 ;;
   *) exit 2 ;;
 esac
-if [[ -e $lock_file || -L $lock_file ]]; then
-  [[ -f $lock_file && ! -L $lock_file ]] || exit 1
-fi
+for candidate in "$lock_file" "$compat_lock_file"; do
+  if [[ -e $candidate || -L $candidate ]]; then
+    [[ -f $candidate && ! -L $candidate ]] || exit 1
+  fi
+done
 exec 9> "$lock_file" || exit 1
-chmod 600 "$lock_file" || exit 1
-flock -n 9 || exit 75
+if ! chmod 600 "$lock_file"; then
+  exec 9>&-
+  exit 1
+fi
+if ! flock -n 9; then
+  exec 9>&-
+  exit 75
+fi
+if [[ $compat_lock_file != "$lock_file" ]]; then
+  if ! exec 8> "$compat_lock_file"; then
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    exit 1
+  fi
+  if ! chmod 600 "$compat_lock_file"; then
+    exec 8>&-
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    exit 1
+  fi
+  if ! flock -n 8; then
+    exec 8>&-
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    exit 75
+  fi
+fi
 if ((force)); then
   acme_identity=$(read_runner_acme_identity) || exit 1
 fi
@@ -356,13 +417,13 @@ if ! printf '%s\n' \
   "last_renewal_epoch=$last_renewal_epoch" \
   "cert_fingerprint=$after_fingerprint" > "$state_tmp" ||
    ! chmod 600 "$state_tmp" ||
-   ! mv -f "$state_tmp" "$state_file"; then
+   ! mv -fT -- "$state_tmp" "$state_file"; then
   exit 1
 fi
 trap - EXIT HUP INT TERM
 exit "$exit_code"
 ACMERENEW
-  } > "$runner_tmp" || ! chmod 700 "$runner_tmp" || ! mv -f "$runner_tmp" "$runner"; then
+  } > "$runner_tmp" || ! chmod 700 "$runner_tmp" || ! mv -fT -- "$runner_tmp" "$runner"; then
     rm -f "$runner_tmp"
     return 1
   fi
@@ -437,15 +498,27 @@ remove_all_managed_crons(){
 }
 
 setup_acme_renew_cron(){
-  local current filtered entry
+  local current filtered entry identity
   if ! cron_daemon_is_active; then
     red "cron/crond 服务未运行，拒绝写入无法执行的 ACME 续期任务"
     return 1
   fi
   config_uses_acme_certificate || return 1
-  [[ -x $ACME_BIN && -f $ACME_HOME/dnsapi/dns_cf.sh && -s $ACME_IDENTITY ]] || return 1
+  if ! identity=$(valid_acme_renewal_identity 2>/dev/null); then
+    identity=$(recover_acme_renewal_identity 2>/dev/null) || {
+      red "ACME 身份、证书或域名配置校验失败，无法修复自动续期"
+      return 1
+    }
+  fi
   cloudflare_acme_credentials_present || return 1
   write_acme_reload_hook || return 1
+  if ! managed_acme_live_layout_is_valid ||
+     ! acme_deployment_config_is_current "$identity"; then
+    yellow "正在把 ACME 证书迁移到原子部署模式……"
+    register_acme_certificate_deployment "$identity" 0 || return 1
+  fi
+  identity=$(valid_acme_renewal_identity 2>/dev/null) || return 1
+  acme_deployment_config_is_current "$identity" || return 1
   write_acme_renew_runner || return 1
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
@@ -457,7 +530,7 @@ setup_acme_renew_cron(){
 }
 
 ensure_acme_renew_cron(){
-  local current
+  local current identity
   if ! cron_daemon_is_active; then
     red "cron/crond 服务未运行，ACME 自动续期当前不可用"
     return 1
@@ -465,12 +538,17 @@ ensure_acme_renew_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if config_uses_acme_certificate; then
-    if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]] ||
+    if ! identity=$(valid_acme_renewal_identity 2>/dev/null) ||
        ! cloudflare_acme_credentials_present; then
+      if setup_acme_renew_cron; then
+        return 0
+      fi
       red "当前配置正在使用 ACME 证书，但续期组件不完整；已保留现有 cron，请立即修复"
       return 1
     fi
-    if ! acme_reload_hook_is_current || ! acme_renew_runner_is_current ||
+    if ! managed_acme_live_layout_is_valid ||
+       ! acme_deployment_config_is_current "$identity" ||
+       ! acme_reload_hook_is_current || ! acme_renew_runner_is_current ||
        ! acme_renew_cron_is_current "$current"; then
       setup_acme_renew_cron
     fi

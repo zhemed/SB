@@ -14,6 +14,7 @@ ACME_ARCHIVE_SHA256="e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee09
 SOCKS_USERNAME="sb"
 SB_DIR="/etc/sb"
 SB_CONFIG="$SB_DIR/sb.json"
+SB_LAST_GOOD="$SB_DIR/sb.json.last-good"
 SB_BIN="$SB_DIR/sing-box"
 SB_SERVICE="sb"
 SYSTEMD_UNIT="/etc/systemd/system/${SB_SERVICE}.service"
@@ -26,16 +27,27 @@ ACME_CERT="$SB_DIR/acme-cert.pem"
 ACME_KEY="$SB_DIR/acme-private.key"
 ACME_IDENTITY="$SB_DIR/acme_server_name"
 ACME_RELOAD="$SB_DIR/acme_reload.sh"
-ACME_LOCK="$SB_DIR/acme.lock"
-ACME_RELOAD_IDENTITY="# sb-acme-reload-v1"
+ACME_LOCK="/run/sb-acme.lock"
+ACME_COMPAT_LOCK="$SB_DIR/acme.lock"
+ACME_STAGE="$ACME_HOME/sb-stage"
+ACME_STAGE_CERT="$ACME_STAGE/fullchain.pem"
+ACME_STAGE_KEY="$ACME_STAGE/private.key"
+ACME_LIVE="$SB_DIR/acme-live"
+ACME_GENERATIONS="$ACME_LIVE/generations"
+ACME_CURRENT="$ACME_LIVE/current"
+ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 INSTALL_TRANSACTION_ACTIVE=0
 ACME_STATE_BACKUP=
 ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
 ACME_LOCK_FD=
+ACME_COMPAT_LOCK_FD=
 ACME_LOCK_HELD=0
 CERT_ACTIVATION_MAINTENANCE_OK=1
+CORE_DOWNLOAD_TEMP_DIR=
+REPAIR_TRANSACTION_ACTIVE=0
+REPAIR_TRANSACTION_FINALIZING=0
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -79,7 +91,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v1.8.0"
+sb_version="v1.9.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -131,7 +143,7 @@ v4v6_refresh(){
   cache_tmp=$(mktemp "$SB_DIR/.ip_cache.XXXXXX") || return 1
   printf '%s\n%s\n%s\n%s\n' "$v4" "$v6" "$v4dq" "$v6dq" > "$cache_tmp"
   chmod 600 "$cache_tmp"
-  mv -f "$cache_tmp" "$cache_file"
+  mv -fT -- "$cache_tmp" "$cache_file"
 }
 
 read_ip_cache(){
@@ -167,8 +179,22 @@ v6only(){
 }
 
 # Core download
+cleanup_core_download_temp(){
+  local path=${CORE_DOWNLOAD_TEMP_DIR:-}
+  [[ -n $path ]] || return 0
+  case $path in
+    "$SB_DIR"/.core.*)
+      [[ ! -L $path ]] || return 1
+      rm -rf -- "$path" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  CORE_DOWNLOAD_TEMP_DIR=
+}
+
 inssb(){
-  local sbcore="$CORE_VERSION" sbname temp_dir archive expected_sha256 actual_sha256 extracted_version
+  local sbcore="$CORE_VERSION" sbname temp_dir archive expected_sha256 actual_sha256
+  local extracted_version core_tmp installed_version
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "安装固定版本 Sing-box v${sbcore}"
   sbname="sing-box-$sbcore-linux-$cpu"
@@ -179,37 +205,57 @@ inssb(){
     *) red "没有当前架构的 Sing-box 摘要"; return 1 ;;
   esac
   temp_dir=$(mktemp -d "$SB_DIR/.core.XXXXXX") || return 1
+  CORE_DOWNLOAD_TEMP_DIR=$temp_dir
   archive="$temp_dir/$sbname.tar.gz"
   if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 \
     --connect-timeout 10 --max-time 180 -o "$archive" \
     "https://github.com/SagerNet/sing-box/releases/download/v$sbcore/$sbname.tar.gz"; then
     red "下载 Sing-box v${sbcore} 失败，请检查VPS是否可访问GitHub"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
   actual_sha256=$(sha256sum "$archive" 2>/dev/null | awk '{print $1}')
   if [[ $actual_sha256 != "$expected_sha256" ]]; then
     red "Sing-box 压缩包 SHA-256 校验失败，拒绝安装"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
   if ! tar -xzf "$archive" -C "$temp_dir" || [[ ! -x "$temp_dir/$sbname/sing-box" ]]; then
     red "Sing-box 压缩包不完整或解压失败"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
   extracted_version=$("$temp_dir/$sbname/sing-box" version 2>/dev/null | awk '/version/{print $NF}')
   if [[ $extracted_version != "$CORE_VERSION" ]]; then
     red "内核版本校验失败：期望 $CORE_VERSION，实际 ${extracted_version:-未知}"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
-  if ! install -m 755 "$temp_dir/$sbname/sing-box" "$SB_BIN"; then
+  core_tmp=$(mktemp "$SB_DIR/.sing-box.XXXXXX") || {
+    cleanup_core_download_temp || true
+    return 1
+  }
+  if ! install -m 755 "$temp_dir/$sbname/sing-box" "$core_tmp"; then
     red "安装 Sing-box 内核失败"
-    rm -rf "$temp_dir"
+    rm -f "$core_tmp"
+    cleanup_core_download_temp || true
     return 1
   fi
-  rm -rf "$temp_dir"
+  installed_version=$("$core_tmp" version 2>/dev/null | awk '/version/{print $NF}')
+  if [[ $installed_version != "$CORE_VERSION" ]] ||
+     ! mv -fT -- "$core_tmp" "$SB_BIN"; then
+    red "Sing-box 内核原子替换失败，已保留原内核"
+    rm -f "$core_tmp"
+    cleanup_core_download_temp || true
+    return 1
+  fi
+  if [[ ! -f $SB_BIN || -L $SB_BIN || ! -x $SB_BIN ]] ||
+     [[ $("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}') != "$CORE_VERSION" ]]; then
+    red "Sing-box 内核替换后的完整性检查失败"
+    cleanup_core_download_temp || true
+    return 1
+  fi
+  cleanup_core_download_temp || return 1
   blue "成功安装 Sing-box 内核版本：$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')"
 }
 # sb-module: 10-acme
@@ -297,7 +343,12 @@ load_certificate_metadata(){
   CERT_META_KEY_MATCH=0
   CERT_META_STATE=invalid
 
-  [[ -f $cert && ! -L $cert && -f $key && ! -L $key ]] || return 1
+  if [[ -L $cert || -L $key ]]; then
+    [[ $cert == "${ACME_CERT:-}" && $key == "${ACME_KEY:-}" ]] || return 1
+    managed_acme_live_layout_is_valid || return 1
+  else
+    [[ -f $cert && -f $key ]] || return 1
+  fi
   openssl x509 -in "$cert" -noout >/dev/null 2>&1 || return 1
   not_before=$(openssl x509 -in "$cert" -noout -startdate 2>/dev/null | cut -d= -f2-) || return 1
   not_after=$(openssl x509 -in "$cert" -noout -enddate 2>/dev/null | cut -d= -f2-) || return 1
@@ -338,6 +389,25 @@ load_certificate_metadata(){
   fi
 }
 
+managed_acme_live_layout_is_valid(){
+  local current_target generation cert_target key_target
+  [[ -d ${ACME_LIVE:-} && ! -L $ACME_LIVE &&
+     -d ${ACME_GENERATIONS:-} && ! -L $ACME_GENERATIONS &&
+     -L ${ACME_CURRENT:-} && -L ${ACME_CERT:-} && -L ${ACME_KEY:-} ]] || return 1
+  [[ $(readlink "$ACME_CERT" 2>/dev/null) == 'acme-live/current/fullchain.pem' &&
+     $(readlink "$ACME_KEY" 2>/dev/null) == 'acme-live/current/private.key' ]] || return 1
+  current_target=$(readlink "$ACME_CURRENT" 2>/dev/null) || return 1
+  [[ $current_target =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 1
+  generation="$ACME_LIVE/$current_target"
+  [[ -d $generation && ! -L $generation &&
+     -f $generation/fullchain.pem && ! -L $generation/fullchain.pem &&
+     -f $generation/private.key && ! -L $generation/private.key ]] || return 1
+  cert_target=$(readlink -f "$ACME_CERT" 2>/dev/null) || return 1
+  key_target=$(readlink -f "$ACME_KEY" 2>/dev/null) || return 1
+  [[ $cert_target == "$generation/fullchain.pem" &&
+     $key_target == "$generation/private.key" ]]
+}
+
 acme_domain_conf_path(){
   local identity=$1
   valid_hostname "$identity" || return 1
@@ -345,9 +415,10 @@ acme_domain_conf_path(){
 }
 
 read_acme_domain_conf_value(){
-  local identity=$1 key=$2 conf prefix line value='' count=0
+  local identity=$1 key=$2 conf prefix line value='' count=0 expected
   case "$key" in
-    Le_Domain|Le_API|Le_CertCreateTime|Le_NextRenewTime|Le_InstallCertSuccessTime) ;;
+    Le_Domain|Le_API|Le_CertCreateTime|Le_NextRenewTime|Le_InstallCertSuccessTime|\
+      Le_RealCertPath|Le_RealCACertPath|Le_RealKeyPath|Le_RealFullChainPath|Le_ReloadCmd) ;;
     *) return 1 ;;
   esac
   conf=$(acme_domain_conf_path "$identity") || return 1
@@ -365,9 +436,25 @@ read_acme_domain_conf_value(){
   case "$key" in
     Le_Domain) valid_hostname "$value" ;;
     Le_API) [[ $value == 'https://acme-v02.api.letsencrypt.org/directory' ]] ;;
-    *) [[ $value =~ ^[0-9]{1,12}$ ]] ;;
+    Le_CertCreateTime|Le_NextRenewTime|Le_InstallCertSuccessTime)
+      [[ $value =~ ^[0-9]{1,12}$ ]]
+      ;;
+    Le_RealCertPath|Le_RealCACertPath) [[ -z $value ]] ;;
+    Le_RealKeyPath) [[ $value == "$ACME_STAGE_KEY" ]] ;;
+    Le_RealFullChainPath) [[ $value == "$ACME_STAGE_CERT" ]] ;;
+    Le_ReloadCmd)
+      expected=$(printf '%s' "$ACME_RELOAD" | base64 | tr -d '\r\n') || return 1
+      [[ $value == "__ACME_BASE64__START_${expected}__ACME_BASE64__END_" ]]
+      ;;
   esac || return 1
   printf '%s\n' "$value"
+}
+
+acme_deployment_config_is_current(){
+  local identity=$1 key
+  for key in Le_RealCertPath Le_RealCACertPath Le_RealKeyPath Le_RealFullChainPath Le_ReloadCmd; do
+    read_acme_domain_conf_value "$identity" "$key" >/dev/null || return 1
+  done
 }
 
 load_acme_certificate_schedule(){
@@ -413,6 +500,17 @@ read_acme_identity(){
   printf '%s\n' "$identity"
 }
 
+write_acme_identity(){
+  local identity=$1 identity_tmp
+  valid_hostname "$identity" || return 1
+  identity_tmp=$(mktemp "$SB_DIR/.acme-identity.XXXXXX") || return 1
+  if ! printf '%s\n' "$identity" > "$identity_tmp" ||
+     ! chmod 600 "$identity_tmp" || ! mv -fT -- "$identity_tmp" "$ACME_IDENTITY"; then
+    rm -f "$identity_tmp"
+    return 1
+  fi
+}
+
 detect_acme_identity(){
   local identity san
   [[ -s $ACME_CERT && -s $ACME_KEY ]] || return 1
@@ -437,12 +535,11 @@ cert_acme(){
     red "无法从 ACME 证书中确认有效域名，拒绝使用该证书"
     return 1
   fi
+  write_acme_identity "$identity" || return 1
   ym_vl_re=apple.com
   certificatec_hy2="$ACME_CERT"
   certificatep_hy2="$ACME_KEY"
   use_acme_cert=1
-  printf '%s\n' "$identity" > "$ACME_IDENTITY" || return 1
-  chmod 600 "$ACME_IDENTITY"
 }
 
 normalize_acme_domain(){
@@ -521,103 +618,417 @@ write_acme_reload_hook(){
   fi
   if ! cat > "$hook_tmp" <<'ACMERELOAD'
 #!/bin/bash
-# sb-acme-reload-v1
+# Signal handlers and EXIT cleanup functions are invoked indirectly by Bash.
+# shellcheck disable=SC2317
+# sb-acme-reload-v2
 export LANG=en_US.UTF-8
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+base="/etc/sb"
 cert="/etc/sb/acme-cert.pem"
 key="/etc/sb/acme-private.key"
 config="/etc/sb/sb.json"
 identity_file="/etc/sb/acme_server_name"
 systemd_unit="/etc/systemd/system/sb.service"
 openrc_unit="/etc/init.d/sb"
-if [[ ! -s $config ]]; then
-  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0
+stage_cert=
+stage_key=
+new_generation=
+old_current_target=
+deployment_started=0
+created_layout=0
+restore_managed_links=0
+
+cleanup_deploy_files(){
+  [[ -z $stage_cert ]] || rm -f -- "$stage_cert"
+  [[ -z $stage_key ]] || rm -f -- "$stage_key"
+}
+
+switch_current(){
+  local target=$1 pointer_tmp
+  [[ $target =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 1
+  pointer_tmp=$(mktemp "$base/acme-live/.current.XXXXXX") || return 1
+  rm -f -- "$pointer_tmp" || return 1
+  if ! ln -s -- "$target" "$pointer_tmp" ||
+     ! mv -Tf -- "$pointer_tmp" "$base/acme-live/current"; then
+    rm -f -- "$pointer_tmp"
+    return 1
+  fi
+}
+
+install_managed_link(){
+  local destination=$1 target=$2 link_tmp
+  link_tmp=$(mktemp "$base/.acme-link.XXXXXX") || return 1
+  rm -f -- "$link_tmp" || return 1
+  if ! ln -s -- "$target" "$link_tmp" || ! mv -Tf -- "$link_tmp" "$destination"; then
+    rm -f -- "$link_tmp"
+    return 1
+  fi
+}
+
+rollback_deployment(){
+  local failed=0 pointer_released=0 new_target current_after
+  [[ $deployment_started -eq 1 ]] || return 0
+  if [[ -n $old_current_target ]]; then
+    if switch_current "$old_current_target"; then
+      pointer_released=1
+    else
+      failed=1
+    fi
+  elif [[ $created_layout -eq 1 ]]; then
+    if rm -f -- "$cert" "$key" "$base/acme-live/current"; then
+      pointer_released=1
+    else
+      failed=1
+    fi
+  fi
+  if [[ $restore_managed_links -eq 1 && -n $old_current_target ]]; then
+    install_managed_link "$cert" 'acme-live/current/fullchain.pem' || failed=1
+    install_managed_link "$key" 'acme-live/current/private.key' || failed=1
+    if [[ ! -L $cert || ! -L $key ]] ||
+       [[ $(readlink "$cert" 2>/dev/null) != 'acme-live/current/fullchain.pem' ]] ||
+       [[ $(readlink "$key" 2>/dev/null) != 'acme-live/current/private.key' ]]; then
+      failed=1
+    fi
+  fi
+  if [[ -n $new_generation ]]; then
+    new_target="generations/${new_generation##*/}"
+    current_after=$(readlink "$base/acme-live/current" 2>/dev/null || true)
+    [[ $current_after != "$new_target" ]] && pointer_released=1
+  fi
+  if [[ $pointer_released -eq 1 && -n $new_generation ]]; then
+    rm -rf -- "$new_generation" || failed=1
+  fi
+  [[ $failed -eq 0 ]] || return 1
+  deployment_started=0
+  restore_managed_links=0
+}
+
+commit_deployment(){
+  local current_target generation
+  deployment_started=0
+  current_target=$(readlink "$base/acme-live/current" 2>/dev/null || true)
+  [[ $current_target =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 0
+  for generation in "$base/acme-live/generations"/gen.*; do
+    [[ -e $generation || -L $generation ]] || continue
+    [[ $generation == "$base/acme-live/$current_target" ]] && continue
+    [[ -d $generation && ! -L $generation && ${generation##*/} =~ ^gen\.[A-Za-z0-9]+$ ]] || continue
+    rm -rf -- "$generation" || true
+  done
+}
+
+handle_deploy_signal(){
+  trap '' HUP INT TERM
+  rollback_deployment || true
+  exit 1
+}
+
+managed_service_active(){
+  case $service_kind in
+    openrc) "$rc_service" sb status >/dev/null 2>&1 ;;
+    systemd) systemctl is-active --quiet sb ;;
+    *) return 1 ;;
+  esac
+}
+
+restart_managed_service(){
+  case $service_kind in
+    openrc) "$rc_service" sb restart >/dev/null 2>&1 ;;
+    systemd) systemctl restart sb >/dev/null 2>&1 ;;
+    *) return 1 ;;
+  esac
+}
+
+trap cleanup_deploy_files EXIT
+trap handle_deploy_signal HUP INT TERM
+[[ -d $base && ! -L $base && -f $identity_file && ! -L $identity_file ]] || exit 1
+mapfile -t identity_lines < "$identity_file" || exit 1
+[[ ${#identity_lines[@]} -eq 1 ]] || exit 1
+identity=${identity_lines[0]}
+[[ ${#identity} -le 253 && $identity == *.* && $identity != *..* &&
+   $identity =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] || exit 1
+IFS=. read -r -a identity_labels <<< "$identity"
+for label in "${identity_labels[@]}"; do
+  [[ ${#label} -le 63 && $label != -* && $label != *- ]] || exit 1
+done
+source_dir="$base/acme/sb-stage"
+source_cert="$source_dir/fullchain.pem"
+source_key="$source_dir/private.key"
+[[ -d $base/acme && ! -L $base/acme && -d $source_dir && ! -L $source_dir &&
+   -f $source_cert && ! -L $source_cert && -f $source_key && ! -L $source_key ]] || exit 1
+stage_cert=$(mktemp "$base/.acme-cert.deploy.XXXXXX") || exit 1
+stage_key=$(mktemp "$base/.acme-key.deploy.XXXXXX") || exit 1
+if ! cp -- "$source_cert" "$stage_cert" || ! cp -- "$source_key" "$stage_key" ||
+   ! chmod 600 "$stage_cert" "$stage_key"; then
   exit 1
 fi
-command -v jq >/dev/null 2>&1 || exit 1
-current_cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$config" 2>/dev/null) || exit 1
-current_key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$config" 2>/dev/null) || exit 1
-[[ $current_cert == "$cert" && $current_key == "$key" ]] || exit 0
-[[ -s "$cert" && -s "$key" && -s "$identity_file" ]] || exit 1
-openssl x509 -in "$cert" -noout -checkend 0 >/dev/null 2>&1 || exit 1
-not_before=$(openssl x509 -in "$cert" -noout -startdate 2>/dev/null | cut -d= -f2-) || exit 1
+openssl x509 -in "$stage_cert" -noout -checkend 0 >/dev/null 2>&1 || exit 1
+not_before=$(openssl x509 -in "$stage_cert" -noout -startdate 2>/dev/null | cut -d= -f2-) || exit 1
 not_before_epoch=$(date -d "$not_before" +%s 2>/dev/null) || exit 1
 [[ $not_before_epoch -le $(date +%s) ]] || exit 1
-identity=$(head -n 1 "$identity_file" | tr -d '\r' | awk '{print $1}')
-[[ -n "$identity" ]] || exit 1
 if openssl x509 -help 2>&1 | grep -q -- '-checkhost'; then
-  openssl x509 -in "$cert" -noout -checkhost "$identity" >/dev/null 2>&1 || exit 1
+  openssl x509 -in "$stage_cert" -noout -checkhost "$identity" >/dev/null 2>&1 || exit 1
 else
   if openssl x509 -help 2>&1 | grep -q -- '-ext'; then
-    san=$(openssl x509 -in "$cert" -noout -ext subjectAltName 2>/dev/null) || exit 1
+    san=$(openssl x509 -in "$stage_cert" -noout -ext subjectAltName 2>/dev/null) || exit 1
   else
-    san=$(openssl x509 -in "$cert" -noout -text 2>/dev/null | awk '/X509v3 Subject Alternative Name/{getline; print; exit}') || exit 1
+    san=$(openssl x509 -in "$stage_cert" -noout -text 2>/dev/null | awk '/X509v3 Subject Alternative Name/{getline; print; exit}') || exit 1
   fi
   printf '%s\n' "$san" | grep -oE 'DNS:[^,[:space:]]+' | cut -d: -f2- | grep -Fxiq -- "$identity" || exit 1
 fi
-cert_public=$(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null) || exit 1
-key_public=$(openssl pkey -in "$key" -pubout 2>/dev/null) || exit 1
+cert_public=$(openssl x509 -in "$stage_cert" -pubkey -noout 2>/dev/null) || exit 1
+key_public=$(openssl pkey -in "$stage_key" -pubout 2>/dev/null) || exit 1
 [[ -n "$cert_public" && "$cert_public" == "$key_public" ]] || exit 1
+if [[ -e $base/acme-live || -L $base/acme-live ]]; then
+  [[ -d $base/acme-live && ! -L $base/acme-live ]] || exit 1
+else
+  mkdir "$base/acme-live" || exit 1
+  chmod 700 "$base/acme-live" || exit 1
+fi
+if [[ -e $base/acme-live/generations || -L $base/acme-live/generations ]]; then
+  [[ -d $base/acme-live/generations && ! -L $base/acme-live/generations ]] || exit 1
+else
+  mkdir "$base/acme-live/generations" || exit 1
+  chmod 700 "$base/acme-live/generations" || exit 1
+fi
+new_generation=$(mktemp -d "$base/acme-live/generations/gen.XXXXXX") || exit 1
+chmod 700 "$new_generation" || exit 1
+deployment_started=1
+if ! mv -fT -- "$stage_cert" "$new_generation/fullchain.pem" ||
+   ! mv -fT -- "$stage_key" "$new_generation/private.key" ||
+   ! chmod 600 "$new_generation/fullchain.pem" "$new_generation/private.key"; then
+  rollback_deployment || true
+  exit 1
+fi
+stage_cert=
+stage_key=
+
+current_valid=0
+if [[ -e $base/acme-live/current || -L $base/acme-live/current ]]; then
+  [[ -L $base/acme-live/current ]] || { rollback_deployment || true; exit 1; }
+  current_target=$(readlink "$base/acme-live/current" 2>/dev/null) || {
+    rollback_deployment || true
+    exit 1
+  }
+  if [[ $current_target =~ ^generations/gen\.[A-Za-z0-9]+$ &&
+        -d $base/acme-live/$current_target && ! -L $base/acme-live/$current_target &&
+        -f $base/acme-live/$current_target/fullchain.pem &&
+        ! -L $base/acme-live/$current_target/fullchain.pem &&
+        -f $base/acme-live/$current_target/private.key &&
+        ! -L $base/acme-live/$current_target/private.key ]]; then
+    current_public=$(openssl x509 -in "$base/acme-live/$current_target/fullchain.pem" \
+      -pubkey -noout 2>/dev/null) || current_public=
+    current_key_public=$(openssl pkey -in "$base/acme-live/$current_target/private.key" \
+      -pubout 2>/dev/null) || current_key_public=
+    if [[ -n $current_public && $current_public == "$current_key_public" ]]; then
+      current_valid=1
+    fi
+  fi
+  [[ $current_valid -eq 1 ]] || { rollback_deployment || true; exit 1; }
+fi
+
+cert_exists=0
+key_exists=0
+cert_managed=0
+key_managed=0
+[[ -e $cert || -L $cert ]] && cert_exists=1
+[[ -e $key || -L $key ]] && key_exists=1
+if [[ -L $cert ]]; then
+  [[ $(readlink "$cert" 2>/dev/null) == 'acme-live/current/fullchain.pem' ]] || {
+    rollback_deployment || true
+    exit 1
+  }
+  cert_managed=1
+elif [[ $cert_exists -eq 1 && ! -f $cert ]]; then
+  rollback_deployment || true
+  exit 1
+fi
+if [[ -L $key ]]; then
+  [[ $(readlink "$key" 2>/dev/null) == 'acme-live/current/private.key' ]] || {
+    rollback_deployment || true
+    exit 1
+  }
+  key_managed=1
+elif [[ $key_exists -eq 1 && ! -f $key ]]; then
+  rollback_deployment || true
+  exit 1
+fi
+
+if [[ $cert_exists -eq 1 && $key_exists -eq 1 ]]; then
+  old_cert_public=$(openssl x509 -in "$cert" -pubkey -noout 2>/dev/null) || old_cert_public=
+  old_key_public=$(openssl pkey -in "$key" -pubout 2>/dev/null) || old_key_public=
+  [[ -n $old_cert_public && $old_cert_public == "$old_key_public" ]] || {
+    rollback_deployment || true
+    exit 1
+  }
+  if [[ $cert_managed -eq 0 && $key_managed -eq 0 ]]; then
+    preserved_generation=$(mktemp -d "$base/acme-live/generations/gen.XXXXXX") || {
+      rollback_deployment || true
+      exit 1
+    }
+    if ! chmod 700 "$preserved_generation" ||
+       ! cp -- "$cert" "$preserved_generation/fullchain.pem" ||
+       ! cp -- "$key" "$preserved_generation/private.key" ||
+       ! chmod 600 "$preserved_generation/fullchain.pem" "$preserved_generation/private.key"; then
+      rm -rf -- "$preserved_generation"
+      rollback_deployment || true
+      exit 1
+    fi
+    old_current_target="generations/${preserved_generation##*/}"
+    switch_current "$old_current_target" || {
+      rm -rf -- "$preserved_generation"
+      rollback_deployment || true
+      exit 1
+    }
+  else
+    [[ $current_valid -eq 1 ]] || { rollback_deployment || true; exit 1; }
+    old_current_target=$current_target
+  fi
+  if [[ $cert_managed -eq 0 || $key_managed -eq 0 ]]; then
+    restore_managed_links=1
+  fi
+  if [[ $cert_managed -eq 0 ]] &&
+     ! install_managed_link "$cert" 'acme-live/current/fullchain.pem'; then
+    rollback_deployment || true
+    exit 1
+  fi
+  if [[ $key_managed -eq 0 ]] &&
+     ! install_managed_link "$key" 'acme-live/current/private.key'; then
+    rollback_deployment || true
+    exit 1
+  fi
+  switch_current "generations/${new_generation##*/}" || {
+    rollback_deployment || true
+    exit 1
+  }
+elif [[ $cert_exists -eq 0 && $key_exists -eq 0 ]]; then
+  created_layout=1
+  switch_current "generations/${new_generation##*/}" || {
+    rollback_deployment || true
+    exit 1
+  }
+  install_managed_link "$cert" 'acme-live/current/fullchain.pem' || {
+    rollback_deployment || true
+    exit 1
+  }
+  install_managed_link "$key" 'acme-live/current/private.key' || {
+    rollback_deployment || true
+    exit 1
+  }
+else
+  rollback_deployment || true
+  exit 1
+fi
+
+if [[ ! -s $config ]]; then
+  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then
+    commit_deployment
+    exit 0
+  fi
+  rollback_deployment || true
+  exit 1
+fi
+command -v jq >/dev/null 2>&1 || { rollback_deployment || true; exit 1; }
+certificate_paths=$(jq -er '
+  [.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] as $matches |
+  if ($matches | length) == 1 then
+    [$matches[0].tls.certificate_path, $matches[0].tls.key_path] | @tsv
+  else error("hy2 inbound missing or duplicated") end
+' "$config" 2>/dev/null) || { rollback_deployment || true; exit 1; }
+IFS=$'\t' read -r current_cert current_key <<< "$certificate_paths"
+if [[ $current_cert != "$cert" || $current_key != "$key" ]]; then
+  commit_deployment
+  exit 0
+fi
 has_openrc=0
 has_systemd=0
 [[ -e $openrc_unit || -L $openrc_unit ]] && has_openrc=1
 [[ -e $systemd_unit || -L $systemd_unit ]] && has_systemd=1
-((has_openrc + has_systemd <= 1)) || exit 1
+if ((has_openrc + has_systemd > 1)); then
+  rollback_deployment || true
+  exit 1
+fi
+service_kind=none
 if ((has_openrc)); then
   if command -v systemctl >/dev/null 2>&1 && systemctl cat sb >/dev/null 2>&1; then
+    rollback_deployment || true
     exit 1
   fi
-  rc_service=$(command -v rc-service 2>/dev/null) || exit 1
-  [[ -f $openrc_unit && ! -L $openrc_unit ]] || exit 1
-  grep -Fqx '# Managed by sb.sh' "$openrc_unit" 2>/dev/null &&
-    grep -Fqx 'command="/etc/sb/sing-box"' "$openrc_unit" 2>/dev/null &&
-    grep -Fqx 'command_args="run -c /etc/sb/sb.json"' "$openrc_unit" 2>/dev/null || exit 1
-  "$rc_service" sb status >/dev/null 2>&1 || exit 0
-  "$rc_service" sb restart >/dev/null 2>&1 || exit 1
-  sleep 1
-  "$rc_service" sb status >/dev/null 2>&1
+  rc_service=$(command -v rc-service 2>/dev/null) || { rollback_deployment || true; exit 1; }
+  [[ -f $openrc_unit && ! -L $openrc_unit ]] || { rollback_deployment || true; exit 1; }
+  if ! grep -Fqx '# Managed by sb.sh' "$openrc_unit" 2>/dev/null ||
+     ! grep -Fqx 'command="/etc/sb/sing-box"' "$openrc_unit" 2>/dev/null ||
+     ! grep -Fqx 'command_args="run -c /etc/sb/sb.json"' "$openrc_unit" 2>/dev/null; then
+    rollback_deployment || true
+    exit 1
+  fi
+  service_kind=openrc
 elif ((has_systemd)); then
-  command -v systemctl >/dev/null 2>&1 || exit 1
-  [[ -f $systemd_unit && ! -L $systemd_unit ]] || exit 1
+  command -v systemctl >/dev/null 2>&1 || { rollback_deployment || true; exit 1; }
+  [[ -f $systemd_unit && ! -L $systemd_unit ]] || { rollback_deployment || true; exit 1; }
   for unit_base in /etc/systemd/system /run/systemd/system /usr/local/lib/systemd/system \
     /usr/lib/systemd/system /lib/systemd/system; do
     candidate_unit="$unit_base/sb.service"
     [[ $candidate_unit == "$systemd_unit" ]] && continue
-    [[ ! -e $candidate_unit && ! -L $candidate_unit ]] || exit 1
+    if [[ -e $candidate_unit || -L $candidate_unit ]]; then
+      rollback_deployment || true
+      exit 1
+    fi
   done
   for dropin_dir in /etc/systemd/system/sb.service.d /run/systemd/system/sb.service.d \
     /usr/local/lib/systemd/system/sb.service.d /usr/lib/systemd/system/sb.service.d \
     /lib/systemd/system/sb.service.d; do
-    [[ -L $dropin_dir || -e $dropin_dir && ! -d $dropin_dir ]] && exit 1
+    if [[ -L $dropin_dir || -e $dropin_dir && ! -d $dropin_dir ]]; then
+      rollback_deployment || true
+      exit 1
+    fi
     if [[ -d $dropin_dir ]]; then
       for dropin in "$dropin_dir"/* "$dropin_dir"/.[!.]* "$dropin_dir"/..?*; do
-        [[ -e $dropin || -L $dropin ]] && exit 1
+        if [[ -e $dropin || -L $dropin ]]; then
+          rollback_deployment || true
+          exit 1
+        fi
       done
     fi
   done
   fragment=$(systemctl show sb.service -p FragmentPath --value 2>/dev/null || true)
   dropins=$(systemctl show sb.service -p DropInPaths --value 2>/dev/null || true)
-  [[ -z $fragment || $fragment == "$systemd_unit" ]] || exit 1
-  [[ -z $dropins ]] || exit 1
-  grep -Fqx '# Managed by sb.sh' "$systemd_unit" 2>/dev/null &&
-    grep -Fqx 'WorkingDirectory=/etc/sb' "$systemd_unit" 2>/dev/null &&
-    grep -Fqx 'ExecStart=/etc/sb/sing-box run -c /etc/sb/sb.json' "$systemd_unit" 2>/dev/null || exit 1
-  systemctl is-active --quiet sb || exit 0
-  systemctl restart sb >/dev/null 2>&1 || exit 1
-  sleep 1
-  systemctl is-active --quiet sb
-else
-  if command -v systemctl >/dev/null 2>&1 && systemctl cat sb >/dev/null 2>&1; then
+  [[ -z $fragment || $fragment == "$systemd_unit" ]] || { rollback_deployment || true; exit 1; }
+  [[ -z $dropins ]] || { rollback_deployment || true; exit 1; }
+  if ! grep -Fqx '# Managed by sb.sh' "$systemd_unit" 2>/dev/null ||
+     ! grep -Fqx 'WorkingDirectory=/etc/sb' "$systemd_unit" 2>/dev/null ||
+     ! grep -Fqx 'ExecStart=/etc/sb/sing-box run -c /etc/sb/sb.json' "$systemd_unit" 2>/dev/null; then
+    rollback_deployment || true
     exit 1
   fi
+  service_kind=systemd
+else
+  if command -v systemctl >/dev/null 2>&1 && systemctl cat sb >/dev/null 2>&1; then
+    rollback_deployment || true
+    exit 1
+  fi
+  commit_deployment
   exit 0
 fi
+if ! managed_service_active; then
+  commit_deployment
+  exit 0
+fi
+if restart_managed_service && sleep 1 && managed_service_active; then
+  commit_deployment
+  exit 0
+fi
+if rollback_deployment; then
+  restart_managed_service >/dev/null 2>&1 || true
+  sleep 1
+  managed_service_active >/dev/null 2>&1 || true
+fi
+exit 1
 ACMERELOAD
   then
     rm -f "$hook_tmp"
     return 1
   fi
-  if ! chmod 700 "$hook_tmp" || ! mv -f "$hook_tmp" "$ACME_RELOAD"; then
+  if ! chmod 700 "$hook_tmp" || ! mv -fT -- "$hook_tmp" "$ACME_RELOAD"; then
     rm -f "$hook_tmp"
     return 1
   fi
@@ -625,23 +1036,95 @@ ACMERELOAD
 }
 
 acme_reload_hook_is_current(){
+  # Dollar-prefixed names in the grep patterns are literal generated-hook text.
+  # shellcheck disable=SC2016
   [[ -f $ACME_RELOAD && ! -L $ACME_RELOAD && -x $ACME_RELOAD ]] &&
     [[ $(grep -Fxc "$ACME_RELOAD_IDENTITY" "$ACME_RELOAD" 2>/dev/null || true) -eq 1 ]] &&
     awk '
       $0 == "if [[ ! -s $config ]]; then" {
-        getline initial_guard
-        getline normal_rejection
+        getline initial_if
+        getline initial_commit
+        getline initial_exit
+        getline initial_end
+        getline rollback
+        getline normal_exit
         getline block_end
-        valid = initial_guard == "  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0" &&
-          normal_rejection == "  exit 1" && block_end == "fi"
+        valid = initial_if == "  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then" &&
+          initial_commit == "    commit_deployment" && initial_exit == "    exit 0" &&
+          initial_end == "  fi" && rollback == "  rollback_deployment || true" &&
+          normal_exit == "  exit 1" && block_end == "fi"
         exit
       }
       END { exit !valid }
     ' "$ACME_RELOAD" &&
-    grep -Fqx 'command -v jq >/dev/null 2>&1 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
-    grep -Fqx "[[ -n \"\$cert_public\" && \"\$cert_public\" == \"\$key_public\" ]] || exit 1" "$ACME_RELOAD" 2>/dev/null &&
-    grep -Fqx '  systemctl restart sb >/dev/null 2>&1 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'source_cert="$source_dir/fullchain.pem"' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'source_key="$source_dir/private.key"' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'deployment_started=1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '    restore_managed_links=1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'if ! mv -fT -- "$stage_cert" "$new_generation/fullchain.pem" ||' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '   ! mv -fT -- "$stage_key" "$new_generation/private.key" ||' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '     ! mv -Tf -- "$pointer_tmp" "$base/acme-live/current"; then' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx "     ! install_managed_link \"\$cert\" 'acme-live/current/fullchain.pem'; then" "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx "     ! install_managed_link \"\$key\" 'acme-live/current/private.key'; then" "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'cert_public=$(openssl x509 -in "$stage_cert" -pubkey -noout 2>/dev/null) || exit 1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'key_public=$(openssl pkey -in "$stage_key" -pubout 2>/dev/null) || exit 1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'if restart_managed_service && sleep 1 && managed_service_active; then' "$ACME_RELOAD" 2>/dev/null &&
     bash -n "$ACME_RELOAD" >/dev/null 2>&1
+}
+
+prepare_acme_deploy_stage(){
+  local path
+  if [[ -e $ACME_STAGE || -L $ACME_STAGE ]]; then
+    [[ -d $ACME_STAGE && ! -L $ACME_STAGE ]] || return 1
+  else
+    mkdir "$ACME_STAGE" || return 1
+  fi
+  chmod 700 "$ACME_STAGE" || return 1
+  for path in "$ACME_STAGE_CERT" "$ACME_STAGE_KEY"; do
+    [[ -e $path || -L $path ]] || continue
+    [[ -f $path && ! -L $path ]] || return 1
+  done
+}
+
+valid_acme_renewal_identity(){
+  local identity
+  [[ -x $ACME_BIN && -f $ACME_HOME/dnsapi/dns_cf.sh ]] || return 1
+  identity=$(read_acme_identity 2>/dev/null) || return 1
+  if ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" ||
+     [[ $CERT_META_STATE != valid ]] ||
+     ! certificate_identity_matches "$ACME_CERT" "$identity" ||
+     ! load_acme_certificate_schedule "$identity"; then
+    return 1
+  fi
+  printf '%s\n' "$identity"
+}
+
+recover_acme_renewal_identity(){
+  local identity
+  identity=$(detect_acme_identity 2>/dev/null) || return 1
+  load_acme_certificate_schedule "$identity" || return 1
+  write_acme_identity "$identity" || return 1
+  printf '%s\n' "$identity"
+}
+
+register_acme_certificate_deployment(){
+  local identity=$1 initial_install=${2:-0}
+  [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
+  valid_hostname "$identity" || return 1
+  acme_reload_hook_is_current || return 1
+  prepare_acme_deploy_stage || return 1
+  if ! SB_INITIAL_INSTALL="$initial_install" HOME="$SB_DIR" "$ACME_BIN" \
+      --home "$ACME_HOME" --config-home "$ACME_HOME" \
+      --install-cert -d "$identity" --ecc \
+      --key-file "$ACME_STAGE_KEY" --fullchain-file "$ACME_STAGE_CERT" \
+      --reloadcmd "$ACME_RELOAD"; then
+    return 1
+  fi
+  managed_acme_live_layout_is_valid &&
+    acme_deployment_config_is_current "$identity" &&
+    load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
+    [[ $CERT_META_STATE == valid ]] &&
+    certificate_identity_matches "$ACME_CERT" "$identity"
 }
 
 config_uses_acme_certificate(){
@@ -668,6 +1151,201 @@ config_references_acme_state(){
   ' "$SB_CONFIG" >/dev/null 2>&1
 }
 
+validate_acme_state_backup(){
+  local backup=$1 entry name mode owner expected_owner enforce_modes=1
+  local -a state_names=(
+    acme-cert.pem acme-private.key acme_server_name acme_reload.sh
+    acme_renew.sh acme_renew.state cert_renew.sh .cert_mtime
+  )
+  [[ $backup == "$SB_DIR"/.acme-backup.* ]] || return 1
+  name=${backup##*/}
+  [[ $name =~ ^\.acme-backup\.[A-Za-z0-9]+$ ]] || return 1
+  [[ -d $backup && ! -L $backup && -d $backup/files && ! -L $backup/files ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) enforce_modes=0 ;;
+  esac
+  mode=$(stat -c '%a' "$backup" 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$backup" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" ]] || return 1
+  ((enforce_modes == 0)) || [[ $mode == 700 ]] || return 1
+  mode=$(stat -c '%a' "$backup/files" 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$backup/files" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" ]] || return 1
+  ((enforce_modes == 0)) || [[ $mode == 700 ]] || return 1
+
+  for entry in "$backup"/* "$backup"/.[!.]* "$backup"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    case $name in
+      files) [[ -d $entry && ! -L $entry ]] || return 1 ;;
+      acme|live)
+        [[ -d $entry && ! -L $entry ]] || return 1
+        mode=$(stat -c '%a' "$entry" 2>/dev/null) || return 1
+        owner=$(stat -c '%u' "$entry" 2>/dev/null) || return 1
+        [[ $owner == "$expected_owner" ]] || return 1
+        ((enforce_modes == 0)) || [[ $mode == 700 ]] || return 1
+        ;;
+      *) return 1 ;;
+    esac
+  done
+  for entry in "$backup/files"/* "$backup/files"/.[!.]* "$backup/files"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    printf '%s\n' "${state_names[@]}" | grep -Fxq -- "$name" || return 1
+    owner=$(stat -c '%u' "$entry" 2>/dev/null) || return 1
+    [[ $owner == "$expected_owner" ]] || return 1
+    if [[ -L $entry ]]; then
+      case $name in
+        acme-cert.pem) [[ $(readlink "$entry" 2>/dev/null) == 'acme-live/current/fullchain.pem' ]] ;;
+        acme-private.key) [[ $(readlink "$entry" 2>/dev/null) == 'acme-live/current/private.key' ]] ;;
+        *) false ;;
+      esac || return 1
+    else
+      [[ -f $entry ]] || return 1
+      mode=$(stat -c '%a' "$entry" 2>/dev/null) || return 1
+      ((enforce_modes == 0)) || (( (8#$mode & 0022) == 0 )) || return 1
+    fi
+  done
+}
+
+acme_state_backup_certificate_pair_is_valid(){
+  local backup=$1 backup_cert backup_key current_target generation
+  validate_acme_state_backup "$backup" || return 1
+  backup_cert="$backup/files/acme-cert.pem"
+  backup_key="$backup/files/acme-private.key"
+  if [[ -f $backup_cert && ! -L $backup_cert && -f $backup_key && ! -L $backup_key ]]; then
+    :
+  elif [[ -L $backup_cert && -L $backup_key ]] &&
+       [[ $(readlink "$backup_cert" 2>/dev/null) == 'acme-live/current/fullchain.pem' ]] &&
+       [[ $(readlink "$backup_key" 2>/dev/null) == 'acme-live/current/private.key' ]] &&
+       [[ -d $backup/live && ! -L $backup/live && -L $backup/live/current ]]; then
+    current_target=$(readlink "$backup/live/current" 2>/dev/null) || return 1
+    [[ $current_target =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 1
+    generation="$backup/live/$current_target"
+    [[ -d $generation && ! -L $generation ]] || return 1
+    backup_cert="$generation/fullchain.pem"
+    backup_key="$generation/private.key"
+    [[ -f $backup_cert && ! -L $backup_cert && -f $backup_key && ! -L $backup_key ]] || return 1
+  else
+    return 1
+  fi
+  certificate_time_valid "$backup_cert" && certificate_key_matches "$backup_cert" "$backup_key"
+}
+
+current_acme_state_is_safe_to_keep(){
+  local identity
+  identity=$(valid_acme_renewal_identity 2>/dev/null) || return 1
+  managed_acme_live_layout_is_valid &&
+    acme_deployment_config_is_current "$identity" &&
+    cloudflare_acme_credentials_present &&
+    acme_reload_hook_is_current
+}
+
+find_orphaned_acme_state_backup(){
+  local path candidate='' count=0
+  ACME_ORPHANED_BACKUP_COUNT=0
+  [[ -z ${ACME_STATE_BACKUP:-} ]] || {
+    return 2
+  }
+  for path in "$SB_DIR"/.acme-backup.*; do
+    [[ -e $path || -L $path ]] || continue
+    count=$((count + 1))
+    candidate=$path
+  done
+  ACME_ORPHANED_BACKUP_COUNT=$count
+  [[ $count -ne 0 ]] || return 1
+  if [[ $count -ne 1 ]]; then
+    return 2
+  fi
+  if ! validate_acme_state_backup "$candidate"; then
+    return 2
+  fi
+  ACME_STATE_BACKUP=$candidate
+}
+
+acme_state_backup_candidates_exist(){
+  local path
+  for path in "$SB_DIR"/.acme-backup.*; do
+    [[ -e $path || -L $path ]] && return 0
+  done
+  return 1
+}
+
+resolve_orphaned_acme_state_backup(){
+  local scan_status menu confirmation backup
+  if find_orphaned_acme_state_backup; then
+    scan_status=0
+  else
+    scan_status=$?
+  fi
+  case $scan_status in
+    1) return 0 ;;
+    2)
+      red "检测到 ${ACME_ORPHANED_BACKUP_COUNT:-0} 个异常或重复的 ACME 恢复点，拒绝自动选择"
+      yellow "请人工检查 $SB_DIR/.acme-backup.*；处理前脚本不会执行证书、修复或卸载操作"
+      return 1
+      ;;
+  esac
+  backup=$ACME_STATE_BACKUP
+  while true; do
+    yellow "检测到上次证书操作留下的安全恢复点：$backup"
+    green "1：恢复到证书操作前的状态"
+    green "2：确认保留当前证书状态并删除恢复点"
+    green "0：退出脚本，不做修改"
+    readp "请选择【0-2】：" menu || return 1
+    case $menu in
+      1)
+        if config_references_acme_state &&
+           ! acme_state_backup_certificate_pair_is_valid "$backup"; then
+          red "当前配置正在使用 ACME 证书，但恢复点中没有可用的证书与私钥，拒绝恢复"
+          yellow "如已确认当前证书正常，可选择[2]删除恢复点"
+          continue
+        fi
+        if ! restore_acme_state_backup 1; then
+          red "恢复 ACME 状态失败，恢复点已保留；脚本将退出"
+          return 1
+        fi
+        if config_uses_acme_certificate; then
+          if ! cert_acme; then
+            red "恢复后的 ACME 证书校验失败，恢复点已保留；脚本将退出"
+            return 1
+          fi
+          if service_is_active && (! restartsb || ! service_is_active); then
+            red "ACME 状态已恢复，但 sb 重启失败，恢复点已保留；脚本将退出"
+            return 1
+          fi
+        fi
+        if ! clear_acme_state_backup; then
+          red "ACME 状态已恢复，但恢复点清理失败；脚本将退出"
+          return 1
+        fi
+        green "证书操作前的 ACME 状态已恢复"
+        return 0
+        ;;
+      2)
+        if config_references_acme_state &&
+           (! config_uses_acme_certificate ||
+            ! current_acme_state_is_safe_to_keep); then
+          red "当前 ACME 证书或续期状态未通过校验，拒绝删除唯一恢复点"
+          continue
+        fi
+        red "删除恢复点后将无法自动回到证书操作前的状态"
+        readp "请输入 DELETE 确认删除，其他输入取消：" confirmation || return 1
+        [[ $confirmation == DELETE ]] || continue
+        if ! clear_acme_state_backup; then
+          red "删除 ACME 恢复点失败，脚本将退出"
+          return 1
+        fi
+        green "已保留当前证书状态并删除旧恢复点"
+        return 0
+        ;;
+      0|"") return 1 ;;
+      *) red "请输入0、1或2" ;;
+    esac
+  done
+}
+
 begin_acme_state_backup(){
   local backup path
   local -a state_paths=(
@@ -675,19 +1353,39 @@ begin_acme_state_backup(){
     "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state"
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
   )
-  ACME_STATE_BACKUP=
+  [[ -z ${ACME_STATE_BACKUP:-} ]] || return 1
   backup=$(mktemp -d "$SB_DIR/.acme-backup.XXXXXX") || return 1
   chmod 700 "$backup" || { rm -rf -- "$backup"; return 1; }
-  mkdir "$backup/files" || { rm -rf -- "$backup"; return 1; }
+  if ! mkdir "$backup/files" || ! chmod 700 "$backup/files"; then
+    rm -rf -- "$backup"
+    return 1
+  fi
   if [[ -e $ACME_HOME || -L $ACME_HOME ]]; then
     if [[ ! -d $ACME_HOME || -L $ACME_HOME ]] || ! cp -a -- "$ACME_HOME" "$backup/acme"; then
       rm -rf -- "$backup"
       return 1
     fi
   fi
+  if [[ -e $ACME_LIVE || -L $ACME_LIVE ]]; then
+    if [[ ! -d $ACME_LIVE || -L $ACME_LIVE ]] ||
+       ! cp -a -- "$ACME_LIVE" "$backup/live"; then
+      rm -rf -- "$backup"
+      return 1
+    fi
+  fi
   for path in "${state_paths[@]}"; do
     [[ -e $path || -L $path ]] || continue
-    if [[ ! -f $path || -L $path ]] || ! cp -p -- "$path" "$backup/files/${path##*/}"; then
+    if [[ -L $path ]]; then
+      case $path in
+        "$ACME_CERT") [[ $(readlink "$path" 2>/dev/null) == 'acme-live/current/fullchain.pem' ]] ;;
+        "$ACME_KEY") [[ $(readlink "$path" 2>/dev/null) == 'acme-live/current/private.key' ]] ;;
+        *) false ;;
+      esac || { rm -rf -- "$backup"; return 1; }
+      cp -Pp -- "$path" "$backup/files/${path##*/}" || {
+        rm -rf -- "$backup"
+        return 1
+      }
+    elif [[ ! -f $path ]] || ! cp -p -- "$path" "$backup/files/${path##*/}"; then
       rm -rf -- "$backup"
       return 1
     fi
@@ -698,13 +1396,13 @@ begin_acme_state_backup(){
 clear_acme_state_backup(){
   local backup=${ACME_STATE_BACKUP:-}
   [[ -n $backup ]] || return 0
-  [[ $backup == "$SB_DIR"/.acme-backup.* && -d $backup && ! -L $backup ]] || return 1
+  validate_acme_state_backup "$backup" || return 1
   rm -rf -- "$backup" || return 1
   ACME_STATE_BACKUP=
 }
 
 restore_acme_state_backup(){
-  local backup=${ACME_STATE_BACKUP:-} stage entry name destination index
+  local backup=${ACME_STATE_BACKUP:-} retain_backup=${1:-0} stage entry name destination index
   local -a state_names=(
     acme-cert.pem acme-private.key acme_server_name acme_reload.sh
     acme_renew.sh acme_renew.state cert_renew.sh .cert_mtime
@@ -714,12 +1412,15 @@ restore_acme_state_backup(){
     "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state"
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"
   )
+  [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ -n $backup ]] || return 0
-  [[ $backup == "$SB_DIR"/.acme-backup.* && -d $backup && ! -L $backup ]] || return 1
-  [[ -d $backup/files && ! -L $backup/files ]] || return 1
+  validate_acme_state_backup "$backup" || return 1
   stage=$(mktemp -d "$SB_DIR/.acme-restore.XXXXXX") || return 1
   chmod 700 "$stage" || { rm -rf -- "$stage"; return 1; }
-  mkdir "$stage/files" || { rm -rf -- "$stage"; return 1; }
+  if ! mkdir "$stage/files" || ! chmod 700 "$stage/files"; then
+    rm -rf -- "$stage"
+    return 1
+  fi
   if [[ -e $backup/acme || -L $backup/acme ]]; then
     if [[ ! -d $backup/acme || -L $backup/acme ]] ||
        ! cp -a -- "$backup/acme" "$stage/acme"; then
@@ -727,23 +1428,45 @@ restore_acme_state_backup(){
       return 1
     fi
   fi
+  if [[ -e $backup/live || -L $backup/live ]]; then
+    if [[ ! -d $backup/live || -L $backup/live ]] ||
+       ! cp -a -- "$backup/live" "$stage/live"; then
+      rm -rf -- "$stage"
+      return 1
+    fi
+  fi
   for entry in "$backup/files"/* "$backup/files"/.[!.]* "$backup/files"/..?*; do
     [[ -e $entry || -L $entry ]] || continue
     name=${entry##*/}
-    [[ -f $entry && ! -L $entry ]] || { rm -rf -- "$stage"; return 1; }
     printf '%s\n' "${state_names[@]}" | grep -Fxq -- "$name" || {
       rm -rf -- "$stage"
       return 1
     }
-    cp -p -- "$entry" "$stage/files/$name" || { rm -rf -- "$stage"; return 1; }
+    if [[ -L $entry ]]; then
+      case $name in
+        acme-cert.pem) [[ $(readlink "$entry" 2>/dev/null) == 'acme-live/current/fullchain.pem' ]] ;;
+        acme-private.key) [[ $(readlink "$entry" 2>/dev/null) == 'acme-live/current/private.key' ]] ;;
+        *) false ;;
+      esac || { rm -rf -- "$stage"; return 1; }
+      cp -Pp -- "$entry" "$stage/files/$name" || { rm -rf -- "$stage"; return 1; }
+    elif [[ -f $entry ]]; then
+      cp -p -- "$entry" "$stage/files/$name" || { rm -rf -- "$stage"; return 1; }
+    else
+      rm -rf -- "$stage"
+      return 1
+    fi
   done
 
   rm -rf -- "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+  rm -rf -- "$ACME_LIVE" || { rm -rf -- "$stage"; return 1; }
   for destination in "${state_paths[@]}"; do
     rm -f -- "$destination" || { rm -rf -- "$stage"; return 1; }
   done
   if [[ -d $stage/acme ]]; then
     mv -- "$stage/acme" "$ACME_HOME" || { rm -rf -- "$stage"; return 1; }
+  fi
+  if [[ -d $stage/live ]]; then
+    mv -- "$stage/live" "$ACME_LIVE" || { rm -rf -- "$stage"; return 1; }
   fi
   for index in "${!state_names[@]}"; do
     entry="$stage/files/${state_names[$index]}"
@@ -752,17 +1475,19 @@ restore_acme_state_backup(){
     mv -- "$entry" "$destination" || { rm -rf -- "$stage"; return 1; }
   done
   rm -rf -- "$stage" || return 1
-  rm -rf -- "$backup" || return 1
-  ACME_STATE_BACKUP=
+  if [[ $retain_backup == 0 ]]; then
+    rm -rf -- "$backup" || return 1
+    ACME_STATE_BACKUP=
+  fi
 }
 
 discard_acme_state(){
   local path failed=0
-  rm -rf "$ACME_HOME" || failed=1
+  rm -rf "$ACME_HOME" "$ACME_LIVE" || failed=1
   rm -f "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
     "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state" \
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime" || failed=1
-  for path in "$ACME_HOME" "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
+  for path in "$ACME_HOME" "$ACME_LIVE" "$ACME_CERT" "$ACME_KEY" "$ACME_IDENTITY" "$ACME_RELOAD" \
     "$SB_DIR/acme_renew.sh" "$SB_DIR/acme_renew.state" \
     "$SB_DIR/cert_renew.sh" "$SB_DIR/.cert_mtime"; do
     [[ ! -e $path && ! -L $path ]] || failed=1
@@ -788,7 +1513,7 @@ reset_acme_state(){
 }
 
 issue_cloudflare_certificate(){
-  local domain_input account_id cf_token identity_tmp backup_path
+  local domain_input account_id cf_token backup_path
   local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
   local -a issue_args
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
@@ -862,30 +1587,12 @@ issue_cloudflare_certificate(){
     return 1
   fi
   cf_token=
-  identity_tmp=$(mktemp "$SB_DIR/.acme-identity.XXXXXX") || {
-    discard_acme_state
-    restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
-    return 1
-  }
-  if ! printf '%s\n' "$ACME_PRIMARY_DOMAIN" > "$identity_tmp" || \
-     ! chmod 600 "$identity_tmp" || ! mv -f "$identity_tmp" "$ACME_IDENTITY"; then
-    rm -f "$identity_tmp"
+  if ! write_acme_identity "$ACME_PRIMARY_DOMAIN"; then
     discard_acme_state
     restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     return 1
   fi
-  if [[ $initial_install == 1 ]]; then
-    if ! SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
-        --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
-        --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
-      discard_acme_state
-      restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
-      red "证书签发成功，但安装到 $SB_DIR 失败"
-      return 1
-    fi
-  elif ! SB_INITIAL_INSTALL=0 HOME="$SB_DIR" "$ACME_BIN" --home "$ACME_HOME" --config-home "$ACME_HOME" \
-      --install-cert -d "$ACME_PRIMARY_DOMAIN" --ecc \
-      --key-file "$ACME_KEY" --fullchain-file "$ACME_CERT" --reloadcmd "$ACME_RELOAD"; then
+  if ! register_acme_certificate_deployment "$ACME_PRIMARY_DOMAIN" "$initial_install"; then
     discard_acme_state
     restore_acme_state_backup || red "恢复旧 ACME 状态失败，请立即检查 $SB_DIR"
     red "证书签发成功，但安装到 $SB_DIR 失败"
@@ -912,13 +1619,29 @@ issue_cloudflare_certificate(){
   green "Cloudflare DNS API 证书申请完成"
 }
 
-inscertificate(){
-  local menu acme_name selfsign_config
-  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  green "二、生成并设置相关证书"
-  echo
-  blue "自动生成bing自签证书中……" && sleep 2
+self_signed_certificate_is_valid(){
+  load_certificate_metadata "$SB_DIR/cert.pem" "$SB_DIR/private.key" &&
+    [[ $CERT_META_STATE == valid ]] &&
+    certificate_identity_matches "$SB_DIR/cert.pem" www.bing.com
+}
+
+generate_self_signed_certificate(){
+  local selfsign_config key_tmp cert_tmp key_backup='' cert_backup='' path
+  local key_path="$SB_DIR/private.key" cert_path="$SB_DIR/cert.pem"
+  for path in "$key_path" "$cert_path"; do
+    if [[ -e $path || -L $path ]]; then
+      [[ -f $path && ! -L $path ]] || return 1
+    fi
+  done
   selfsign_config=$(mktemp "$SB_DIR/.selfsign-openssl.XXXXXX") || return 1
+  key_tmp=$(mktemp "$SB_DIR/.selfsign-key.XXXXXX") || {
+    rm -f "$selfsign_config"
+    return 1
+  }
+  cert_tmp=$(mktemp "$SB_DIR/.selfsign-cert.XXXXXX") || {
+    rm -f "$selfsign_config" "$key_tmp"
+    return 1
+  }
   if ! cat > "$selfsign_config" <<'SELFSIGN'
 [req]
 distinguished_name = subject
@@ -932,25 +1655,63 @@ CN = www.bing.com
 subjectAltName = DNS:www.bing.com
 SELFSIGN
   then
-    rm -f "$selfsign_config"
+    rm -f "$selfsign_config" "$key_tmp" "$cert_tmp"
     return 1
   fi
-  if ! openssl ecparam -genkey -name prime256v1 -out "$SB_DIR/private.key" || \
-     ! openssl req -new -x509 -days 36500 -key "$SB_DIR/private.key" \
-       -out "$SB_DIR/cert.pem" -config "$selfsign_config"; then
-    rm -f "$selfsign_config"
-    red "生成bing自签证书失败"
+  if ! openssl ecparam -genkey -name prime256v1 -out "$key_tmp" ||
+     ! openssl req -new -x509 -days 36500 -key "$key_tmp" \
+       -out "$cert_tmp" -config "$selfsign_config" ||
+     ! chmod 600 "$key_tmp" "$cert_tmp" ||
+     ! load_certificate_metadata "$cert_tmp" "$key_tmp" ||
+     [[ $CERT_META_STATE != valid ]] ||
+     ! certificate_identity_matches "$cert_tmp" www.bing.com; then
+    rm -f "$selfsign_config" "$key_tmp" "$cert_tmp"
     return 1
   fi
   rm -f "$selfsign_config"
-  chmod 600 "$SB_DIR/private.key" "$SB_DIR/cert.pem"
+  if [[ -f $key_path ]]; then
+    key_backup=$(mktemp "$SB_DIR/.selfsign-key.backup.XXXXXX") || {
+      rm -f "$key_tmp" "$cert_tmp"
+      return 1
+    }
+    cp -p -- "$key_path" "$key_backup" || {
+      rm -f "$key_tmp" "$cert_tmp" "$key_backup"
+      return 1
+    }
+  fi
+  if [[ -f $cert_path ]]; then
+    cert_backup=$(mktemp "$SB_DIR/.selfsign-cert.backup.XXXXXX") || {
+      rm -f "$key_tmp" "$cert_tmp" "$key_backup"
+      return 1
+    }
+    cp -p -- "$cert_path" "$cert_backup" || {
+      rm -f "$key_tmp" "$cert_tmp" "$key_backup" "$cert_backup"
+      return 1
+    }
+  fi
+  if ! mv -fT -- "$key_tmp" "$key_path" ||
+     ! mv -fT -- "$cert_tmp" "$cert_path"; then
+    if [[ -n $key_backup ]]; then cp -p -- "$key_backup" "$key_path"; else rm -f "$key_path"; fi
+    if [[ -n $cert_backup ]]; then cp -p -- "$cert_backup" "$cert_path"; else rm -f "$cert_path"; fi
+    rm -f "$key_tmp" "$cert_tmp" "$key_backup" "$cert_backup"
+    return 1
+  fi
+  rm -f "$key_backup" "$cert_backup"
+  chmod 600 "$key_path" "$cert_path" && self_signed_certificate_is_valid
+}
+
+inscertificate(){
+  local menu acme_name
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  green "二、生成并设置相关证书"
   echo
-  if [[ -s $SB_DIR/cert.pem ]]; then
-    blue "生成bing自签证书成功"
-  else
+  blue "自动生成bing自签证书中……" && sleep 2
+  if ! generate_self_signed_certificate; then
     red "生成bing自签证书失败"
     return 1
   fi
+  echo
+  blue "生成bing自签证书成功"
   echo
   if acme_name=$(detect_acme_identity); then
     yellow "检测到可用的 ACME 域名证书：$acme_name"
@@ -1009,6 +1770,14 @@ valid_uuid(){
 
 valid_socks_password(){
   [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
+}
+
+valid_reality_key(){
+  [[ $1 =~ ^[A-Za-z0-9_-]{43}$ ]]
+}
+
+valid_short_id(){
+  [[ $1 =~ ^[0-9A-Fa-f]{8}$ ]]
 }
 
 valid_hostname(){
@@ -1138,10 +1907,10 @@ insport(){
 }
 # sb-module: 30-server-config
 # Generate server config JSON
-inssbjson(){
-  local candidate
-  candidate=$(mktemp "$SB_DIR/.sb.json.install.XXXXXX") || return 1
-  if ! cat > "$candidate" <<EOF
+render_server_config(){
+  local output=$1
+  [[ -n $output ]] || return 1
+  cat > "$output" <<EOF
 {
   "log": {
     "disabled": false,
@@ -1248,7 +2017,12 @@ inssbjson(){
   }
 }
 EOF
-  then
+}
+
+inssbjson(){
+  local candidate
+  candidate=$(mktemp "$SB_DIR/.sb.json.install.XXXXXX") || return 1
+  if ! render_server_config "$candidate"; then
     rm -f "$candidate"
     red "写入Sing-box候选配置失败"
     return 1
@@ -1260,9 +2034,59 @@ EOF
     rm -f "$candidate"
     return 1
   fi
-  mv -f "$candidate" "$SB_CONFIG"
+  mv -fT -- "$candidate" "$SB_CONFIG"
 }
 # sb-module: 40-service
+managed_path_is_trusted(){
+  local path=$1 expected_owner owner mode
+  [[ -e $path && ! -L $path ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$path" 2>/dev/null) || return 1
+  mode=$(stat -c '%a' "$path" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" && $mode =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 0022) == 0 ))
+}
+
+managed_regular_file_is_trusted(){
+  local path=$1
+  [[ -f $path && ! -L $path ]] && managed_path_is_trusted "$path"
+}
+
+managed_symlink_is_trusted(){
+  local path=$1 expected_owner owner
+  [[ -L $path ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$path" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" ]]
+}
+
+atomic_write_private_text(){
+  local destination=$1 value=$2 candidate name
+  name=${destination##*/}
+  [[ ${destination%/*} == "$SB_DIR" && $name =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] && managed_path_is_trusted "$SB_DIR" || return 1
+  candidate=$(mktemp "$SB_DIR/.managed-write.XXXXXX") || return 1
+  if ! printf '%s\n' "$value" > "$candidate" || ! chmod 600 "$candidate" ||
+     ! mv -fT -- "$candidate" "$destination"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+atomic_copy_private_file(){
+  local source=$1 destination=$2 candidate name
+  name=${destination##*/}
+  [[ -f $source && ! -L $source && ${destination%/*} == "$SB_DIR" &&
+     $name =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] && managed_path_is_trusted "$SB_DIR" || return 1
+  candidate=$(mktemp "$SB_DIR/.managed-copy.XXXXXX") || return 1
+  if ! cp -- "$source" "$candidate" || ! chmod 600 "$candidate" ||
+     ! mv -fT -- "$candidate" "$destination"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
 write_managed_marker_at(){
   local directory=$1 marker_tmp marker="$1/.sb-managed"
   [[ ! -e $directory || -d $directory && ! -L $directory ]] || return 1
@@ -1270,7 +2094,7 @@ write_managed_marker_at(){
   chmod 700 "$directory" || return 1
   marker_tmp=$(mktemp "$directory/.sb-managed.XXXXXX") || return 1
   if ! printf '%s\n' 'managed_by=sb.sh' 'identity=sb' 'directory=/etc/sb' > "$marker_tmp" ||
-     ! chmod 600 "$marker_tmp" || ! mv -f "$marker_tmp" "$marker"; then
+     ! chmod 600 "$marker_tmp" || ! mv -fT -- "$marker_tmp" "$marker"; then
     rm -f "$marker_tmp"
     return 1
   fi
@@ -1282,6 +2106,7 @@ write_managed_marker(){
 
 managed_directory_is_owned(){
   [[ -d $SB_DIR && ! -L $SB_DIR && -f $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
+  managed_path_is_trusted "$SB_DIR" && managed_regular_file_is_trusted "$SB_MANAGED_MARKER" || return 1
   grep -Fqx 'managed_by=sb.sh' "$SB_MANAGED_MARKER" 2>/dev/null &&
     grep -Fqx 'identity=sb' "$SB_MANAGED_MARKER" 2>/dev/null &&
     grep -Fqx 'directory=/etc/sb' "$SB_MANAGED_MARKER" 2>/dev/null
@@ -1360,6 +2185,29 @@ openrc_unit_is_owned(){
     grep -Fqx "command_args=\"run -c $config\"" "$unit" 2>/dev/null
 }
 
+systemd_service_definition_is_repairable(){
+  local unit=${1:-$SYSTEMD_UNIT}
+  [[ -f $unit && ! -L $unit ]] || return 1
+  grep -Fqx '# Managed by sb.sh' "$unit" 2>/dev/null || return 1
+  systemd_service_has_other_units "$SB_SERVICE" "$unit" && return 1
+  systemd_service_has_dropins "$SB_SERVICE" && return 1
+  [[ ! -e $OPENRC_UNIT && ! -L $OPENRC_UNIT ]]
+}
+
+openrc_service_definition_is_repairable(){
+  [[ -f $OPENRC_UNIT && ! -L $OPENRC_UNIT ]] || return 1
+  grep -Fqx '# Managed by sb.sh' "$OPENRC_UNIT" 2>/dev/null || return 1
+  ! systemd_service_definition_present "$SB_SERVICE"
+}
+
+service_definition_is_repairable(){
+  if command -v apk >/dev/null 2>&1; then
+    openrc_service_definition_is_repairable
+  else
+    systemd_service_definition_is_repairable "$SYSTEMD_UNIT"
+  fi
+}
+
 write_service_definition(){
   local unit_tmp
   if command -v apk >/dev/null 2>&1; then
@@ -1377,7 +2225,7 @@ EOF
       rm -f "$unit_tmp"
       return 1
     fi
-    if ! chmod 700 "$unit_tmp" || ! mv -f "$unit_tmp" "$OPENRC_UNIT"; then
+    if ! chmod 700 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$OPENRC_UNIT"; then
       rm -f "$unit_tmp"
       return 1
     fi
@@ -1405,7 +2253,7 @@ EOF
       rm -f "$unit_tmp"
       return 1
     fi
-    if ! chmod 600 "$unit_tmp" || ! mv -f "$unit_tmp" "$SYSTEMD_UNIT"; then
+    if ! chmod 600 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$SYSTEMD_UNIT"; then
       rm -f "$unit_tmp"
       return 1
     fi
@@ -1456,6 +2304,34 @@ sbservice(){
   return 0
 }
 
+repair_managed_service(){
+  if service_name_conflict && ! service_definition_is_repairable; then
+    red "检测到不属于sb.sh的同名 $SB_SERVICE 服务，拒绝覆盖"
+    return 1
+  fi
+  if ! installed_core_is_current || [[ ! -s $SB_CONFIG ]] ||
+     ! "$SB_BIN" check -c "$SB_CONFIG" >/dev/null 2>&1; then
+    red "内核或配置仍未通过检查，不能重建服务"
+    return 1
+  fi
+  write_service_definition || return 1
+  if command -v apk >/dev/null 2>&1; then
+    rc-update add "$SB_SERVICE" default >/dev/null 2>&1 ||
+      rc-update show default 2>/dev/null | grep -qE "(^|[[:space:]])${SB_SERVICE}([[:space:]]|$)" || return 1
+    if service_is_active; then
+      rc-service "$SB_SERVICE" restart >/dev/null 2>&1 || return 1
+    else
+      rc-service "$SB_SERVICE" start >/dev/null 2>&1 || return 1
+    fi
+  else
+    systemctl daemon-reload >/dev/null 2>&1 || return 1
+    systemctl enable "$SB_SERVICE" >/dev/null 2>&1 || return 1
+    systemctl restart "$SB_SERVICE" >/dev/null 2>&1 || return 1
+  fi
+  sleep 1
+  service_is_active
+}
+
 restartsb(){
   if command -v apk >/dev/null 2>&1; then
     rc-service "$SB_SERVICE" restart
@@ -1489,7 +2365,9 @@ formal_service_present(){
 
 service_name_conflict(){
   formal_service_present || return 1
-  ! service_is_owned
+  service_is_owned && return 1
+  service_definition_is_repairable && return 1
+  return 0
 }
 
 service_exists(){
@@ -1502,14 +2380,45 @@ is_installed(){
 
 managed_install_data_present(){
   [[ -x $SB_BIN || -s $SB_CONFIG || -s $SB_DIR/private.key || -s $SB_DIR/cert.pem ||
-     -s $ACME_KEY || -s $ACME_CERT || -s $SB_DIR/public.key ]]
+     -s $ACME_KEY || -s $ACME_CERT || -s $SB_DIR/public.key ||
+     -s ${SB_LAST_GOOD:-$SB_DIR/sb.json.last-good} ]]
+}
+
+installed_core_is_current(){
+  local installed_core
+  [[ -f $SB_BIN && ! -L $SB_BIN && -x $SB_BIN ]] || return 1
+  managed_regular_file_is_trusted "$SB_BIN" || return 1
+  installed_core=$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')
+  [[ $installed_core == "$CORE_VERSION" ]]
+}
+
+managed_config_file_is_valid(){
+  local source=$1
+  [[ -s $source ]] && managed_regular_file_is_trusted "$source" || return 1
+  installed_core_is_current || return 1
+  "$SB_BIN" check -c "$source" >/dev/null 2>&1
+}
+
+save_last_good_config(){
+  local source=${1:-$SB_CONFIG} destination=${SB_LAST_GOOD:-$SB_DIR/sb.json.last-good} candidate
+  managed_config_file_is_valid "$source" || return 1
+  if [[ -e $destination || -L $destination ]]; then
+    [[ -f $destination && ! -L $destination ]] || return 1
+    if cmp -s -- "$source" "$destination"; then
+      chmod 600 "$destination"
+      return
+    fi
+  fi
+  candidate=$(mktemp "$SB_DIR/.sb.json.last-good.XXXXXX") || return 1
+  if ! cp -p -- "$source" "$candidate" || ! chmod 600 "$candidate" ||
+     ! mv -fT -- "$candidate" "$destination"; then
+    rm -f "$candidate"
+    return 1
+  fi
 }
 
 installed_config_is_valid(){
-  local installed_core
-  [[ -x $SB_BIN && -s $SB_CONFIG ]] || return 1
-  installed_core=$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')
-  [[ $installed_core == "$CORE_VERSION" ]] || return 1
+  installed_core_is_current && [[ -s $SB_CONFIG ]] || return 1
   "$SB_BIN" check -c "$SB_CONFIG" >/dev/null 2>&1
 }
 
@@ -1565,12 +2474,13 @@ commit_config(){
     return 1
   fi
   chmod 600 "$candidate"
-  if ! mv -f "$candidate" "$SB_CONFIG"; then
+  if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
     rm -f "$candidate" "$backup"
     return 1
   fi
   if restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
+    save_last_good_config "$SB_CONFIG" || yellow "配置已生效，但最后可用配置快照更新失败"
     return 0
   fi
   red "服务未能使用新配置启动，正在回滚"
@@ -1586,17 +2496,18 @@ commit_config(){
 # sb-module: 50-client-output
 # IP detection for share links
 save_server_ip(){
-  local ip=$1
+  local ip=$1 server_value client_value
   if valid_ipv4 "$ip"; then
-    printf '%s\n' "$ip" > "$SB_DIR/server_ip.log"
-    printf '%s\n' "$ip" > "$SB_DIR/server_ipcl.log"
+    server_value=$ip
+    client_value=$ip
   elif valid_ipv6 "$ip"; then
-    printf '[%s]\n' "$ip" > "$SB_DIR/server_ip.log"
-    printf '%s\n' "$ip" > "$SB_DIR/server_ipcl.log"
+    server_value="[$ip]"
+    client_value=$ip
   else
     return 1
   fi
-  chmod 600 "$SB_DIR/server_ip.log" "$SB_DIR/server_ipcl.log"
+  atomic_write_private_text "$SB_DIR/server_ip.log" "$server_value" &&
+    atomic_write_private_text "$SB_DIR/server_ipcl.log" "$client_value"
 }
 
 ipuuid(){
@@ -1626,7 +2537,10 @@ ipuuid(){
 
 refresh_saved_ip(){
   local previous
-  previous=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
+  previous=
+  if managed_regular_file_is_trusted "$SB_DIR/server_ipcl.log"; then
+    previous=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
+  fi
   v4v6_refresh || true
   if valid_ipv6 "$previous" && [[ -n $v6 ]]; then
     save_server_ip "$v6"
@@ -1637,7 +2551,9 @@ refresh_saved_ip(){
   elif [[ -n $v6 ]]; then
     save_server_ip "$v6"
   else
-    [[ -s $SB_DIR/server_ip.log && -s $SB_DIR/server_ipcl.log ]]
+    [[ -s $SB_DIR/server_ip.log && -s $SB_DIR/server_ipcl.log ]] &&
+      managed_regular_file_is_trusted "$SB_DIR/server_ip.log" &&
+      managed_regular_file_is_trusted "$SB_DIR/server_ipcl.log"
   fi
 }
 
@@ -1664,6 +2580,7 @@ result(){
   uuid=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid' "$SB_CONFIG" 2>/dev/null) || return 1
   vl_port=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   vl_name=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name' "$SB_CONFIG" 2>/dev/null) || return 1
+  managed_regular_file_is_trusted "$SB_DIR/public.key" || return 1
   public_key=$(cat "$SB_DIR/public.key" 2>/dev/null)
   short_id=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0]' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
@@ -1692,8 +2609,7 @@ result(){
     hy2_certificate_json=$(jq -Rs . < "$SB_DIR/cert.pem") || return 1
     [[ -n $hy2_certificate_json ]] || return 1
     hy2_clash_ca="  ca-str: |"$'\n'"$(sed 's/^/    /' "$SB_DIR/cert.pem")"
-    printf '%s\n' "$SHA256" > "$SB_DIR/SHA256.txt"
-    chmod 600 "$SB_DIR/SHA256.txt"
+    atomic_write_private_text "$SB_DIR/SHA256.txt" "$SHA256" || return 1
     hy2_name=www.bing.com
     sb_hy2_ip=$server_ip
     cl_hy2_ip=$server_ipcl
@@ -1703,8 +2619,7 @@ result(){
       red "Acme证书身份无法确认，不能生成Hysteria2节点"
       return 1
     fi
-    printf '%s\n' "$ym" > "$ACME_IDENTITY" || return 1
-    chmod 600 "$ACME_IDENTITY" || return 1
+    write_acme_identity "$ym" || return 1
     hy2_name=$ym
     sb_hy2_ip=$server_ip
     cl_hy2_ip=$server_ipcl
@@ -2098,8 +3013,8 @@ EOF
     return 1
   fi
   chmod 600 "$sbox_candidate" "$clash_candidate" || { rm -f "$sbox_candidate" "$clash_candidate"; return 1; }
-  mv -f "$sbox_candidate" "$SB_DIR/sbox.json" || { rm -f "$sbox_candidate" "$clash_candidate"; return 1; }
-  mv -f "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
+  mv -fT -- "$sbox_candidate" "$SB_DIR/sbox.json" || { rm -f "$sbox_candidate" "$clash_candidate"; return 1; }
+  mv -fT -- "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
 }
 
 sbshare(){
@@ -2127,11 +3042,11 @@ sbshare(){
     rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  mv -f "$vl_tmp" "$SB_DIR/vl_reality.txt" || { rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -f "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -f "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -f "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
-  cp -p "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1
+  mv -fT -- "$vl_tmp" "$SB_DIR/vl_reality.txt" || { rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
+  atomic_copy_private_file "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1
   v2sub=$(cat "$SB_DIR/jhdy.txt" 2>/dev/null) || return 1
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -2250,29 +3165,58 @@ acme_lock_path(){
   printf '%s\n' "${ACME_LOCK:-$SB_DIR/acme.lock}"
 }
 
-acquire_acme_lock(){
-  local lock
-  [[ ${ACME_LOCK_HELD:-0} -eq 1 ]] && return 0
-  lock=$(acme_lock_path)
-  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
-  if [[ -e $lock || -L $lock ]]; then
-    [[ -f $lock && ! -L $lock ]] || return 1
-  fi
-  exec {ACME_LOCK_FD}> "$lock" || return 1
-  if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
-    exec {ACME_LOCK_FD}>&-
-    ACME_LOCK_FD=
-    return 1
-  fi
-  ACME_LOCK_HELD=1
+acme_compat_lock_path(){
+  printf '%s\n' "${ACME_COMPAT_LOCK:-$SB_DIR/acme.lock}"
 }
 
 release_acme_lock(){
-  [[ ${ACME_LOCK_HELD:-0} -eq 1 && ${ACME_LOCK_FD:-} =~ ^[0-9]+$ ]] || return 0
-  flock -u "$ACME_LOCK_FD" || return 1
-  exec {ACME_LOCK_FD}>&-
-  ACME_LOCK_FD=
+  local failed=0
+  if [[ ${ACME_COMPAT_LOCK_FD:-} =~ ^[0-9]+$ ]]; then
+    flock -u "$ACME_COMPAT_LOCK_FD" || failed=1
+    if ! exec {ACME_COMPAT_LOCK_FD}>&-; then
+      failed=1
+    fi
+    ACME_COMPAT_LOCK_FD=
+  fi
+  if [[ ${ACME_LOCK_FD:-} =~ ^[0-9]+$ ]]; then
+    flock -u "$ACME_LOCK_FD" || failed=1
+    if ! exec {ACME_LOCK_FD}>&-; then
+      failed=1
+    fi
+    ACME_LOCK_FD=
+  fi
   ACME_LOCK_HELD=0
+  return "$failed"
+}
+
+acquire_acme_lock(){
+  local lock compat_lock path
+  [[ ${ACME_LOCK_HELD:-0} -eq 1 ]] && return 0
+  lock=$(acme_lock_path)
+  compat_lock=$(acme_compat_lock_path)
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  for path in "$lock" "$compat_lock"; do
+    if [[ -e $path || -L $path ]]; then
+      [[ -f $path && ! -L $path ]] || return 1
+    fi
+  done
+  ACME_LOCK_FD=
+  ACME_COMPAT_LOCK_FD=
+  # All callers and generated runners acquire the global lock before the v1.8.0 lock.
+  exec {ACME_LOCK_FD}> "$lock" || return 1
+  if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
+    release_acme_lock >/dev/null 2>&1 || true
+    return 1
+  fi
+  if [[ $compat_lock != "$lock" ]]; then
+    if ! exec {ACME_COMPAT_LOCK_FD}> "$compat_lock" ||
+       ! chmod 600 "$compat_lock" ||
+       ! flock -w 30 "$ACME_COMPAT_LOCK_FD"; then
+      release_acme_lock >/dev/null 2>&1 || true
+      return 1
+    fi
+  fi
+  ACME_LOCK_HELD=1
 }
 
 with_acme_lock(){
@@ -2301,7 +3245,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v1}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v2}"
 }
 
 # Parsed values are consumed by the certificate management module.
@@ -2425,7 +3369,7 @@ filter_restart_cron_entries(){
 acme_renew_runner_is_current(){
   local runner identity mode expected_cron_command expected_force_command expected_sb_dir
   local expected_acme_bin expected_acme_home expected_cert_file expected_state_file
-  local expected_identity_file expected_lock_file
+  local expected_identity_file expected_lock_file expected_compat_lock_file
   runner=$(acme_renew_runner_path)
   identity=$(acme_renew_runner_identity)
   expected_cron_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --cron --home \"\$acme_home\" --config-home \"\$acme_home\""
@@ -2437,6 +3381,7 @@ acme_renew_runner_is_current(){
   printf -v expected_state_file 'state_file=%q' "$(acme_renew_state_path)"
   printf -v expected_identity_file 'identity_file=%q' "$ACME_IDENTITY"
   printf -v expected_lock_file 'lock_file=%q' "$(acme_lock_path)"
+  printf -v expected_compat_lock_file 'compat_lock_file=%q' "$(acme_compat_lock_path)"
   [[ -f $runner && ! -L $runner && -x $runner ]] || return 1
   mode=$(stat -c '%a' "$runner" 2>/dev/null || true)
   case $(uname -s 2>/dev/null) in
@@ -2453,10 +3398,13 @@ acme_renew_runner_is_current(){
     grep -Fqx -- "$expected_state_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_identity_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_lock_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_compat_lock_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "  1) [[ \${1-} == --force ]] || exit 2; force=1 ;;" "$runner" 2>/dev/null &&
     grep -Fqx -- '  *) exit 2 ;;' "$runner" 2>/dev/null &&
     grep -Fqx -- 'exec 9> "$lock_file" || exit 1' "$runner" 2>/dev/null &&
-    grep -Fqx -- 'flock -n 9 || exit 75' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'if ! flock -n 9; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if ! flock -n 8; then' "$runner" 2>/dev/null &&
     grep -Fqx -- "  acme_identity=\$(read_runner_acme_identity) || exit 1" "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
@@ -2465,7 +3413,7 @@ acme_renew_runner_is_current(){
     grep -Fqx -- "before_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
     grep -Fqx -- "after_fingerprint=\$(certificate_fingerprint || true)" "$runner" 2>/dev/null &&
     grep -Fqx -- "state_tmp=\$(mktemp \"\$sb_dir/.acme_renew.state.XXXXXX\") || exit 1" "$runner" 2>/dev/null &&
-    grep -Fq -- "mv -f \"\$state_tmp\" \"\$state_file\"" "$runner" 2>/dev/null &&
+    grep -Fq -- "mv -fT -- \"\$state_tmp\" \"\$state_file\"" "$runner" 2>/dev/null &&
     bash -n "$runner" >/dev/null 2>&1
 }
 
@@ -2487,6 +3435,7 @@ write_acme_renew_runner(){
     printf 'state_file=%q\n' "$state"
     printf 'identity_file=%q\n' "$ACME_IDENTITY"
     printf 'lock_file=%q\n' "$(acme_lock_path)"
+    printf 'compat_lock_file=%q\n' "$(acme_compat_lock_path)"
     cat <<'ACMERENEW'
 
 certificate_fingerprint(){
@@ -2525,12 +3474,39 @@ case $# in
   1) [[ ${1-} == --force ]] || exit 2; force=1 ;;
   *) exit 2 ;;
 esac
-if [[ -e $lock_file || -L $lock_file ]]; then
-  [[ -f $lock_file && ! -L $lock_file ]] || exit 1
-fi
+for candidate in "$lock_file" "$compat_lock_file"; do
+  if [[ -e $candidate || -L $candidate ]]; then
+    [[ -f $candidate && ! -L $candidate ]] || exit 1
+  fi
+done
 exec 9> "$lock_file" || exit 1
-chmod 600 "$lock_file" || exit 1
-flock -n 9 || exit 75
+if ! chmod 600 "$lock_file"; then
+  exec 9>&-
+  exit 1
+fi
+if ! flock -n 9; then
+  exec 9>&-
+  exit 75
+fi
+if [[ $compat_lock_file != "$lock_file" ]]; then
+  if ! exec 8> "$compat_lock_file"; then
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    exit 1
+  fi
+  if ! chmod 600 "$compat_lock_file"; then
+    exec 8>&-
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    exit 1
+  fi
+  if ! flock -n 8; then
+    exec 8>&-
+    flock -u 9 >/dev/null 2>&1 || true
+    exec 9>&-
+    exit 75
+  fi
+fi
 if ((force)); then
   acme_identity=$(read_runner_acme_identity) || exit 1
 fi
@@ -2580,13 +3556,13 @@ if ! printf '%s\n' \
   "last_renewal_epoch=$last_renewal_epoch" \
   "cert_fingerprint=$after_fingerprint" > "$state_tmp" ||
    ! chmod 600 "$state_tmp" ||
-   ! mv -f "$state_tmp" "$state_file"; then
+   ! mv -fT -- "$state_tmp" "$state_file"; then
   exit 1
 fi
 trap - EXIT HUP INT TERM
 exit "$exit_code"
 ACMERENEW
-  } > "$runner_tmp" || ! chmod 700 "$runner_tmp" || ! mv -f "$runner_tmp" "$runner"; then
+  } > "$runner_tmp" || ! chmod 700 "$runner_tmp" || ! mv -fT -- "$runner_tmp" "$runner"; then
     rm -f "$runner_tmp"
     return 1
   fi
@@ -2661,15 +3637,27 @@ remove_all_managed_crons(){
 }
 
 setup_acme_renew_cron(){
-  local current filtered entry
+  local current filtered entry identity
   if ! cron_daemon_is_active; then
     red "cron/crond 服务未运行，拒绝写入无法执行的 ACME 续期任务"
     return 1
   fi
   config_uses_acme_certificate || return 1
-  [[ -x $ACME_BIN && -f $ACME_HOME/dnsapi/dns_cf.sh && -s $ACME_IDENTITY ]] || return 1
+  if ! identity=$(valid_acme_renewal_identity 2>/dev/null); then
+    identity=$(recover_acme_renewal_identity 2>/dev/null) || {
+      red "ACME 身份、证书或域名配置校验失败，无法修复自动续期"
+      return 1
+    }
+  fi
   cloudflare_acme_credentials_present || return 1
   write_acme_reload_hook || return 1
+  if ! managed_acme_live_layout_is_valid ||
+     ! acme_deployment_config_is_current "$identity"; then
+    yellow "正在把 ACME 证书迁移到原子部署模式……"
+    register_acme_certificate_deployment "$identity" 0 || return 1
+  fi
+  identity=$(valid_acme_renewal_identity 2>/dev/null) || return 1
+  acme_deployment_config_is_current "$identity" || return 1
   write_acme_renew_runner || return 1
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
@@ -2681,7 +3669,7 @@ setup_acme_renew_cron(){
 }
 
 ensure_acme_renew_cron(){
-  local current
+  local current identity
   if ! cron_daemon_is_active; then
     red "cron/crond 服务未运行，ACME 自动续期当前不可用"
     return 1
@@ -2689,12 +3677,17 @@ ensure_acme_renew_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   if config_uses_acme_certificate; then
-    if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]] ||
+    if ! identity=$(valid_acme_renewal_identity 2>/dev/null) ||
        ! cloudflare_acme_credentials_present; then
+      if setup_acme_renew_cron; then
+        return 0
+      fi
       red "当前配置正在使用 ACME 证书，但续期组件不完整；已保留现有 cron，请立即修复"
       return 1
     fi
-    if ! acme_reload_hook_is_current || ! acme_renew_runner_is_current ||
+    if ! managed_acme_live_layout_is_valid ||
+       ! acme_deployment_config_is_current "$identity" ||
+       ! acme_reload_hook_is_current || ! acme_renew_runner_is_current ||
        ! acme_renew_cron_is_current "$current"; then
       setup_acme_renew_cron
     fi
@@ -2848,6 +3841,12 @@ inspect_acme_renewal_health(){
   elif ! load_acme_certificate_schedule "$identity"; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="ACME 域名配置或续期时间记录异常"
+  elif ! managed_acme_live_layout_is_valid; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="证书原子部署目录或 current 指针异常"
+  elif ! acme_deployment_config_is_current "$identity"; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="acme.sh 部署目标不是受管暂存目录"
   elif ! cron_daemon_is_active; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="cron/crond 未运行"
@@ -2999,10 +3998,12 @@ rollback_new_acme_state(){
 }
 
 restore_previous_active_acme(){
-  local old_identity=$1
+  local old_identity=$1 restored_identity
   [[ -n $old_identity ]] || return 1
   yellow "正在恢复原 ACME 证书和自动续期……"
-  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+  restored_identity=$(detect_acme_identity 2>/dev/null) || return 1
+  if [[ $restored_identity == "$old_identity" ]] && cert_acme &&
+     activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
     if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
       green "原 ACME 证书和自动续期已恢复"
     else
@@ -3015,19 +4016,34 @@ restore_previous_active_acme(){
 }
 
 apply_new_cloudflare_certificate(){
+  local activation_status backup_path
   certificate_action_service_ready || return 1
   if ! issue_cloudflare_certificate 0 1; then
     red "新证书申请失败，当前证书未改变"
     return 1
   fi
-  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
-    finish_acme_replacement || true
-    if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-      green "新 ACME 证书已切换并启用自动续期"
+  if cert_acme; then
+    if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+      finish_acme_replacement || true
+      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+        green "新 ACME 证书已切换并启用自动续期"
+      else
+        yellow "新 ACME 证书已切换，但自动续期配置异常，请使用修复功能"
+      fi
+      return 0
     else
-      yellow "新 ACME 证书已切换，但自动续期配置异常，请使用修复功能"
+      activation_status=$?
     fi
-    return 0
+  else
+    activation_status=1
+  fi
+  if [[ $activation_status -eq 2 ]]; then
+    backup_path=$ACME_STATE_BACKUP
+    ACME_STATE_BACKUP=
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    red "配置切换与自动回滚均失败；为避免删除当前配置可能引用的证书，已保留新 ACME 状态"
+    yellow "申请前的 ACME 状态备份保留在：$backup_path"
+    return 2
   fi
   red "新证书已签发，但服务切换失败，正在恢复申请前的 ACME 状态"
   rollback_new_acme_state || true
@@ -3035,8 +4051,11 @@ apply_new_cloudflare_certificate(){
 }
 
 replace_active_acme_certificate(){
-  local choice old_identity
-  old_identity=$(read_acme_identity 2>/dev/null || true)
+  local choice old_identity activation_status backup_path
+  if ! old_identity=$(detect_acme_identity 2>/dev/null); then
+    red "当前 ACME 证书无效，无法建立可靠的恢复点；请先修复证书状态"
+    return 1
+  fi
   yellow "更换期间服务会短暂切换为自签证书；任一步失败都会尝试恢复原 ACME 证书"
   readp "输入1继续，输入0取消：" choice || return 1
   [[ $choice == 1 ]] || return 0
@@ -3052,14 +4071,28 @@ replace_active_acme_certificate(){
     return 1
   fi
   if issue_cloudflare_certificate 0 1 1; then
-    if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
-      finish_acme_replacement || true
-      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-        green "ACME 证书与 Cloudflare 凭据更换完成"
+    if cert_acme; then
+      if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+        finish_acme_replacement || true
+        if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+          green "ACME 证书与 Cloudflare 凭据更换完成"
+        else
+          yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+        fi
+        return 0
       else
-        yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+        activation_status=$?
       fi
-      return 0
+    else
+      activation_status=1
+    fi
+    if [[ $activation_status -eq 2 ]]; then
+      backup_path=$ACME_STATE_BACKUP
+      ACME_STATE_BACKUP=
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+      red "配置切换与自动回滚均失败；已保留新 ACME 状态，避免破坏当前配置引用"
+      yellow "更换前的 ACME 状态备份保留在：$backup_path"
+      return 2
     fi
     red "新证书已签发，但服务切换失败"
     rollback_new_acme_state || true
@@ -3586,17 +4619,41 @@ running_from_managed_shortcut(){
   [[ $source_path == "$shortcut_path" ]]
 }
 
-cleanup_incomplete_install(){
-  local cleanup_failed=0
+lifecycle_acme_state_exists(){
+  local lock compat_lock path
+  lock=$(acme_lock_path) || return 0
+  compat_lock=$(acme_compat_lock_path) || return 0
+  for path in "$lock" "$compat_lock" "${ACME_HOME:-$SB_DIR/acme}" \
+    "${ACME_CERT:-$SB_DIR/acme-cert.pem}" "${ACME_KEY:-$SB_DIR/acme-private.key}" \
+    "${ACME_IDENTITY:-$SB_DIR/acme_server_name}" "${ACME_RELOAD:-$SB_DIR/acme_reload.sh}" \
+    "${ACME_LIVE:-$SB_DIR/acme-live}"; do
+    [[ ! -e $path && ! -L $path ]] || return 0
+  done
+  acme_renew_artifacts_exist
+}
 
-  if service_name_conflict; then
-    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝清理安装残留"
+with_lifecycle_acme_lock(){
+  if [[ ${ACME_LOCK_HELD:-0} -eq 1 ]]; then
+    with_acme_lock "$@"
+    return
+  fi
+  if [[ ! -e $SB_DIR && ! -L $SB_DIR ]]; then
+    "$@"
+    return
+  fi
+  if command -v flock >/dev/null 2>&1; then
+    with_acme_lock "$@"
+    return
+  fi
+  if lifecycle_acme_state_exists; then
+    red "检测到 ACME 续期状态，但系统缺少 flock，拒绝在无法防止并发续期时清理"
     return 1
   fi
-  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
-    red "无法确认 $SB_DIR 属于本脚本，已保留该目录"
-    return 1
-  fi
+  "$@"
+}
+
+cleanup_incomplete_install_locked(){
+  local cleanup_failed=0
 
   if ! cleanup_service; then
     red "停止或移除 sb 服务失败，已保留安装残留以避免误删"
@@ -3628,6 +4685,18 @@ cleanup_incomplete_install(){
   return "$cleanup_failed"
 }
 
+cleanup_incomplete_install(){
+  if service_name_conflict; then
+    red "检测到不属于本脚本的同名 $SB_SERVICE 服务，拒绝清理安装残留"
+    return 1
+  fi
+  if [[ -e $SB_DIR || -L $SB_DIR ]] && ! managed_directory_is_owned; then
+    red "无法确认 $SB_DIR 属于本脚本，已保留该目录"
+    return 1
+  fi
+  with_lifecycle_acme_lock cleanup_incomplete_install_locked
+}
+
 cleanup_install_transaction(){
   [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 0
   INSTALL_TRANSACTION_ACTIVE=0
@@ -3642,6 +4711,29 @@ abort_install_transaction(){
     red "自动清理未完整完成，请检查上方错误后再使用菜单[2]修复"
   fi
   return 1
+}
+
+uninstall_locked(){
+  if ! cleanup_service; then
+    red "停止或移除sb服务失败，卸载已中止；配置与定时任务均保留"
+    return 1
+  fi
+  if ! remove_all_managed_crons; then
+    red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
+    return 1
+  fi
+  if ! rm -rf "$SB_DIR"; then
+    red "删除sb文件失败，请检查文件系统权限"
+    return 1
+  fi
+  if shortcut_is_owned; then
+    if ! rm -f "$SHORTCUT"; then
+      red "删除快捷方式 $SHORTCUT 失败，请检查文件系统权限"
+      return 1
+    fi
+  elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
+    yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
+  fi
 }
 
 # Uninstall
@@ -3660,26 +4752,7 @@ uninstall(){
   yellow "0：取消"
   readp "请选择【0-1】：" menu
   if [[ $menu == 1 ]]; then
-    if ! cleanup_service; then
-      red "停止或移除sb服务失败，卸载已中止；配置与定时任务均保留"
-      return 1
-    fi
-    if ! remove_all_managed_crons; then
-      red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
-      return 1
-    fi
-    if ! rm -rf "$SB_DIR"; then
-      red "删除sb文件失败，请检查文件系统权限"
-      return 1
-    fi
-    if shortcut_is_owned; then
-      if ! rm -f "$SHORTCUT"; then
-        red "删除快捷方式 $SHORTCUT 失败，请检查文件系统权限"
-        return 1
-      fi
-    elif [[ -e $SHORTCUT || -L $SHORTCUT ]]; then
-      yellow "检测到非本脚本管理的 $SHORTCUT，已保留"
-    fi
+    with_lifecycle_acme_lock uninstall_locked || return 1
     green "sb卸载完成！"
     echo
     exit 0
@@ -3746,7 +4819,8 @@ atomic_install_shortcut(){
   local source=$1 mode=$2 shortcut_tmp
   [[ -f $source && ! -L $source && $mode =~ ^[0-7]{3,4}$ ]] || return 1
   shortcut_tmp=$(mktemp "${SHORTCUT}.tmp.XXXXXX") || return 1
-  if ! install -m "$mode" "$source" "$shortcut_tmp" || ! mv -f "$shortcut_tmp" "$SHORTCUT"; then
+  if ! install -m "$mode" "$source" "$shortcut_tmp" ||
+     ! mv -fT -- "$shortcut_tmp" "$SHORTCUT"; then
     rm -f "$shortcut_tmp"
     return 1
   fi
@@ -3783,11 +4857,18 @@ update_shortcut(){
 }
 
 prepare_runtime_state(){
-  if formal_service_present && ! service_is_owned; then
+  if formal_service_present && ! service_is_owned && ! service_definition_is_repairable; then
     red "检测到不属于本脚本的 $SB_SERVICE 服务，拒绝继续"
     return 1
   fi
-  prepare_managed_directory
+  prepare_managed_directory || return 1
+  if acme_state_backup_candidates_exist; then
+    if ! command -v flock >/dev/null 2>&1; then
+      red "检测到 ACME 恢复点，但系统缺少 flock，无法安全恢复或清理"
+      return 1
+    fi
+    with_acme_lock resolve_orphaned_acme_state_backup || return 1
+  fi
 }
 
 cron_daemon_is_active(){
@@ -3818,9 +4899,10 @@ enable_cron_daemon(){
   cron_daemon_is_active
 }
 
-dependencies_ready(){
+core_dependencies_ready(){
   local cmd
-  for cmd in bash curl jq openssl ip ss shuf stat tar qrencode crontab install sha256sum flock; do
+  for cmd in awk base64 bash cmp cp curl cut date flock grep install ip jq mktemp mv \
+    openssl rm sed sha256sum shuf ss stat tail tar tr; do
     command -v "$cmd" >/dev/null 2>&1 || return 1
   done
   if command -v apk >/dev/null 2>&1; then
@@ -3828,6 +4910,14 @@ dependencies_ready(){
   else
     command -v systemctl >/dev/null 2>&1 && [[ -d /run/systemd/system ]] || return 1
   fi
+}
+
+dependencies_ready(){
+  local cmd
+  core_dependencies_ready || return 1
+  for cmd in crontab flock qrencode; do
+    command -v "$cmd" >/dev/null 2>&1 || return 1
+  done
   cron_daemon_is_active
 }
 
@@ -3853,7 +4943,894 @@ install_dependencies(){
     red "依赖安装不完整，请检查上方包管理器错误"
     return 1
   fi
-  touch "$SB_DIR/.deps_ok"
+  atomic_write_private_text "$SB_DIR/.deps_ok" ready
+}
+# sb-module: 85-repair
+# Diagnose and repair an owned sb installation without deleting node data.
+load_repair_config_values(){
+  local source=$1 hy2_uuid
+  REPAIR_UUID=
+  REPAIR_VLESS_PORT=
+  REPAIR_SOCKS_PORT=
+  REPAIR_HY2_PORT=
+  REPAIR_SNI=
+  REPAIR_PRIVATE_KEY=
+  REPAIR_SHORT_ID=
+  REPAIR_SOCKS_PASSWORD=
+  REPAIR_STRATEGY=
+  REPAIR_CERT_PATH=
+  REPAIR_KEY_PATH=
+  REPAIR_CERT_MODE=
+  [[ -s $source ]] && managed_regular_file_is_trusted "$source" || return 1
+  jq -e '
+    type == "object" and (.inbounds | type == "array") and
+    ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) == 1 and
+    ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
+    ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1 and
+    ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
+  ' "$source" >/dev/null 2>&1 || return 1
+  REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid | select(type == "string")' "$source") || return 1
+  hy2_uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
+  REPAIR_VLESS_PORT=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port | select(type == "number")' "$source") || return 1
+  REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
+  REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
+  REPAIR_SNI=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name | select(type == "string")' "$source") || return 1
+  REPAIR_PRIVATE_KEY=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.private_key | select(type == "string")' "$source") || return 1
+  REPAIR_SHORT_ID=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0] | select(type == "string")' "$source") || return 1
+  REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | select(.users[0].username == "sb") | .users[0].password | select(type == "string")' "$source") || return 1
+  REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
+  REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
+  REPAIR_KEY_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path | select(type == "string")' "$source") || return 1
+  valid_uuid "$REPAIR_UUID" && [[ $hy2_uuid == "$REPAIR_UUID" ]] || return 1
+  valid_port "$REPAIR_VLESS_PORT" && valid_port "$REPAIR_SOCKS_PORT" &&
+    valid_port "$REPAIR_HY2_PORT" || return 1
+  [[ $REPAIR_VLESS_PORT != "$REPAIR_SOCKS_PORT" ]] || return 1
+  valid_hostname "$REPAIR_SNI" || return 1
+  valid_reality_key "$REPAIR_PRIVATE_KEY" || return 1
+  valid_short_id "$REPAIR_SHORT_ID" || return 1
+  valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
+  [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
+  if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
+    REPAIR_CERT_MODE=self_signed
+  elif [[ $REPAIR_CERT_PATH == "$ACME_CERT" && $REPAIR_KEY_PATH == "$ACME_KEY" ]]; then
+    REPAIR_CERT_MODE=acme
+  else
+    return 1
+  fi
+}
+
+render_repair_config(){
+  local output=$1
+  local uuid=$REPAIR_UUID port_vl_re=$REPAIR_VLESS_PORT port_socks5=$REPAIR_SOCKS_PORT
+  # render_server_config consumes these locals through Bash dynamic scope.
+  # shellcheck disable=SC2034
+  local port_hy2=$REPAIR_HY2_PORT ym_vl_re=$REPAIR_SNI private_key=$REPAIR_PRIVATE_KEY
+  local short_id=$REPAIR_SHORT_ID socks_password=$REPAIR_SOCKS_PASSWORD ipv=$REPAIR_STRATEGY
+  # shellcheck disable=SC2034
+  local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
+  render_server_config "$output"
+}
+
+managed_tree_is_trusted(){
+  local root=$1 path
+  [[ -d $root && ! -L $root ]] && managed_path_is_trusted "$root" || return 1
+  (
+    shopt -s dotglob nullglob globstar
+    for path in "$root"/**; do
+      [[ ! -L $path ]] || exit 1
+      managed_path_is_trusted "$path" || exit 1
+    done
+  )
+}
+
+active_acme_pair_is_trusted(){
+  if [[ -L $ACME_CERT || -L $ACME_KEY ]]; then
+    managed_symlink_is_trusted "$ACME_CERT" && managed_symlink_is_trusted "$ACME_KEY" &&
+      managed_acme_live_layout_is_valid
+  else
+    managed_regular_file_is_trusted "$ACME_CERT" &&
+      managed_regular_file_is_trusted "$ACME_KEY"
+  fi
+}
+
+acme_maintenance_components_are_trusted(){
+  local identity=$1 conf
+  valid_hostname "$identity" || return 1
+  conf=$(acme_domain_conf_path "$identity") || return 1
+  managed_tree_is_trusted "$ACME_HOME" &&
+    managed_regular_file_is_trusted "$ACME_BIN" &&
+    managed_regular_file_is_trusted "$ACME_HOME/dnsapi/dns_cf.sh" &&
+    managed_regular_file_is_trusted "$ACME_HOME/account.conf" &&
+    managed_regular_file_is_trusted "$conf"
+}
+
+repair_acme_certificate_from_storage(){
+  local identity stored_cert stored_key
+  REPAIR_ACME_MAINTENANCE_OK=1
+  if identity=$(detect_acme_identity 2>/dev/null) && active_acme_pair_is_trusted; then
+    if ! acme_maintenance_components_are_trusted "$identity" ||
+       ! write_acme_reload_hook ||
+       { { ! managed_acme_live_layout_is_valid ||
+           ! acme_deployment_config_is_current "$identity"; } &&
+         ! register_acme_certificate_deployment "$identity" 0; }; then
+      REPAIR_ACME_MAINTENANCE_OK=0
+      yellow "ACME证书本身有效，续期或原子部署组件暂未修复；本次继续使用现有证书"
+    fi
+    return 0
+  fi
+  identity=$(read_acme_identity 2>/dev/null) || return 1
+  acme_maintenance_components_are_trusted "$identity" || return 1
+  load_acme_certificate_schedule "$identity" || return 1
+  stored_cert="$ACME_HOME/certs/${identity}_ecc/fullchain.cer"
+  stored_key="$ACME_HOME/certs/${identity}_ecc/${identity}.key"
+  managed_regular_file_is_trusted "$stored_cert" &&
+    managed_regular_file_is_trusted "$stored_key" || return 1
+  load_certificate_metadata "$stored_cert" "$stored_key" || return 1
+  [[ $CERT_META_STATE == valid ]] || return 1
+  certificate_identity_matches "$stored_cert" "$identity" || return 1
+  write_acme_reload_hook || return 1
+  register_acme_certificate_deployment "$identity" 0
+}
+
+ensure_repair_certificate(){
+  REPAIR_CERT_FELL_BACK=0
+  case $REPAIR_CERT_MODE in
+    self_signed)
+      if managed_regular_file_is_trusted "$SB_DIR/cert.pem" &&
+         managed_regular_file_is_trusted "$SB_DIR/private.key" &&
+         self_signed_certificate_is_valid; then
+        REPAIR_CERT_ACTION="自签证书正常"
+      elif generate_self_signed_certificate; then
+        REPAIR_CERT_ACTION="已重建自签证书"
+      else
+        return 1
+      fi
+      ;;
+    acme)
+      if repair_acme_certificate_from_storage; then
+        if [[ $REPAIR_ACME_MAINTENANCE_OK -eq 1 ]]; then
+          REPAIR_CERT_ACTION="ACME证书正常或已从签发记录恢复"
+        else
+          REPAIR_CERT_ACTION="ACME证书有效；续期维护组件待修复"
+        fi
+      else
+        yellow "ACME证书暂时无法恢复，正在切换到有效自签证书以恢复服务"
+        if ! self_signed_certificate_is_valid && ! generate_self_signed_certificate; then
+          return 1
+        fi
+        REPAIR_CERT_PATH="$SB_DIR/cert.pem"
+        REPAIR_KEY_PATH="$SB_DIR/private.key"
+        REPAIR_CERT_MODE=self_signed
+        REPAIR_CERT_FELL_BACK=1
+        REPAIR_CERT_ACTION="ACME未删除；服务已临时切换为自签证书"
+      fi
+      ;;
+    *) return 1 ;;
+  esac
+}
+
+preserve_config_before_repair(){
+  local backup
+  [[ -z ${REPAIR_CONFIG_BACKUP:-} ]] || return 0
+  [[ -e $SB_CONFIG || -L $SB_CONFIG ]] || return 0
+  managed_regular_file_is_trusted "$SB_CONFIG" || return 1
+  backup=$(mktemp "$SB_DIR/.sb.json.before-repair.XXXXXX") || return 1
+  if ! cp -p -- "$SB_CONFIG" "$backup" || ! chmod 600 "$backup"; then
+    rm -f "$backup"
+    return 1
+  fi
+  REPAIR_CONFIG_BACKUP=$backup
+}
+
+install_repair_config(){
+  local candidate=$1 label=$2
+  if ! managed_config_file_is_valid "$candidate" ||
+     ! preserve_config_before_repair ||
+     ! chmod 600 "$candidate"; then
+    rm -f "$candidate"
+    return 1
+  fi
+  # Mark the transaction before replacement so an interrupt cannot land
+  # between mv(1) and the rollback state update.
+  REPAIR_CONFIG_CHANGED=1
+  if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
+    rm -f "$candidate"
+    return 1
+  fi
+  REPAIR_CONFIG_ACTION=$label
+  if [[ $REPAIR_CERT_FELL_BACK -eq 1 ]]; then
+    REPAIR_CONFIG_ACTION+="，并切换为自签证书"
+  fi
+}
+
+try_repair_config_source(){
+  local source=$1 label=$2 candidate
+  load_repair_config_values "$source" || return 1
+  ensure_repair_certificate || return 1
+  if [[ $source == "$SB_CONFIG" && $REPAIR_CERT_FELL_BACK -eq 0 ]] &&
+     managed_config_file_is_valid "$source"; then
+    REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
+    return 0
+  fi
+  candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
+  if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
+     ! managed_config_file_is_valid "$candidate"; then
+    rm -f "$candidate"
+    return 1
+  fi
+  install_repair_config "$candidate" "$label"
+}
+
+repair_or_restore_config(){
+  local path index latest latest_index last_good=${SB_LAST_GOOD:-$SB_DIR/sb.json.last-good}
+  local -a candidates=()
+  if try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置"; then
+    return 0
+  fi
+  if [[ $last_good != "$SB_CONFIG" ]] &&
+     try_repair_config_source "$last_good" "已恢复最后一次可用配置"; then
+    return 0
+  fi
+  for path in "$SB_DIR"/.sb.json.backup.* "$SB_DIR"/.sb.json.before-repair.*; do
+    [[ -e $path || -L $path ]] || continue
+    [[ $path != "${REPAIR_CONFIG_BACKUP:-}" ]] || continue
+    managed_regular_file_is_trusted "$path" || continue
+    candidates+=("$path")
+  done
+  while ((${#candidates[@]})); do
+    latest=
+    latest_index=
+    for index in "${!candidates[@]}"; do
+      if [[ -z $latest || ${candidates[$index]} -nt $latest ]]; then
+        latest=${candidates[$index]}
+        latest_index=$index
+      fi
+    done
+    unset "candidates[$latest_index]"
+    if try_repair_config_source "$latest" "已从最近的保留配置备份恢复"; then
+      return 0
+    fi
+  done
+  return 1
+}
+
+derive_reality_public_key(){
+  local private_key=$1 encoded temp_dir result
+  valid_reality_key "$private_key" || return 1
+  temp_dir=$(mktemp -d "$SB_DIR/.reality-key.XXXXXX") || return 1
+  encoded=$(printf '%s' "$private_key" | tr '_-' '/+')=
+  if ! printf '%s' "$encoded" | base64 -d > "$temp_dir/raw.key" 2>/dev/null ||
+     [[ $(stat -c '%s' "$temp_dir/raw.key" 2>/dev/null) != 32 ]]; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20' > "$temp_dir/private.der"
+  cat "$temp_dir/raw.key" >> "$temp_dir/private.der" || { rm -rf "$temp_dir"; return 1; }
+  if ! openssl pkey -inform DER -in "$temp_dir/private.der" -pubout -outform DER \
+       -out "$temp_dir/public.der" 2>/dev/null ||
+     [[ $(stat -c '%s' "$temp_dir/public.der" 2>/dev/null) != 44 ]]; then
+    rm -rf "$temp_dir"
+    return 1
+  fi
+  result=$(tail -c 32 "$temp_dir/public.der" | base64 | tr '+/' '-_' | tr -d '=\r\n')
+  rm -rf "$temp_dir"
+  valid_reality_key "$result" || return 1
+  printf '%s\n' "$result"
+}
+
+repair_reality_public_key(){
+  local private_key public_key expected_public_key public_tmp
+  private_key=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.private_key' "$SB_CONFIG" 2>/dev/null) || return 1
+  expected_public_key=$(derive_reality_public_key "$private_key") || return 1
+  if managed_regular_file_is_trusted "$SB_DIR/public.key" &&
+     public_key=$(cat "$SB_DIR/public.key" 2>/dev/null) &&
+     [[ $public_key == "$expected_public_key" ]]; then
+    chmod 600 "$SB_DIR/public.key"
+    REPAIR_PUBLIC_KEY_ACTION="Reality公钥正常"
+    return 0
+  fi
+  public_tmp=$(mktemp "$SB_DIR/.public.key.XXXXXX") || return 1
+  if ! printf '%s\n' "$expected_public_key" > "$public_tmp" || ! chmod 600 "$public_tmp" ||
+     ! mv -fT -- "$public_tmp" "$SB_DIR/public.key"; then
+    rm -f "$public_tmp"
+    return 1
+  fi
+  REPAIR_PUBLIC_KEY_ACTION="已从Reality私钥恢复公钥"
+}
+
+rebuild_config_in_place(){
+  local confirmation key_pair private_key public_key short_id candidate acme_identity
+  red "现有配置和恢复副本都无法提取完整节点参数"
+  yellow "可以保留证书与ACME账户，在原目录生成全新节点；旧客户端配置将失效"
+  readp "请输入 REBUILD 确认原地重建，其他输入取消：" confirmation || return 1
+  [[ $confirmation == REBUILD ]] || return 1
+  if ! self_signed_certificate_is_valid && ! generate_self_signed_certificate; then
+    red "无法准备自签回退证书"
+    return 1
+  fi
+  if acme_identity=$(detect_acme_identity 2>/dev/null); then
+    REPAIR_CERT_PATH=$ACME_CERT
+    REPAIR_KEY_PATH=$ACME_KEY
+    REPAIR_CERT_MODE=acme
+    REPAIR_CERT_ACTION="继续使用ACME证书 ($acme_identity)"
+  else
+    REPAIR_CERT_PATH="$SB_DIR/cert.pem"
+    REPAIR_KEY_PATH="$SB_DIR/private.key"
+    REPAIR_CERT_MODE=self_signed
+    REPAIR_CERT_ACTION="使用已重建的自签证书"
+  fi
+  insport || return 1
+  key_pair=$("$SB_BIN" generate reality-keypair 2>/dev/null) || return 1
+  private_key=$(printf '%s\n' "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
+  public_key=$(printf '%s\n' "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
+  valid_reality_key "$private_key" && valid_reality_key "$public_key" || return 1
+  short_id=$("$SB_BIN" generate rand --hex 4 2>/dev/null) || return 1
+  valid_short_id "$short_id" || return 1
+  v6only
+  REPAIR_UUID=$uuid
+  REPAIR_VLESS_PORT=$port_vl_re
+  REPAIR_SOCKS_PORT=$port_socks5
+  REPAIR_HY2_PORT=$port_hy2
+  REPAIR_SNI=apple.com
+  REPAIR_PRIVATE_KEY=$private_key
+  REPAIR_SHORT_ID=$short_id
+  REPAIR_SOCKS_PASSWORD=$socks_password
+  REPAIR_STRATEGY=$ipv
+  REPAIR_CERT_FELL_BACK=0
+  candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1
+  if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
+     ! managed_config_file_is_valid "$candidate"; then
+    rm -f "$candidate"
+    return 1
+  fi
+  install_repair_config "$candidate" "已原地生成全新节点配置" || return 1
+  atomic_write_private_text "$SB_DIR/public.key" "$public_key" || return 1
+  REPAIR_PUBLIC_KEY_ACTION="已生成新的Reality公钥"
+  REPAIR_NODE_REBUILT=1
+}
+
+repair_managed_permissions(){
+  local path last_good=${SB_LAST_GOOD:-$SB_DIR/sb.json.last-good}
+  managed_directory_is_owned || return 1
+  chmod 700 "$SB_DIR" || return 1
+  managed_regular_file_is_trusted "$SB_CONFIG" &&
+    managed_regular_file_is_trusted "$SB_BIN" || return 1
+  chmod 600 "$SB_MANAGED_MARKER" "$SB_CONFIG" || return 1
+  chmod 755 "$SB_BIN" || return 1
+  for path in "$last_good" "$SB_DIR/public.key" "$SB_DIR/cert.pem" "$SB_DIR/private.key"; do
+    [[ -e $path || -L $path ]] || continue
+    managed_regular_file_is_trusted "$path" || return 1
+    chmod 600 "$path" || return 1
+  done
+  repair_acme_permissions
+}
+
+repair_acme_permissions(){
+  local path
+  if [[ ! -e $ACME_HOME && ! -L $ACME_HOME &&
+        ! -e $ACME_CERT && ! -L $ACME_CERT &&
+        ! -e $ACME_KEY && ! -L $ACME_KEY ]]; then
+    return 0
+  fi
+  if [[ -e $ACME_HOME || -L $ACME_HOME ]]; then
+    managed_tree_is_trusted "$ACME_HOME" || return 1
+    (
+      shopt -s dotglob nullglob globstar
+      for path in "$ACME_HOME" "$ACME_HOME"/**; do
+        if [[ -d $path ]]; then
+          chmod 700 "$path" || exit 1
+        elif [[ -f $path && ! -L $path ]]; then
+          if [[ -x $path ]]; then chmod 700 "$path"; else chmod 600 "$path"; fi || exit 1
+        else
+          exit 1
+        fi
+      done
+    ) || return 1
+  fi
+  if [[ -L $ACME_CERT || -L $ACME_KEY ]]; then
+    active_acme_pair_is_trusted || return 1
+  else
+    for path in "$ACME_CERT" "$ACME_KEY"; do
+      [[ -e $path || -L $path ]] || continue
+      managed_regular_file_is_trusted "$path" || return 1
+      chmod 600 "$path" || return 1
+    done
+  fi
+  for path in "$ACME_IDENTITY" "$SB_DIR/acme_renew.state"; do
+    [[ -e $path || -L $path ]] || continue
+    managed_regular_file_is_trusted "$path" || return 1
+    chmod 600 "$path" || return 1
+  done
+  for path in "$ACME_RELOAD" "$SB_DIR/acme_renew.sh"; do
+    [[ -e $path || -L $path ]] || continue
+    managed_regular_file_is_trusted "$path" || return 1
+    chmod 700 "$path" || return 1
+  done
+}
+
+initialize_repair_report(){
+  REPAIR_CORE_ACTION="未执行"
+  REPAIR_CONFIG_ACTION="未执行"
+  REPAIR_CERT_ACTION="未执行"
+  REPAIR_SERVICE_ACTION="未执行"
+  REPAIR_PUBLIC_KEY_ACTION="未执行"
+  REPAIR_SHORTCUT_ACTION="未执行"
+  REPAIR_ACME_ACTION="未执行"
+  REPAIR_CRON_ACTION="未执行"
+  REPAIR_SHARE_ACTION="未执行"
+  REPAIR_PERMISSION_ACTION="未执行"
+  REPAIR_DEPENDENCY_ACTION="核心依赖待检查"
+  REPAIR_CONFIG_BACKUP=
+  REPAIR_CORE_BACKUP=
+  REPAIR_SERVICE_BACKUP=
+  REPAIR_SERVICE_BACKUP_MODE=
+  REPAIR_SERVICE_BACKUP_PATH=
+  REPAIR_CORE_QUARANTINE=
+  REPAIR_RECOVERED_CONFIG=
+  REPAIR_RECOVERED_CORE=
+  REPAIR_TARGET_CONFIG_SNAPSHOT=
+  REPAIR_TARGET_CORE_SNAPSHOT=
+  REPAIR_ROLLBACK_STATE=not_attempted
+  REPAIR_CORE_REPLACED=0
+  REPAIR_CONFIG_CHANGED=0
+  REPAIR_SERVICE_CHANGED=0
+  REPAIR_ORIGINAL_STACK_VALID=0
+  REPAIR_NODE_REBUILT=0
+  REPAIR_TRANSACTION_FINALIZING=0
+}
+
+cleanup_repair_temporary_files(){
+  local path failed=0
+  cleanup_core_download_temp >/dev/null 2>&1 || failed=1
+  for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
+    "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.sb.json.rollback.* \
+    "$SB_DIR"/.public.key.* "$SB_DIR"/.reality-key.* \
+    "$SB_DIR"/.repair-old-* "$SB_DIR"/.repair-target-*; do
+    [[ -e $path || -L $path ]] || continue
+    if [[ $path == "${REPAIR_TARGET_CORE_SNAPSHOT:-}" ||
+          $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ]]; then
+      continue
+    fi
+    rm -rf -- "$path" || failed=1
+  done
+  return "$failed"
+}
+
+begin_repair_transaction(){
+  local backup service_path service_mode
+  REPAIR_TRANSACTION_ACTIVE=1
+  if [[ -e $SB_CONFIG || -L $SB_CONFIG ]] && managed_regular_file_is_trusted "$SB_CONFIG"; then
+    preserve_config_before_repair || return 1
+  fi
+  if managed_regular_file_is_trusted "$SB_BIN" && [[ -x $SB_BIN ]]; then
+    backup=$(mktemp "$SB_DIR/.repair-core-backup.XXXXXX") || return 1
+    if ! cp -p -- "$SB_BIN" "$backup" || ! chmod 700 "$backup"; then
+      rm -f -- "$backup"
+      return 1
+    fi
+    REPAIR_CORE_BACKUP=$backup
+  fi
+  if service_exists || service_definition_is_repairable; then
+    if command -v apk >/dev/null 2>&1; then
+      service_path=$OPENRC_UNIT
+    else
+      service_path=$SYSTEMD_UNIT
+    fi
+    if managed_regular_file_is_trusted "$service_path"; then
+      service_mode=$(stat -c '%a' "$service_path" 2>/dev/null) || return 1
+      [[ $service_mode =~ ^[0-7]{3,4}$ ]] || return 1
+      backup=$(mktemp "$SB_DIR/.repair-service-backup.XXXXXX") || return 1
+      if ! cp -p -- "$service_path" "$backup" || ! chmod 600 "$backup"; then
+        rm -f -- "$backup"
+        return 1
+      fi
+      REPAIR_SERVICE_BACKUP=$backup
+      REPAIR_SERVICE_BACKUP_MODE=$service_mode
+      REPAIR_SERVICE_BACKUP_PATH=$service_path
+    fi
+  fi
+  if [[ -n ${REPAIR_CORE_BACKUP:-} && -n ${REPAIR_CONFIG_BACKUP:-} &&
+        -n ${REPAIR_SERVICE_BACKUP:-} ]] && service_is_active &&
+     "$REPAIR_CORE_BACKUP" check -c "$REPAIR_CONFIG_BACKUP" >/dev/null 2>&1; then
+    REPAIR_ORIGINAL_STACK_VALID=1
+  fi
+}
+
+quarantine_invalid_core_path(){
+  local quarantine
+  [[ -e $SB_BIN || -L $SB_BIN ]] || return 0
+  [[ ! -d $SB_BIN || -L $SB_BIN ]] && return 0
+  quarantine=$(mktemp "$SB_DIR/.repair-core-invalid.XXXXXX") || return 1
+  rm -f -- "$quarantine" || return 1
+  if ! mv -T -- "$SB_BIN" "$quarantine"; then
+    return 1
+  fi
+  REPAIR_CORE_QUARANTINE=$quarantine
+}
+
+restore_repair_service_definition(){
+  local candidate
+  [[ -n ${REPAIR_SERVICE_BACKUP:-} && -n ${REPAIR_SERVICE_BACKUP_PATH:-} &&
+     ${REPAIR_SERVICE_BACKUP_MODE:-} =~ ^[0-7]{3,4}$ ]] || return 1
+  managed_regular_file_is_trusted "$REPAIR_SERVICE_BACKUP" || return 1
+  candidate=$(mktemp "${REPAIR_SERVICE_BACKUP_PATH}.repair.XXXXXX") || return 1
+  if ! install -m "$REPAIR_SERVICE_BACKUP_MODE" "$REPAIR_SERVICE_BACKUP" "$candidate" ||
+     ! mv -fT -- "$candidate" "$REPAIR_SERVICE_BACKUP_PATH"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+  if ! command -v apk >/dev/null 2>&1; then
+    systemctl daemon-reload >/dev/null 2>&1 || return 1
+  fi
+}
+
+preserve_repair_target_core_snapshot(){
+  local source=$1 recovered
+  [[ -f $source && ! -L $source ]] || return 1
+  recovered=$(mktemp "$SB_DIR/sing-box.recovered.XXXXXX") || return 1
+  if ! install -m 700 "$source" "$recovered"; then
+    rm -f -- "$recovered"
+    return 1
+  fi
+  REPAIR_RECOVERED_CORE=$recovered
+  rm -f -- "$source" || return 1
+}
+
+preserve_repair_target_config_snapshot(){
+  local source=$1 recovered
+  [[ -f $source && ! -L $source ]] || return 1
+  recovered=$(mktemp "$SB_DIR/.sb.json.recovered.XXXXXX") || return 1
+  if ! install -m 600 "$source" "$recovered"; then
+    rm -f -- "$recovered"
+    return 1
+  fi
+  REPAIR_RECOVERED_CONFIG=$recovered
+  rm -f -- "$source" || return 1
+}
+
+restore_repair_target_config_snapshot(){
+  local source=$1
+  if mv -fT -- "$source" "$SB_CONFIG" >/dev/null 2>&1; then
+    REPAIR_TARGET_CONFIG_SNAPSHOT=
+    return 0
+  fi
+  if preserve_repair_target_config_snapshot "$source"; then
+    REPAIR_TARGET_CONFIG_SNAPSHOT=
+    return 2
+  fi
+  return 1
+}
+
+restore_original_repair_stack(){
+  local old_core old_config target_core='' target_config='' rollback_ok=0
+  local target_core_restored=0 target_config_restored=0 cleanup_failed=0 snapshot_status
+  REPAIR_ROLLBACK_STATE=unresolved
+  [[ ${REPAIR_ORIGINAL_STACK_VALID:-0} -eq 1 && -n ${REPAIR_CORE_BACKUP:-} &&
+     -n ${REPAIR_CONFIG_BACKUP:-} ]] || return 2
+  old_core=$(mktemp "$SB_DIR/.repair-old-core.XXXXXX") || return 1
+  old_config=$(mktemp "$SB_DIR/.repair-old-config.XXXXXX") || { rm -f "$old_core"; return 1; }
+  if ! install -m 700 "$REPAIR_CORE_BACKUP" "$old_core" ||
+     ! cp -p -- "$REPAIR_CONFIG_BACKUP" "$old_config" || ! chmod 600 "$old_config" ||
+     ! "$old_core" check -c "$old_config" >/dev/null 2>&1; then
+    rm -f "$old_core" "$old_config"
+    return 1
+  fi
+  if managed_regular_file_is_trusted "$SB_BIN"; then
+    target_core=$(mktemp "$SB_DIR/.repair-target-core.XXXXXX") || target_core=
+    if [[ -n $target_core ]] && ! install -m 755 "$SB_BIN" "$target_core"; then
+      rm -f "$target_core"
+      target_core=
+    fi
+    REPAIR_TARGET_CORE_SNAPSHOT=$target_core
+  fi
+  if managed_regular_file_is_trusted "$SB_CONFIG"; then
+    target_config=$(mktemp "$SB_DIR/.repair-target-config.XXXXXX") || target_config=
+    if [[ -n $target_config ]] &&
+       { ! cp -p -- "$SB_CONFIG" "$target_config" || ! chmod 600 "$target_config"; }; then
+      rm -f "$target_config"
+      target_config=
+    fi
+    REPAIR_TARGET_CONFIG_SNAPSHOT=$target_config
+  fi
+  if mv -fT -- "$old_core" "$SB_BIN" && mv -fT -- "$old_config" "$SB_CONFIG" &&
+     restore_repair_service_definition &&
+     restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
+    rollback_ok=1
+  fi
+  if [[ $rollback_ok -eq 0 ]]; then
+    if [[ -n $target_core ]]; then
+      if mv -fT -- "$target_core" "$SB_BIN" >/dev/null 2>&1; then
+        target_core=
+        REPAIR_TARGET_CORE_SNAPSHOT=
+        target_core_restored=1
+      elif preserve_repair_target_core_snapshot "$target_core"; then
+        target_core=
+        REPAIR_TARGET_CORE_SNAPSHOT=
+      fi
+    fi
+    if [[ -n $target_config ]]; then
+      if restore_repair_target_config_snapshot "$target_config"; then
+        snapshot_status=0
+      else
+        snapshot_status=$?
+      fi
+      if [[ $snapshot_status -eq 0 ]]; then
+        target_config=
+        target_config_restored=1
+      elif [[ $snapshot_status -eq 2 ]]; then
+        target_config=
+      fi
+    fi
+    rm -f "$old_core" "$old_config"
+    if [[ $target_core_restored -eq 1 && $target_config_restored -eq 1 ]] &&
+       installed_core_is_current && managed_config_file_is_valid "$SB_CONFIG" &&
+       repair_managed_service >/dev/null 2>&1; then
+      REPAIR_ROLLBACK_STATE=target_restored
+      REPAIR_SERVICE_ACTION="修复前状态恢复失败；已重新启用修复后内核、配置和服务"
+      repair_reality_public_key || true
+    fi
+    return 1
+  fi
+  REPAIR_ROLLBACK_STATE=original_restored
+  if [[ -n $target_core ]]; then
+    if rm -f "$target_core"; then
+      REPAIR_TARGET_CORE_SNAPSHOT=
+    else
+      cleanup_failed=1
+    fi
+  fi
+  if [[ -n $target_config ]]; then
+    if rm -f "$target_config"; then
+      REPAIR_TARGET_CONFIG_SNAPSHOT=
+    else
+      cleanup_failed=1
+    fi
+  fi
+  REPAIR_CORE_ACTION="目标内核未能完成修复，已恢复修复前内核"
+  REPAIR_CONFIG_ACTION+="；已恢复修复前可用配置"
+  REPAIR_SERVICE_ACTION="已恢复修复前服务定义并确认运行"
+  REPAIR_NODE_REBUILT=0
+  repair_reality_public_key || true
+  return "$cleanup_failed"
+}
+
+abort_repair_transaction(){
+  local status=0
+  [[ ${REPAIR_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 0
+  REPAIR_TRANSACTION_FINALIZING=1
+  if [[ ${REPAIR_CORE_REPLACED:-0} -eq 1 || ${REPAIR_CONFIG_CHANGED:-0} -eq 1 ||
+        ${REPAIR_SERVICE_CHANGED:-0} -eq 1 ]]; then
+    if [[ ${REPAIR_ORIGINAL_STACK_VALID:-0} -eq 1 ]]; then
+      restore_original_repair_stack || status=1
+    else
+      REPAIR_ROLLBACK_STATE=not_available
+    fi
+  else
+    REPAIR_ROLLBACK_STATE=not_needed
+  fi
+  if [[ $REPAIR_ROLLBACK_STATE == original_restored ]]; then
+    if [[ -n ${REPAIR_CORE_BACKUP:-} ]]; then
+      if rm -f -- "$REPAIR_CORE_BACKUP"; then REPAIR_CORE_BACKUP=; else status=1; fi
+    fi
+    if [[ -n ${REPAIR_SERVICE_BACKUP:-} ]]; then
+      if rm -f -- "$REPAIR_SERVICE_BACKUP"; then REPAIR_SERVICE_BACKUP=; else status=1; fi
+    fi
+  fi
+  cleanup_repair_temporary_files || status=1
+  REPAIR_TRANSACTION_ACTIVE=0
+  REPAIR_TRANSACTION_FINALIZING=0
+  return "$status"
+}
+
+commit_repair_transaction(){
+  local status=0
+  [[ ${REPAIR_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 1
+  REPAIR_TRANSACTION_FINALIZING=1
+  if [[ -n ${REPAIR_CORE_BACKUP:-} ]]; then
+    if rm -f -- "$REPAIR_CORE_BACKUP"; then REPAIR_CORE_BACKUP=; else status=1; fi
+  fi
+  if [[ -n ${REPAIR_SERVICE_BACKUP:-} ]]; then
+    if rm -f -- "$REPAIR_SERVICE_BACKUP"; then REPAIR_SERVICE_BACKUP=; else status=1; fi
+  fi
+  cleanup_repair_temporary_files || status=1
+  REPAIR_TRANSACTION_ACTIVE=0
+  REPAIR_TRANSACTION_FINALIZING=0
+  return "$status"
+}
+
+show_repair_report(){
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  green "修复报告"
+  printf '内核: %s\n' "$REPAIR_CORE_ACTION"
+  printf '配置: %s\n' "$REPAIR_CONFIG_ACTION"
+  printf '证书: %s\n' "$REPAIR_CERT_ACTION"
+  printf '服务: %s\n' "$REPAIR_SERVICE_ACTION"
+  printf 'Reality公钥: %s\n' "$REPAIR_PUBLIC_KEY_ACTION"
+  printf '快捷命令: %s\n' "$REPAIR_SHORTCUT_ACTION"
+  printf '证书续期: %s\n' "$REPAIR_ACME_ACTION"
+  printf '每日任务: %s\n' "$REPAIR_CRON_ACTION"
+  printf '节点文件: %s\n' "$REPAIR_SHARE_ACTION"
+  printf '文件权限: %s\n' "$REPAIR_PERMISSION_ACTION"
+  printf '依赖组件: %s\n' "$REPAIR_DEPENDENCY_ACTION"
+  [[ -z $REPAIR_CONFIG_BACKUP ]] || printf '原配置保留: %s\n' "$REPAIR_CONFIG_BACKUP"
+  [[ -z ${REPAIR_CORE_QUARANTINE:-} ]] || printf '异常内核路径保留: %s\n' "$REPAIR_CORE_QUARANTINE"
+  [[ -z ${REPAIR_CORE_BACKUP:-} ]] || printf '修复前内核保留: %s\n' "$REPAIR_CORE_BACKUP"
+  [[ -z ${REPAIR_SERVICE_BACKUP:-} ]] || printf '修复前服务定义保留: %s\n' "$REPAIR_SERVICE_BACKUP"
+  [[ -z ${REPAIR_RECOVERED_CONFIG:-} ]] || printf '修复配置副本: %s\n' "$REPAIR_RECOVERED_CONFIG"
+  [[ -z ${REPAIR_RECOVERED_CORE:-} ]] || printf '修复内核副本: %s\n' "$REPAIR_RECOVERED_CORE"
+  [[ -z ${REPAIR_TARGET_CONFIG_SNAPSHOT:-} ]] || printf '待恢复的修复配置: %s\n' "$REPAIR_TARGET_CONFIG_SNAPSHOT"
+  [[ -z ${REPAIR_TARGET_CORE_SNAPSHOT:-} ]] || printf '待恢复的修复内核: %s\n' "$REPAIR_TARGET_CORE_SNAPSHOT"
+  red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+}
+
+repair_singbox_locked(){
+  local maintenance_failed=0 identity
+  initialize_repair_report
+  REPAIR_DEPENDENCY_ACTION="核心修复依赖正常，维护依赖待检查"
+  if ! begin_repair_transaction; then
+    REPAIR_CORE_ACTION="无法建立修复恢复点"
+    REPAIR_SERVICE_ACTION="未修改"
+    commit_repair_transaction || REPAIR_DEPENDENCY_ACTION="恢复点建立失败；部分临时文件或备份未清理"
+    show_repair_report
+    return 1
+  fi
+  if installed_core_is_current; then
+    REPAIR_CORE_ACTION="Sing-box v${CORE_VERSION} 正常"
+  else
+    green "正在恢复固定版本 Sing-box v${CORE_VERSION} 内核……"
+    # inssb performs the final mv itself; set the flag first so signals and
+    # post-replacement verification failures still restore a usable old stack.
+    REPAIR_CORE_REPLACED=1
+    if ! quarantine_invalid_core_path || ! inssb; then
+      REPAIR_CORE_ACTION="固定版本内核恢复失败"
+      abort_repair_transaction || true
+      show_repair_report
+      return 1
+    fi
+    REPAIR_CORE_ACTION="已重新安装 Sing-box v${CORE_VERSION}"
+  fi
+  if ! repair_or_restore_config; then
+    if ! rebuild_config_in_place; then
+      REPAIR_CONFIG_ACTION="无法恢复配置，已取消原地重建"
+      abort_repair_transaction || true
+      case $REPAIR_ROLLBACK_STATE in
+        original_restored) REPAIR_SERVICE_ACTION="已恢复修复前可用服务" ;;
+        target_restored) REPAIR_SERVICE_ACTION="修复前状态未恢复；已保留并重新启用本次修复状态" ;;
+        *) REPAIR_SERVICE_ACTION="未能建立可运行的新配置；原数据与恢复副本仍保留" ;;
+      esac
+      show_repair_report
+      return 1
+    fi
+  fi
+  if ! repair_reality_public_key; then
+    REPAIR_PUBLIC_KEY_ACTION="恢复失败；服务可运行，但节点文件无法刷新"
+    maintenance_failed=1
+  fi
+  REPAIR_SERVICE_CHANGED=1
+  if repair_managed_service; then
+    REPAIR_SERVICE_ACTION="服务定义已重写并确认运行"
+  else
+    abort_repair_transaction || true
+    case $REPAIR_ROLLBACK_STATE in
+      original_restored)
+        REPAIR_SERVICE_ACTION="新服务启动失败；已恢复修复前内核、配置和服务"
+        ;;
+      target_restored)
+        REPAIR_SERVICE_ACTION="修复前状态恢复失败；已重新启用修复后的内核、配置和服务"
+        ;;
+      *)
+        if [[ ${REPAIR_CONFIG_CHANGED:-0} -eq 1 ]]; then
+          REPAIR_SERVICE_ACTION="恢复未完成；修复后的有效配置或副本已保留，损坏原件未重新启用"
+        else
+          REPAIR_SERVICE_ACTION="恢复未完成；本次未替换配置，请检查保留的恢复点"
+        fi
+        ;;
+    esac
+    show_repair_report
+    return 1
+  fi
+  if ! commit_repair_transaction; then
+    REPAIR_DEPENDENCY_ACTION="核心服务已恢复；修复临时文件清理不完整"
+    maintenance_failed=1
+  fi
+  if ! save_last_good_config "$SB_CONFIG"; then
+    yellow "服务已恢复，但最后可用配置快照保存失败"
+    maintenance_failed=1
+  fi
+  if repair_managed_permissions; then
+    REPAIR_PERMISSION_ACTION="受管文件属主、类型与权限正常"
+  else
+    REPAIR_PERMISSION_ACTION="检查或修复失败；未执行不可信的ACME组件"
+    maintenance_failed=1
+  fi
+  if dependencies_ready; then
+    REPAIR_DEPENDENCY_ACTION="核心与维护依赖正常"
+  else
+    yellow "核心服务已恢复，正在补齐cron、flock或二维码等维护组件……"
+    if install_dependencies; then
+      REPAIR_DEPENDENCY_ACTION="核心与维护依赖已补齐"
+    else
+      REPAIR_DEPENDENCY_ACTION="核心服务可用；部分维护依赖仍不可用"
+      maintenance_failed=1
+    fi
+  fi
+  if update_shortcut; then
+    REPAIR_SHORTCUT_ACTION="sb 快捷命令已更新"
+  else
+    REPAIR_SHORTCUT_ACTION="更新失败"
+    maintenance_failed=1
+  fi
+  identity=
+  if config_uses_acme_certificate; then
+    identity=$(detect_acme_identity 2>/dev/null || true)
+  fi
+  if config_uses_acme_certificate &&
+     { [[ -z $identity ]] || ! acme_maintenance_components_are_trusted "$identity"; }; then
+    REPAIR_ACME_ACTION="当前证书有效，但自动续期组件不可信或不完整"
+    maintenance_failed=1
+  elif ensure_acme_renew_cron; then
+    if config_uses_acme_certificate; then
+      REPAIR_ACME_ACTION="自动续期组件正常"
+    else
+      REPAIR_ACME_ACTION="当前使用自签证书，ACME任务已暂停"
+    fi
+  else
+    REPAIR_ACME_ACTION="检查或修复失败"
+    maintenance_failed=1
+  fi
+  if cronsb; then
+    REPAIR_CRON_ACTION="每日重启任务正常"
+  else
+    REPAIR_CRON_ACTION="设置失败"
+    maintenance_failed=1
+  fi
+  if refresh_share_files_after_change; then
+    REPAIR_SHARE_ACTION="已刷新"
+  else
+    REPAIR_SHARE_ACTION="刷新失败，可稍后使用菜单[3]重试"
+    maintenance_failed=1
+  fi
+  show_repair_report
+  if [[ $REPAIR_NODE_REBUILT -eq 1 ]]; then
+    yellow "节点凭据已重新生成，请更新所有客户端配置"
+  fi
+  if [[ $maintenance_failed -eq 0 ]]; then
+    green "sb 全部检查项修复完成"
+    return 0
+  fi
+  yellow "sb 核心服务已恢复，但上方部分维护项仍需处理"
+  return 1
+}
+
+repair_singbox(){
+  local repair_status
+  if ! managed_directory_is_owned ||
+     { ! managed_install_data_present && ! service_definition_is_repairable; }; then
+    red "未检测到可修复的sb安装数据，请使用菜单[1]安装"
+    readp "按回车返回主菜单..."
+    return 1
+  fi
+  if service_name_conflict && ! service_definition_is_repairable; then
+    red "检测到不属于sb.sh的同名服务，拒绝修复"
+    readp "按回车返回主菜单..."
+    return 1
+  fi
+  if ! core_dependencies_ready; then
+    yellow "核心修复依赖不完整，正在尝试补齐……"
+    install_dependencies || true
+    if ! core_dependencies_ready; then
+      red "核心修复依赖仍不完整，无法安全处理内核、配置或服务"
+      readp "按回车返回主菜单..."
+      return 1
+    fi
+  fi
+  if with_lifecycle_acme_lock repair_singbox_locked; then
+    repair_status=0
+  else
+    repair_status=$?
+  fi
+  readp "按回车返回主菜单..."
+  return "$repair_status"
 }
 # sb-module: 90-main
 # Installation main flow
@@ -3906,8 +5883,7 @@ install_singbox(){
     abort_install_transaction
     return 1
   fi
-  if ! printf '%s\n' "$public_key" > "$SB_DIR/public.key" ||
-     ! chmod 600 "$SB_DIR/public.key"; then
+  if ! atomic_write_private_text "$SB_DIR/public.key" "$public_key"; then
     red "保存Reality公钥失败"
     abort_install_transaction
     return 1
@@ -3926,6 +5902,7 @@ install_singbox(){
     abort_install_transaction
     return 1
   fi
+  save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_vl_re}/tcp、${port_socks5}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
@@ -3954,73 +5931,6 @@ install_singbox(){
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   echo
   INSTALL_TRANSACTION_ACTIVE=0
-}
-
-repair_singbox(){
-  local shortcut_ready=0 repair_choice reinstall_status
-  if ! managed_directory_is_owned || ! managed_install_data_present; then
-    red "未检测到可修复的sb安装数据"
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  if service_name_conflict; then
-    red "检测到不属于sb.sh的同名服务，拒绝修复"
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  if ! installed_config_is_valid; then
-    red "现有内核或配置未通过 Sing-box v${CORE_VERSION} 检查，无法直接修复"
-    if [[ -x $SB_BIN && -s $SB_CONFIG ]]; then
-      "$SB_BIN" check -c "$SB_CONFIG" || true
-    fi
-    yellow "缺失或损坏的配置无法安全还原；继续会删除本脚本管理的 $SB_DIR 并重新安装"
-    yellow "请先备份需要保留的数据"
-    yellow "1：清理残缺安装并重新安装"
-    yellow "0：取消"
-    readp "请选择【0-1】：" repair_choice || return 1
-    if [[ $repair_choice != 1 ]]; then
-      return 1
-    fi
-    if ! cleanup_incomplete_install; then
-      red "残缺安装清理失败，修复已中止"
-      readp "按回车返回主菜单..."
-      return 1
-    fi
-    green "残缺安装已清理，现在重新进入安装流程"
-    install_singbox
-    reinstall_status=$?
-    readp "按回车返回主菜单..."
-    return "$reinstall_status"
-  fi
-  if service_exists; then
-    if ! restartsb >/dev/null 2>&1 || ! service_is_active; then
-      cleanup_service || {
-        red "清理损坏的服务定义失败，修复已中止"
-        readp "按回车返回主菜单..."
-        return 1
-      }
-      sbservice || {
-        readp "按回车返回主菜单..."
-        return 1
-      }
-    fi
-  elif ! sbservice; then
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  if update_shortcut; then
-    shortcut_ready=1
-  else
-    yellow "服务已恢复，但快捷方式 $SHORTCUT 更新失败"
-  fi
-  with_acme_lock ensure_acme_renew_cron || yellow "服务已恢复，但ACME续期状态需要手动检查"
-  cronsb || yellow "服务已恢复，但每日重启任务设置失败"
-  if [[ $shortcut_ready -eq 1 ]]; then
-    green "sb服务修复成功，快捷方式: sb"
-  else
-    green "sb服务修复成功"
-  fi
-  readp "按回车返回主菜单..."
 }
 
 # Management menu
@@ -4116,9 +6026,17 @@ menu(){
 prepare_runtime_state || exit 1
 
 handle_install_interrupt(){
+  if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
+    return 0
+  fi
   trap '' INT TERM HUP
   echo
-  if [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+  if [[ ${REPAIR_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
+    yellow "修复已中断，正在恢复修复前可用状态……"
+    if ! abort_repair_transaction; then
+      red "修复状态自动恢复不完整，请立即检查 $SB_DIR 和 $SB_SERVICE 服务"
+    fi
+  elif [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
     clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
   elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
@@ -4134,6 +6052,7 @@ handle_install_interrupt(){
       red "ACME 状态恢复失败，请立即检查 $SB_DIR"
     fi
   fi
+  cleanup_core_download_temp >/dev/null 2>&1 || true
   exit 130
 }
 trap handle_install_interrupt INT TERM HUP

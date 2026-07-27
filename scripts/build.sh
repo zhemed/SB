@@ -24,6 +24,7 @@ readonly -a MODULES=(
   "60-cron.sh"
   "70-management.sh"
   "80-lifecycle.sh"
+  "85-repair.sh"
   "90-main.sh"
 )
 

@@ -13,6 +13,14 @@ valid_socks_password(){
   [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
 }
 
+valid_reality_key(){
+  [[ $1 =~ ^[A-Za-z0-9_-]{43}$ ]]
+}
+
+valid_short_id(){
+  [[ $1 =~ ^[0-9A-Fa-f]{8}$ ]]
+}
+
 valid_hostname(){
   local name=$1 label
   local -a labels

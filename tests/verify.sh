@@ -21,6 +21,7 @@ bash "$ROOT_DIR/scripts/build.sh" --check
 bash -n "$ROOT_DIR/sb.sh"
 bash -n "$ROOT_DIR/scripts/build.sh"
 bash -n "$ROOT_DIR/tests/unit.sh"
+bash -n "$ROOT_DIR/tests/repair.sh"
 bash -n "$ROOT_DIR/tests/verify.sh"
 
 [[ $(grep -Fxc 'CORE_VERSION="1.10.7"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
@@ -44,17 +45,19 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v1.8.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 1.8.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '1.8.0' ]] ||
-  fail "VERSION file is not 1.8.0"
-grep -Fq -- "当前项目版本：\`1.8.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 1.8.0"
+[[ $(grep -Fxc 'sb_version="v1.9.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 1.9.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '1.9.0' ]] ||
+  fail "VERSION file is not 1.9.0"
+grep -Fq -- "当前项目版本：\`1.9.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 1.9.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
   'cleanup_incomplete_install()' \
   'abort_install_transaction()' \
+  'repair_singbox_locked()' \
+  'save_last_good_config()' \
   'trap handle_install_interrupt INT TERM HUP' \
   'green " 1. 安装"' \
   'green " 2. 修复"' \
@@ -172,26 +175,57 @@ awk '/<<'\''ACMERELOAD'\''/{inside=1; next} /^ACMERELOAD$/{inside=0} inside' \
 bash -n "$hook_candidate"
 awk '
   $0 == "if [[ ! -s $config ]]; then" {
-    getline initial_guard
-    getline normal_rejection
+    getline initial_if
+    getline initial_commit
+    getline initial_exit
+    getline initial_end
+    getline rollback
+    getline normal_exit
     getline block_end
-    valid = initial_guard == "  [[ ${SB_INITIAL_INSTALL:-0} == 1 ]] && exit 0" &&
-      normal_rejection == "  exit 1" && block_end == "fi"
+    valid = initial_if == "  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then" &&
+      initial_commit == "    commit_deployment" && initial_exit == "    exit 0" &&
+      initial_end == "  fi" && rollback == "  rollback_deployment || true" &&
+      normal_exit == "  exit 1" && block_end == "fi"
     exit
   }
   END { exit !valid }
 ' "$hook_candidate" || fail "ACME reload hook does not limit the missing-config bypass to initial install"
+grep -Fqx "source_cert=\"\$source_dir/fullchain.pem\"" "$hook_candidate" ||
+  fail "ACME reload hook does not read the staged full chain"
+grep -Fqx "source_key=\"\$source_dir/private.key\"" "$hook_candidate" ||
+  fail "ACME reload hook does not read the staged private key"
+grep -Fqx "     ! mv -Tf -- \"\$pointer_tmp\" \"\$base/acme-live/current\"; then" "$hook_candidate" ||
+  fail "ACME reload hook does not atomically switch the certificate generation"
+grep -Fqx "     ! install_managed_link \"\$cert\" 'acme-live/current/fullchain.pem'; then" \
+  "$hook_candidate" || fail "ACME certificate compatibility link is missing"
+grep -Fqx "     ! install_managed_link \"\$key\" 'acme-live/current/private.key'; then" \
+  "$hook_candidate" || fail "ACME private-key compatibility link is missing"
+grep -Fqx '    restore_managed_links=1' "$hook_candidate" ||
+  fail "ACME compatibility-link rollback marker is missing"
 
 issue_function=$(awk '/^issue_cloudflare_certificate\(\)\{/{inside=1} /^inscertificate\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $issue_function ]] || fail "cannot extract ACME issue function"
+grep -Fq -- "register_acme_certificate_deployment \"\$ACME_PRIMARY_DOMAIN\" \"\$initial_install\"" \
+  <<< "$issue_function" || fail "ACME issuance does not use the managed deployment registration"
+register_function=$(awk '/^register_acme_certificate_deployment\(\)\{/{inside=1} /^config_uses_acme_certificate\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+[[ -n $register_function ]] || fail "cannot extract ACME deployment registration"
 # The dollar-prefixed names below are literal generated-script text.
 # shellcheck disable=SC2016
-[[ $(printf '%s\n' "$issue_function" | grep -Fc -- 'SB_INITIAL_INSTALL=1 HOME="$SB_DIR" "$ACME_BIN"' || true) -eq 1 ]] ||
-  fail "initial ACME install is not explicitly marked"
+grep -Fq -- 'SB_INITIAL_INSTALL="$initial_install" HOME="$SB_DIR" "$ACME_BIN"' \
+  <<< "$register_function" || fail "ACME deployment does not mark initial-install hooks explicitly"
 # shellcheck disable=SC2016
-[[ $(printf '%s\n' "$issue_function" | grep -Fc -- 'SB_INITIAL_INSTALL=0 HOME="$SB_DIR" "$ACME_BIN"' || true) -eq 1 ]] ||
-  fail "non-initial ACME install does not clear the initial-install marker"
+grep -Fq -- '--key-file "$ACME_STAGE_KEY" --fullchain-file "$ACME_STAGE_CERT"' \
+  <<< "$register_function" || fail "acme.sh still writes certificate files outside the staging directory"
+grep -Fq -- 'ACME_LOCK="/run/sb-acme.lock"' "$ROOT_DIR/sb.sh" ||
+  fail "ACME lock is not independent from the removable sb directory"
+# The dollar-prefixed name below is literal generated-script text.
+# shellcheck disable=SC2016
+grep -Fq -- 'ACME_COMPAT_LOCK="$SB_DIR/acme.lock"' "$ROOT_DIR/sb.sh" ||
+  fail "v1.8.0 ACME lock compatibility is missing"
+grep -Fq -- 'with_acme_lock resolve_orphaned_acme_state_backup || return 1' "$ROOT_DIR/sb.sh" ||
+  fail "startup ACME recovery-point handling is missing"
 inscertificate_function=$(awk '/^inscertificate\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
 [[ $(printf '%s\n' "$inscertificate_function" | grep -Fc -- 'issue_cloudflare_certificate 1' || true) -eq 2 ]] ||
   fail "only initial installation may mark ACME install hooks as initial"
@@ -200,12 +234,14 @@ if command -v shellcheck >/dev/null 2>&1; then
   shellcheck --shell=bash --severity=info "$ROOT_DIR/sb.sh"
   shellcheck --shell=bash --severity=info "$hook_candidate"
   shellcheck --shell=bash --severity=info \
-    "$ROOT_DIR/scripts/build.sh" "$ROOT_DIR/tests/unit.sh" "$ROOT_DIR/tests/verify.sh"
+    "$ROOT_DIR/scripts/build.sh" "$ROOT_DIR/tests/unit.sh" \
+    "$ROOT_DIR/tests/repair.sh" "$ROOT_DIR/tests/verify.sh"
 else
   printf 'verify: shellcheck not found; static lint skipped\n' >&2
 fi
 
 bash "$ROOT_DIR/tests/unit.sh"
+bash "$ROOT_DIR/tests/repair.sh"
 
 digest=$(sha256sum "$ROOT_DIR/sb.sh" | awk '{print $1}')
 printf 'verification passed: %s\n' "$digest"

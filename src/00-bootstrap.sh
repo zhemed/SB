@@ -14,6 +14,7 @@ ACME_ARCHIVE_SHA256="e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee09
 SOCKS_USERNAME="sb"
 SB_DIR="/etc/sb"
 SB_CONFIG="$SB_DIR/sb.json"
+SB_LAST_GOOD="$SB_DIR/sb.json.last-good"
 SB_BIN="$SB_DIR/sing-box"
 SB_SERVICE="sb"
 SYSTEMD_UNIT="/etc/systemd/system/${SB_SERVICE}.service"
@@ -26,16 +27,27 @@ ACME_CERT="$SB_DIR/acme-cert.pem"
 ACME_KEY="$SB_DIR/acme-private.key"
 ACME_IDENTITY="$SB_DIR/acme_server_name"
 ACME_RELOAD="$SB_DIR/acme_reload.sh"
-ACME_LOCK="$SB_DIR/acme.lock"
-ACME_RELOAD_IDENTITY="# sb-acme-reload-v1"
+ACME_LOCK="/run/sb-acme.lock"
+ACME_COMPAT_LOCK="$SB_DIR/acme.lock"
+ACME_STAGE="$ACME_HOME/sb-stage"
+ACME_STAGE_CERT="$ACME_STAGE/fullchain.pem"
+ACME_STAGE_KEY="$ACME_STAGE/private.key"
+ACME_LIVE="$SB_DIR/acme-live"
+ACME_GENERATIONS="$ACME_LIVE/generations"
+ACME_CURRENT="$ACME_LIVE/current"
+ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 INSTALL_TRANSACTION_ACTIVE=0
 ACME_STATE_BACKUP=
 ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
 ACME_LOCK_FD=
+ACME_COMPAT_LOCK_FD=
 ACME_LOCK_HELD=0
 CERT_ACTIVATION_MAINTENANCE_OK=1
+CORE_DOWNLOAD_TEMP_DIR=
+REPAIR_TRANSACTION_ACTIVE=0
+REPAIR_TRANSACTION_FINALIZING=0
 
 red='\033[0;31m'
 green='\033[0;32m'
@@ -79,7 +91,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v1.8.0"
+sb_version="v1.9.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -131,7 +143,7 @@ v4v6_refresh(){
   cache_tmp=$(mktemp "$SB_DIR/.ip_cache.XXXXXX") || return 1
   printf '%s\n%s\n%s\n%s\n' "$v4" "$v6" "$v4dq" "$v6dq" > "$cache_tmp"
   chmod 600 "$cache_tmp"
-  mv -f "$cache_tmp" "$cache_file"
+  mv -fT -- "$cache_tmp" "$cache_file"
 }
 
 read_ip_cache(){
@@ -167,8 +179,22 @@ v6only(){
 }
 
 # Core download
+cleanup_core_download_temp(){
+  local path=${CORE_DOWNLOAD_TEMP_DIR:-}
+  [[ -n $path ]] || return 0
+  case $path in
+    "$SB_DIR"/.core.*)
+      [[ ! -L $path ]] || return 1
+      rm -rf -- "$path" || return 1
+      ;;
+    *) return 1 ;;
+  esac
+  CORE_DOWNLOAD_TEMP_DIR=
+}
+
 inssb(){
-  local sbcore="$CORE_VERSION" sbname temp_dir archive expected_sha256 actual_sha256 extracted_version
+  local sbcore="$CORE_VERSION" sbname temp_dir archive expected_sha256 actual_sha256
+  local extracted_version core_tmp installed_version
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "安装固定版本 Sing-box v${sbcore}"
   sbname="sing-box-$sbcore-linux-$cpu"
@@ -179,36 +205,56 @@ inssb(){
     *) red "没有当前架构的 Sing-box 摘要"; return 1 ;;
   esac
   temp_dir=$(mktemp -d "$SB_DIR/.core.XXXXXX") || return 1
+  CORE_DOWNLOAD_TEMP_DIR=$temp_dir
   archive="$temp_dir/$sbname.tar.gz"
   if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 \
     --connect-timeout 10 --max-time 180 -o "$archive" \
     "https://github.com/SagerNet/sing-box/releases/download/v$sbcore/$sbname.tar.gz"; then
     red "下载 Sing-box v${sbcore} 失败，请检查VPS是否可访问GitHub"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
   actual_sha256=$(sha256sum "$archive" 2>/dev/null | awk '{print $1}')
   if [[ $actual_sha256 != "$expected_sha256" ]]; then
     red "Sing-box 压缩包 SHA-256 校验失败，拒绝安装"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
   if ! tar -xzf "$archive" -C "$temp_dir" || [[ ! -x "$temp_dir/$sbname/sing-box" ]]; then
     red "Sing-box 压缩包不完整或解压失败"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
   extracted_version=$("$temp_dir/$sbname/sing-box" version 2>/dev/null | awk '/version/{print $NF}')
   if [[ $extracted_version != "$CORE_VERSION" ]]; then
     red "内核版本校验失败：期望 $CORE_VERSION，实际 ${extracted_version:-未知}"
-    rm -rf "$temp_dir"
+    cleanup_core_download_temp || true
     return 1
   fi
-  if ! install -m 755 "$temp_dir/$sbname/sing-box" "$SB_BIN"; then
+  core_tmp=$(mktemp "$SB_DIR/.sing-box.XXXXXX") || {
+    cleanup_core_download_temp || true
+    return 1
+  }
+  if ! install -m 755 "$temp_dir/$sbname/sing-box" "$core_tmp"; then
     red "安装 Sing-box 内核失败"
-    rm -rf "$temp_dir"
+    rm -f "$core_tmp"
+    cleanup_core_download_temp || true
     return 1
   fi
-  rm -rf "$temp_dir"
+  installed_version=$("$core_tmp" version 2>/dev/null | awk '/version/{print $NF}')
+  if [[ $installed_version != "$CORE_VERSION" ]] ||
+     ! mv -fT -- "$core_tmp" "$SB_BIN"; then
+    red "Sing-box 内核原子替换失败，已保留原内核"
+    rm -f "$core_tmp"
+    cleanup_core_download_temp || true
+    return 1
+  fi
+  if [[ ! -f $SB_BIN || -L $SB_BIN || ! -x $SB_BIN ]] ||
+     [[ $("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}') != "$CORE_VERSION" ]]; then
+    red "Sing-box 内核替换后的完整性检查失败"
+    cleanup_core_download_temp || true
+    return 1
+  fi
+  cleanup_core_download_temp || return 1
   blue "成功安装 Sing-box 内核版本：$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')"
 }

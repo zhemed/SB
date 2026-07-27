@@ -139,6 +139,12 @@ inspect_acme_renewal_health(){
   elif ! load_acme_certificate_schedule "$identity"; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="ACME 域名配置或续期时间记录异常"
+  elif ! managed_acme_live_layout_is_valid; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="证书原子部署目录或 current 指针异常"
+  elif ! acme_deployment_config_is_current "$identity"; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="acme.sh 部署目标不是受管暂存目录"
   elif ! cron_daemon_is_active; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="cron/crond 未运行"
@@ -290,10 +296,12 @@ rollback_new_acme_state(){
 }
 
 restore_previous_active_acme(){
-  local old_identity=$1
+  local old_identity=$1 restored_identity
   [[ -n $old_identity ]] || return 1
   yellow "正在恢复原 ACME 证书和自动续期……"
-  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+  restored_identity=$(detect_acme_identity 2>/dev/null) || return 1
+  if [[ $restored_identity == "$old_identity" ]] && cert_acme &&
+     activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
     if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
       green "原 ACME 证书和自动续期已恢复"
     else
@@ -306,19 +314,34 @@ restore_previous_active_acme(){
 }
 
 apply_new_cloudflare_certificate(){
+  local activation_status backup_path
   certificate_action_service_ready || return 1
   if ! issue_cloudflare_certificate 0 1; then
     red "新证书申请失败，当前证书未改变"
     return 1
   fi
-  if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
-    finish_acme_replacement || true
-    if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-      green "新 ACME 证书已切换并启用自动续期"
+  if cert_acme; then
+    if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+      finish_acme_replacement || true
+      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+        green "新 ACME 证书已切换并启用自动续期"
+      else
+        yellow "新 ACME 证书已切换，但自动续期配置异常，请使用修复功能"
+      fi
+      return 0
     else
-      yellow "新 ACME 证书已切换，但自动续期配置异常，请使用修复功能"
+      activation_status=$?
     fi
-    return 0
+  else
+    activation_status=1
+  fi
+  if [[ $activation_status -eq 2 ]]; then
+    backup_path=$ACME_STATE_BACKUP
+    ACME_STATE_BACKUP=
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    red "配置切换与自动回滚均失败；为避免删除当前配置可能引用的证书，已保留新 ACME 状态"
+    yellow "申请前的 ACME 状态备份保留在：$backup_path"
+    return 2
   fi
   red "新证书已签发，但服务切换失败，正在恢复申请前的 ACME 状态"
   rollback_new_acme_state || true
@@ -326,8 +349,11 @@ apply_new_cloudflare_certificate(){
 }
 
 replace_active_acme_certificate(){
-  local choice old_identity
-  old_identity=$(read_acme_identity 2>/dev/null || true)
+  local choice old_identity activation_status backup_path
+  if ! old_identity=$(detect_acme_identity 2>/dev/null); then
+    red "当前 ACME 证书无效，无法建立可靠的恢复点；请先修复证书状态"
+    return 1
+  fi
   yellow "更换期间服务会短暂切换为自签证书；任一步失败都会尝试恢复原 ACME 证书"
   readp "输入1继续，输入0取消：" choice || return 1
   [[ $choice == 1 ]] || return 0
@@ -343,14 +369,28 @@ replace_active_acme_certificate(){
     return 1
   fi
   if issue_cloudflare_certificate 0 1 1; then
-    if cert_acme && activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
-      finish_acme_replacement || true
-      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-        green "ACME 证书与 Cloudflare 凭据更换完成"
+    if cert_acme; then
+      if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+        finish_acme_replacement || true
+        if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+          green "ACME 证书与 Cloudflare 凭据更换完成"
+        else
+          yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+        fi
+        return 0
       else
-        yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+        activation_status=$?
       fi
-      return 0
+    else
+      activation_status=1
+    fi
+    if [[ $activation_status -eq 2 ]]; then
+      backup_path=$ACME_STATE_BACKUP
+      ACME_STATE_BACKUP=
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+      red "配置切换与自动回滚均失败；已保留新 ACME 状态，避免破坏当前配置引用"
+      yellow "更换前的 ACME 状态备份保留在：$backup_path"
+      return 2
     fi
     red "新证书已签发，但服务切换失败"
     rollback_new_acme_state || true

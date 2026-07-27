@@ -1,4 +1,54 @@
 # sb-module: 40-service
+managed_path_is_trusted(){
+  local path=$1 expected_owner owner mode
+  [[ -e $path && ! -L $path ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$path" 2>/dev/null) || return 1
+  mode=$(stat -c '%a' "$path" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" && $mode =~ ^[0-7]{3,4}$ ]] || return 1
+  (( (8#$mode & 0022) == 0 ))
+}
+
+managed_regular_file_is_trusted(){
+  local path=$1
+  [[ -f $path && ! -L $path ]] && managed_path_is_trusted "$path"
+}
+
+managed_symlink_is_trusted(){
+  local path=$1 expected_owner owner
+  [[ -L $path ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$path" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" ]]
+}
+
+atomic_write_private_text(){
+  local destination=$1 value=$2 candidate name
+  name=${destination##*/}
+  [[ ${destination%/*} == "$SB_DIR" && $name =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] && managed_path_is_trusted "$SB_DIR" || return 1
+  candidate=$(mktemp "$SB_DIR/.managed-write.XXXXXX") || return 1
+  if ! printf '%s\n' "$value" > "$candidate" || ! chmod 600 "$candidate" ||
+     ! mv -fT -- "$candidate" "$destination"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
+atomic_copy_private_file(){
+  local source=$1 destination=$2 candidate name
+  name=${destination##*/}
+  [[ -f $source && ! -L $source && ${destination%/*} == "$SB_DIR" &&
+     $name =~ ^[A-Za-z0-9._-]+$ ]] || return 1
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] && managed_path_is_trusted "$SB_DIR" || return 1
+  candidate=$(mktemp "$SB_DIR/.managed-copy.XXXXXX") || return 1
+  if ! cp -- "$source" "$candidate" || ! chmod 600 "$candidate" ||
+     ! mv -fT -- "$candidate" "$destination"; then
+    rm -f -- "$candidate"
+    return 1
+  fi
+}
+
 write_managed_marker_at(){
   local directory=$1 marker_tmp marker="$1/.sb-managed"
   [[ ! -e $directory || -d $directory && ! -L $directory ]] || return 1
@@ -6,7 +56,7 @@ write_managed_marker_at(){
   chmod 700 "$directory" || return 1
   marker_tmp=$(mktemp "$directory/.sb-managed.XXXXXX") || return 1
   if ! printf '%s\n' 'managed_by=sb.sh' 'identity=sb' 'directory=/etc/sb' > "$marker_tmp" ||
-     ! chmod 600 "$marker_tmp" || ! mv -f "$marker_tmp" "$marker"; then
+     ! chmod 600 "$marker_tmp" || ! mv -fT -- "$marker_tmp" "$marker"; then
     rm -f "$marker_tmp"
     return 1
   fi
@@ -18,6 +68,7 @@ write_managed_marker(){
 
 managed_directory_is_owned(){
   [[ -d $SB_DIR && ! -L $SB_DIR && -f $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
+  managed_path_is_trusted "$SB_DIR" && managed_regular_file_is_trusted "$SB_MANAGED_MARKER" || return 1
   grep -Fqx 'managed_by=sb.sh' "$SB_MANAGED_MARKER" 2>/dev/null &&
     grep -Fqx 'identity=sb' "$SB_MANAGED_MARKER" 2>/dev/null &&
     grep -Fqx 'directory=/etc/sb' "$SB_MANAGED_MARKER" 2>/dev/null
@@ -96,6 +147,29 @@ openrc_unit_is_owned(){
     grep -Fqx "command_args=\"run -c $config\"" "$unit" 2>/dev/null
 }
 
+systemd_service_definition_is_repairable(){
+  local unit=${1:-$SYSTEMD_UNIT}
+  [[ -f $unit && ! -L $unit ]] || return 1
+  grep -Fqx '# Managed by sb.sh' "$unit" 2>/dev/null || return 1
+  systemd_service_has_other_units "$SB_SERVICE" "$unit" && return 1
+  systemd_service_has_dropins "$SB_SERVICE" && return 1
+  [[ ! -e $OPENRC_UNIT && ! -L $OPENRC_UNIT ]]
+}
+
+openrc_service_definition_is_repairable(){
+  [[ -f $OPENRC_UNIT && ! -L $OPENRC_UNIT ]] || return 1
+  grep -Fqx '# Managed by sb.sh' "$OPENRC_UNIT" 2>/dev/null || return 1
+  ! systemd_service_definition_present "$SB_SERVICE"
+}
+
+service_definition_is_repairable(){
+  if command -v apk >/dev/null 2>&1; then
+    openrc_service_definition_is_repairable
+  else
+    systemd_service_definition_is_repairable "$SYSTEMD_UNIT"
+  fi
+}
+
 write_service_definition(){
   local unit_tmp
   if command -v apk >/dev/null 2>&1; then
@@ -113,7 +187,7 @@ EOF
       rm -f "$unit_tmp"
       return 1
     fi
-    if ! chmod 700 "$unit_tmp" || ! mv -f "$unit_tmp" "$OPENRC_UNIT"; then
+    if ! chmod 700 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$OPENRC_UNIT"; then
       rm -f "$unit_tmp"
       return 1
     fi
@@ -141,7 +215,7 @@ EOF
       rm -f "$unit_tmp"
       return 1
     fi
-    if ! chmod 600 "$unit_tmp" || ! mv -f "$unit_tmp" "$SYSTEMD_UNIT"; then
+    if ! chmod 600 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$SYSTEMD_UNIT"; then
       rm -f "$unit_tmp"
       return 1
     fi
@@ -192,6 +266,34 @@ sbservice(){
   return 0
 }
 
+repair_managed_service(){
+  if service_name_conflict && ! service_definition_is_repairable; then
+    red "检测到不属于sb.sh的同名 $SB_SERVICE 服务，拒绝覆盖"
+    return 1
+  fi
+  if ! installed_core_is_current || [[ ! -s $SB_CONFIG ]] ||
+     ! "$SB_BIN" check -c "$SB_CONFIG" >/dev/null 2>&1; then
+    red "内核或配置仍未通过检查，不能重建服务"
+    return 1
+  fi
+  write_service_definition || return 1
+  if command -v apk >/dev/null 2>&1; then
+    rc-update add "$SB_SERVICE" default >/dev/null 2>&1 ||
+      rc-update show default 2>/dev/null | grep -qE "(^|[[:space:]])${SB_SERVICE}([[:space:]]|$)" || return 1
+    if service_is_active; then
+      rc-service "$SB_SERVICE" restart >/dev/null 2>&1 || return 1
+    else
+      rc-service "$SB_SERVICE" start >/dev/null 2>&1 || return 1
+    fi
+  else
+    systemctl daemon-reload >/dev/null 2>&1 || return 1
+    systemctl enable "$SB_SERVICE" >/dev/null 2>&1 || return 1
+    systemctl restart "$SB_SERVICE" >/dev/null 2>&1 || return 1
+  fi
+  sleep 1
+  service_is_active
+}
+
 restartsb(){
   if command -v apk >/dev/null 2>&1; then
     rc-service "$SB_SERVICE" restart
@@ -225,7 +327,9 @@ formal_service_present(){
 
 service_name_conflict(){
   formal_service_present || return 1
-  ! service_is_owned
+  service_is_owned && return 1
+  service_definition_is_repairable && return 1
+  return 0
 }
 
 service_exists(){
@@ -238,14 +342,45 @@ is_installed(){
 
 managed_install_data_present(){
   [[ -x $SB_BIN || -s $SB_CONFIG || -s $SB_DIR/private.key || -s $SB_DIR/cert.pem ||
-     -s $ACME_KEY || -s $ACME_CERT || -s $SB_DIR/public.key ]]
+     -s $ACME_KEY || -s $ACME_CERT || -s $SB_DIR/public.key ||
+     -s ${SB_LAST_GOOD:-$SB_DIR/sb.json.last-good} ]]
+}
+
+installed_core_is_current(){
+  local installed_core
+  [[ -f $SB_BIN && ! -L $SB_BIN && -x $SB_BIN ]] || return 1
+  managed_regular_file_is_trusted "$SB_BIN" || return 1
+  installed_core=$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')
+  [[ $installed_core == "$CORE_VERSION" ]]
+}
+
+managed_config_file_is_valid(){
+  local source=$1
+  [[ -s $source ]] && managed_regular_file_is_trusted "$source" || return 1
+  installed_core_is_current || return 1
+  "$SB_BIN" check -c "$source" >/dev/null 2>&1
+}
+
+save_last_good_config(){
+  local source=${1:-$SB_CONFIG} destination=${SB_LAST_GOOD:-$SB_DIR/sb.json.last-good} candidate
+  managed_config_file_is_valid "$source" || return 1
+  if [[ -e $destination || -L $destination ]]; then
+    [[ -f $destination && ! -L $destination ]] || return 1
+    if cmp -s -- "$source" "$destination"; then
+      chmod 600 "$destination"
+      return
+    fi
+  fi
+  candidate=$(mktemp "$SB_DIR/.sb.json.last-good.XXXXXX") || return 1
+  if ! cp -p -- "$source" "$candidate" || ! chmod 600 "$candidate" ||
+     ! mv -fT -- "$candidate" "$destination"; then
+    rm -f "$candidate"
+    return 1
+  fi
 }
 
 installed_config_is_valid(){
-  local installed_core
-  [[ -x $SB_BIN && -s $SB_CONFIG ]] || return 1
-  installed_core=$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')
-  [[ $installed_core == "$CORE_VERSION" ]] || return 1
+  installed_core_is_current && [[ -s $SB_CONFIG ]] || return 1
   "$SB_BIN" check -c "$SB_CONFIG" >/dev/null 2>&1
 }
 
@@ -301,12 +436,13 @@ commit_config(){
     return 1
   fi
   chmod 600 "$candidate"
-  if ! mv -f "$candidate" "$SB_CONFIG"; then
+  if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
     rm -f "$candidate" "$backup"
     return 1
   fi
   if restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
+    save_last_good_config "$SB_CONFIG" || yellow "配置已生效，但最后可用配置快照更新失败"
     return 0
   fi
   red "服务未能使用新配置启动，正在回滚"
