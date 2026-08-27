@@ -86,15 +86,13 @@ prepare_managed_directory(){
 }
 
 systemd_unit_is_owned(){
-  local unit=$1 directory=$2 binary=$3 config=$4 marker_pattern=$5 service_name fragment dropins
+  local unit=$1 directory=$2 binary=$3 config=$4 marker_pattern=$5 service_name fragment
   [[ -f $unit && ! -L $unit ]] || return 1
   service_name=$(basename "$unit" .service)
   systemd_service_has_other_units "$service_name" "$unit" && return 1
-  systemd_service_has_dropins "$service_name" && return 1
   fragment=$(systemctl show "${service_name}.service" -p FragmentPath --value 2>/dev/null || true)
-  dropins=$(systemctl show "${service_name}.service" -p DropInPaths --value 2>/dev/null || true)
   [[ -z $fragment || $fragment == "$unit" ]] || return 1
-  [[ -z $dropins ]] || return 1
+  # Allow drop-ins (systemctl edit) — ownership of main unit still guarantees managed service
   grep -Eq "$marker_pattern" "$unit" 2>/dev/null &&
     grep -Fqx "WorkingDirectory=$directory" "$unit" 2>/dev/null &&
     grep -Fqx "ExecStart=$binary run -c $config" "$unit" 2>/dev/null
@@ -304,9 +302,9 @@ restartsb(){
 
 service_is_active(){
   if command -v apk >/dev/null 2>&1; then
-    rc-service "$SB_SERVICE" status 2>/dev/null | grep -q "started"
+    rc-service "$SB_SERVICE" status >/dev/null 2>&1
   else
-    systemctl is-active "$SB_SERVICE" 2>/dev/null | grep -qx "active"
+    systemctl is-active --quiet "$SB_SERVICE"
   fi
 }
 

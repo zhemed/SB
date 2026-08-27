@@ -1223,9 +1223,13 @@ discard_acme_state(){
 }
 
 reset_acme_state(){
-  local current
-  if config_references_acme_state; then
+  local current force=${1:-0}
+  if [[ $force != 1 ]] && config_references_acme_state; then
     red "当前服务正在使用 ACME 证书，请先切换为自签证书"
+    return 1
+  fi
+  if [[ $force == 1 && -z ${ACME_STATE_BACKUP:-} ]]; then
+    red "未找到 ACME 状态备份，拒绝强制清理正在使用的证书"
     return 1
   fi
   load_current_crontab || return 1
@@ -1279,9 +1283,16 @@ issue_cloudflare_certificate(){
       return 1
     fi
   fi
-  if ! reset_acme_state; then
-    restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
-    return 1
+  if [[ $reuse_backup == 1 ]]; then
+    if ! reset_acme_state 1; then
+      restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
+      return 1
+    fi
+  else
+    if ! reset_acme_state; then
+      restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
+      return 1
+    fi
   fi
   if ! install_official_acme; then
     discard_acme_state

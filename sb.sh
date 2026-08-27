@@ -1483,9 +1483,13 @@ discard_acme_state(){
 }
 
 reset_acme_state(){
-  local current
-  if config_references_acme_state; then
+  local current force=${1:-0}
+  if [[ $force != 1 ]] && config_references_acme_state; then
     red "当前服务正在使用 ACME 证书，请先切换为自签证书"
+    return 1
+  fi
+  if [[ $force == 1 && -z ${ACME_STATE_BACKUP:-} ]]; then
+    red "未找到 ACME 状态备份，拒绝强制清理正在使用的证书"
     return 1
   fi
   load_current_crontab || return 1
@@ -1539,9 +1543,16 @@ issue_cloudflare_certificate(){
       return 1
     fi
   fi
-  if ! reset_acme_state; then
-    restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
-    return 1
+  if [[ $reuse_backup == 1 ]]; then
+    if ! reset_acme_state 1; then
+      restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
+      return 1
+    fi
+  else
+    if ! reset_acme_state; then
+      restore_acme_state_backup || red "恢复 ACME 状态失败，请立即检查 $SB_DIR"
+      return 1
+    fi
   fi
   if ! install_official_acme; then
     discard_acme_state
@@ -2108,15 +2119,13 @@ prepare_managed_directory(){
 }
 
 systemd_unit_is_owned(){
-  local unit=$1 directory=$2 binary=$3 config=$4 marker_pattern=$5 service_name fragment dropins
+  local unit=$1 directory=$2 binary=$3 config=$4 marker_pattern=$5 service_name fragment
   [[ -f $unit && ! -L $unit ]] || return 1
   service_name=$(basename "$unit" .service)
   systemd_service_has_other_units "$service_name" "$unit" && return 1
-  systemd_service_has_dropins "$service_name" && return 1
   fragment=$(systemctl show "${service_name}.service" -p FragmentPath --value 2>/dev/null || true)
-  dropins=$(systemctl show "${service_name}.service" -p DropInPaths --value 2>/dev/null || true)
   [[ -z $fragment || $fragment == "$unit" ]] || return 1
-  [[ -z $dropins ]] || return 1
+  # Allow drop-ins (systemctl edit) — ownership of main unit still guarantees managed service
   grep -Eq "$marker_pattern" "$unit" 2>/dev/null &&
     grep -Fqx "WorkingDirectory=$directory" "$unit" 2>/dev/null &&
     grep -Fqx "ExecStart=$binary run -c $config" "$unit" 2>/dev/null
@@ -2326,9 +2335,9 @@ restartsb(){
 
 service_is_active(){
   if command -v apk >/dev/null 2>&1; then
-    rc-service "$SB_SERVICE" status 2>/dev/null | grep -q "started"
+    rc-service "$SB_SERVICE" status >/dev/null 2>&1
   else
-    systemctl is-active "$SB_SERVICE" 2>/dev/null | grep -qx "active"
+    systemctl is-active --quiet "$SB_SERVICE"
   fi
 }
 
@@ -4040,7 +4049,7 @@ replace_active_acme_certificate(){
     red "当前 ACME 证书无效，无法建立可靠的恢复点；请先修复证书状态"
     return 1
   fi
-  yellow "更换期间服务会短暂切换为自签证书；任一步失败都会尝试恢复原 ACME 证书"
+  yellow "更换期间服务保持运行，成功后重启 1 次加载新证书；失败自动恢复原证书（全程持有 ACME 锁）"
   readp "输入1继续，输入0取消：" choice || return 1
   [[ $choice == 1 ]] || return 0
   certificate_action_service_ready || return 1
@@ -4049,11 +4058,6 @@ replace_active_acme_certificate(){
     return 1
   fi
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  if ! activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"; then
-    clear_acme_state_backup || true
-    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
-    return 1
-  fi
   if issue_cloudflare_certificate 0 1 1; then
     if cert_acme; then
       if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then

@@ -354,7 +354,7 @@ replace_active_acme_certificate(){
     red "当前 ACME 证书无效，无法建立可靠的恢复点；请先修复证书状态"
     return 1
   fi
-  yellow "更换期间服务会短暂切换为自签证书；任一步失败都会尝试恢复原 ACME 证书"
+  yellow "更换期间服务保持运行，成功后重启 1 次加载新证书；失败自动恢复原证书（全程持有 ACME 锁）"
   readp "输入1继续，输入0取消：" choice || return 1
   [[ $choice == 1 ]] || return 0
   certificate_action_service_ready || return 1
@@ -363,11 +363,6 @@ replace_active_acme_certificate(){
     return 1
   fi
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  if ! activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"; then
-    clear_acme_state_backup || true
-    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
-    return 1
-  fi
   if issue_cloudflare_certificate 0 1 1; then
     if cert_acme; then
       if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
