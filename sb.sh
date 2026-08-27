@@ -974,26 +974,10 @@ elif ((has_systemd)); then
       exit 1
     fi
   done
-  for dropin_dir in /etc/systemd/system/sb.service.d /run/systemd/system/sb.service.d \
-    /usr/local/lib/systemd/system/sb.service.d /usr/lib/systemd/system/sb.service.d \
-    /lib/systemd/system/sb.service.d; do
-    if [[ -L $dropin_dir || -e $dropin_dir && ! -d $dropin_dir ]]; then
-      rollback_deployment || true
-      exit 1
-    fi
-    if [[ -d $dropin_dir ]]; then
-      for dropin in "$dropin_dir"/* "$dropin_dir"/.[!.]* "$dropin_dir"/..?*; do
-        if [[ -e $dropin || -L $dropin ]]; then
-          rollback_deployment || true
-          exit 1
-        fi
-      done
-    fi
-  done
   fragment=$(systemctl show sb.service -p FragmentPath --value 2>/dev/null || true)
-  dropins=$(systemctl show sb.service -p DropInPaths --value 2>/dev/null || true)
   [[ -z $fragment || $fragment == "$systemd_unit" ]] || { rollback_deployment || true; exit 1; }
-  [[ -z $dropins ]] || { rollback_deployment || true; exit 1; }
+  # Allow systemd drop-ins (systemctl edit sb) — ownership of the main unit still
+  # guarantees this is the managed service; drop-ins only extend it.
   if ! grep -Fqx '# Managed by sb.sh' "$systemd_unit" 2>/dev/null ||
      ! grep -Fqx 'WorkingDirectory=/etc/sb' "$systemd_unit" 2>/dev/null ||
      ! grep -Fqx 'ExecStart=/etc/sb/sing-box run -c /etc/sb/sb.json' "$systemd_unit" 2>/dev/null; then
@@ -3402,9 +3386,9 @@ acme_renew_runner_is_current(){
     grep -Fqx -- "  1) [[ \${1-} == --force ]] || exit 2; force=1 ;;" "$runner" 2>/dev/null &&
     grep -Fqx -- '  *) exit 2 ;;' "$runner" 2>/dev/null &&
     grep -Fqx -- 'exec 9> "$lock_file" || exit 1' "$runner" 2>/dev/null &&
-    grep -Fqx -- 'if ! flock -n 9; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'if ! flock -w 10 9; then' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
-    grep -Fqx -- '  if ! flock -n 8; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if ! flock -w 10 8; then' "$runner" 2>/dev/null &&
     grep -Fqx -- "  acme_identity=\$(read_runner_acme_identity) || exit 1" "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
@@ -3484,7 +3468,7 @@ if ! chmod 600 "$lock_file"; then
   exec 9>&-
   exit 1
 fi
-if ! flock -n 9; then
+if ! flock -w 10 9; then
   exec 9>&-
   exit 75
 fi
@@ -3500,7 +3484,7 @@ if [[ $compat_lock_file != "$lock_file" ]]; then
     exec 9>&-
     exit 1
   fi
-  if ! flock -n 8; then
+  if ! flock -w 10 8; then
     exec 8>&-
     flock -u 9 >/dev/null 2>&1 || true
     exec 9>&-

@@ -714,26 +714,10 @@ elif ((has_systemd)); then
       exit 1
     fi
   done
-  for dropin_dir in /etc/systemd/system/sb.service.d /run/systemd/system/sb.service.d \
-    /usr/local/lib/systemd/system/sb.service.d /usr/lib/systemd/system/sb.service.d \
-    /lib/systemd/system/sb.service.d; do
-    if [[ -L $dropin_dir || -e $dropin_dir && ! -d $dropin_dir ]]; then
-      rollback_deployment || true
-      exit 1
-    fi
-    if [[ -d $dropin_dir ]]; then
-      for dropin in "$dropin_dir"/* "$dropin_dir"/.[!.]* "$dropin_dir"/..?*; do
-        if [[ -e $dropin || -L $dropin ]]; then
-          rollback_deployment || true
-          exit 1
-        fi
-      done
-    fi
-  done
   fragment=$(systemctl show sb.service -p FragmentPath --value 2>/dev/null || true)
-  dropins=$(systemctl show sb.service -p DropInPaths --value 2>/dev/null || true)
   [[ -z $fragment || $fragment == "$systemd_unit" ]] || { rollback_deployment || true; exit 1; }
-  [[ -z $dropins ]] || { rollback_deployment || true; exit 1; }
+  # Allow systemd drop-ins (systemctl edit sb) — ownership of the main unit still
+  # guarantees this is the managed service; drop-ins only extend it.
   if ! grep -Fqx '# Managed by sb.sh' "$systemd_unit" 2>/dev/null ||
      ! grep -Fqx 'WorkingDirectory=/etc/sb' "$systemd_unit" 2>/dev/null ||
      ! grep -Fqx 'ExecStart=/etc/sb/sing-box run -c /etc/sb/sb.json' "$systemd_unit" 2>/dev/null; then
