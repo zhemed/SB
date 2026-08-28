@@ -4816,27 +4816,42 @@ atomic_install_shortcut(){
 
 update_shortcut(){
   local source_path bash_path source_version shortcut_version tmp_src=""
-  if [[ -f $0 ]]; then
-    if [[ $0 == "/dev/fd/"* ]]; then
-      tmp_src=$(mktemp /tmp/sb-src.XXXXXX) || return 1
-      if ! curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$tmp_src" 2>/dev/null && ! wget -qO "$tmp_src" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null; then
-        rm -f "$tmp_src"
-        return 1
-      fi
-      if ! script_source_is_valid "$tmp_src"; then
-        rm -f "$tmp_src"
-        return 1
-      fi
-      source_path="$tmp_src"
-    elif [[ $0 == "bash" ]]; then
+  local candidate_source="${BASH_SOURCE[0]:-}"
+  if [[ $0 == "/dev/fd/"* || $candidate_source == "/dev/fd/"* ]]; then
+    tmp_src=$(mktemp /tmp/sb-src.XXXXXX) || return 1
+    if ! curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$tmp_src" 2>/dev/null && ! wget -qO "$tmp_src" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null; then
+      rm -f "$tmp_src"
       return 1
-    else
-      source_path=$(readlink -f "$0" 2>/dev/null) || { [[ -z $tmp_src ]] || rm -f "$tmp_src"; return 1; }
-      if ! script_source_is_valid "$source_path"; then
-        [[ -z $tmp_src ]] || rm -f "$tmp_src"
-        red "当前运行源不是完整的 sb.sh 文件，拒绝创建快捷方式 $SHORTCUT"
-        return 1
-      fi
+    fi
+    if ! script_source_is_valid "$tmp_src"; then
+      rm -f "$tmp_src"
+      return 1
+    fi
+    source_path="$tmp_src"
+  elif [[ $0 == "bash" || $0 == "-bash" || $candidate_source == "bash" || $candidate_source == "-bash" ]]; then
+    tmp_src=$(mktemp /tmp/sb-src.XXXXXX) || return 1
+    if ! curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$tmp_src" 2>/dev/null && ! wget -qO "$tmp_src" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null; then
+      rm -f "$tmp_src"
+      return 1
+    fi
+    if ! script_source_is_valid "$tmp_src"; then
+      rm -f "$tmp_src"
+      return 1
+    fi
+    source_path="$tmp_src"
+  elif [[ -f $0 && ! -L $0 ]]; then
+    source_path=$(readlink -f "$0" 2>/dev/null) || { [[ -z $tmp_src ]] || rm -f "$tmp_src"; return 1; }
+    if ! script_source_is_valid "$source_path"; then
+      [[ -z $tmp_src ]] || rm -f "$tmp_src"
+      red "当前运行源不是完整的 sb.sh 文件，拒绝创建快捷方式 $SHORTCUT"
+      return 1
+    fi
+  elif [[ -n $candidate_source && -f $candidate_source && ! -L $candidate_source ]]; then
+    source_path=$(readlink -f "$candidate_source" 2>/dev/null) || { [[ -z $tmp_src ]] || rm -f "$tmp_src"; return 1; }
+    if ! script_source_is_valid "$source_path"; then
+      [[ -z $tmp_src ]] || rm -f "$tmp_src"
+      red "当前运行源不是完整的 sb.sh 文件，拒绝创建快捷方式 $SHORTCUT"
+      return 1
     fi
   else
     [[ -z $tmp_src ]] || rm -f "$tmp_src"
