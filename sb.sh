@@ -4815,32 +4815,60 @@ atomic_install_shortcut(){
 }
 
 update_shortcut(){
-  local source_path bash_path source_version shortcut_version
-  [[ -f $0 && $0 != "/dev/fd/"* && $0 != "bash" ]] || return 1
-  source_path=$(readlink -f "$0" 2>/dev/null) || return 1
+  local source_path bash_path source_version shortcut_version tmp_src=""
+  if [[ -f $0 ]]; then
+    if [[ $0 == "/dev/fd/"* ]]; then
+      tmp_src=$(mktemp /tmp/sb-src.XXXXXX) || return 1
+      if ! cat "$0" > "$tmp_src" 2>/dev/null || ! script_source_is_valid "$tmp_src"; then
+        rm -f "$tmp_src"
+        return 1
+      fi
+      source_path="$tmp_src"
+    elif [[ $0 == "bash" ]]; then
+      return 1
+    else
+      source_path=$(readlink -f "$0" 2>/dev/null) || { [[ -z $tmp_src ]] || rm -f "$tmp_src"; return 1; }
+      if ! script_source_is_valid "$source_path"; then
+        [[ -z $tmp_src ]] || rm -f "$tmp_src"
+        red "当前运行源不是完整的 sb.sh 文件，拒绝创建快捷方式 $SHORTCUT"
+        return 1
+      fi
+    fi
+  else
+    [[ -z $tmp_src ]] || rm -f "$tmp_src"
+    return 1
+  fi
   bash_path=$(readlink -f "$(command -v bash)" 2>/dev/null || true)
-  if [[ -n $bash_path && $source_path == "$bash_path" ]] || ! script_source_is_valid "$source_path"; then
+  if [[ -n $bash_path && $source_path == "$bash_path" ]]; then
+    [[ -z $tmp_src ]] || rm -f "$tmp_src"
     red "当前运行源不是完整的 sb.sh 文件，拒绝创建快捷方式 $SHORTCUT"
     return 1
   fi
   if [[ $source_path != "$SHORTCUT" ]]; then
     if [[ -e $SHORTCUT || -L $SHORTCUT ]] && ! shortcut_is_owned; then
+      [[ -z $tmp_src ]] || rm -f "$tmp_src"
       red "检测到非本脚本管理的 $SHORTCUT，拒绝覆盖；请先处理该命令冲突"
       return 1
     fi
     if shortcut_is_owned; then
-      source_version=$(script_copy_version "$source_path") || return 1
-      shortcut_version=$(script_copy_version "$SHORTCUT") || return 1
+      source_version=$(script_copy_version "$source_path") || { [[ -z $tmp_src ]] || rm -f "$tmp_src"; return 1; }
+      shortcut_version=$(script_copy_version "$SHORTCUT") || { [[ -z $tmp_src ]] || rm -f "$tmp_src"; return 1; }
       if version_is_older "$source_version" "$shortcut_version"; then
+        [[ -z $tmp_src ]] || rm -f "$tmp_src"
         red "当前脚本 v${source_version} 旧于快捷命令 v${shortcut_version}，拒绝降级覆盖"
         return 1
       fi
     fi
-    atomic_install_shortcut "$source_path" 755 || return 1
+    if ! atomic_install_shortcut "$source_path" 755; then
+      [[ -z $tmp_src ]] || rm -f "$tmp_src"
+      return 1
+    fi
   elif ! shortcut_is_owned; then
+    [[ -z $tmp_src ]] || rm -f "$tmp_src"
     red "$SHORTCUT 归属校验失败，拒绝更新快捷方式"
     return 1
   fi
+  [[ -z $tmp_src ]] || rm -f "$tmp_src"
   return 0
 }
 
@@ -5899,7 +5927,13 @@ install_singbox(){
   if update_shortcut; then
     shortcut_ready=1
   else
-    yellow "当前运行方式没有可复制的本地脚本，未创建快捷方式 $SHORTCUT"
+    # Fallback for bash <(curl ...) where $0 is /dev/fd/* : download directly
+    if (curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$SHORTCUT" 2>/dev/null || wget -qO "$SHORTCUT" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null) && chmod +x "$SHORTCUT" 2>/dev/null && shortcut_is_owned; then
+      shortcut_ready=1
+    else
+      rm -f "$SHORTCUT" 2>/dev/null || true
+      yellow "当前运行方式没有可复制的本地脚本，未创建快捷方式 $SHORTCUT"
+    fi
   fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   if [[ $shortcut_ready -eq 1 ]]; then

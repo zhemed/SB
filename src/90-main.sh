@@ -77,7 +77,13 @@ install_singbox(){
   if update_shortcut; then
     shortcut_ready=1
   else
-    yellow "当前运行方式没有可复制的本地脚本，未创建快捷方式 $SHORTCUT"
+    # Fallback for bash <(curl ...) where $0 is /dev/fd/* : download directly
+    if (curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$SHORTCUT" 2>/dev/null || wget -qO "$SHORTCUT" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null) && chmod +x "$SHORTCUT" 2>/dev/null && shortcut_is_owned; then
+      shortcut_ready=1
+    else
+      rm -f "$SHORTCUT" 2>/dev/null || true
+      yellow "当前运行方式没有可复制的本地脚本，未创建快捷方式 $SHORTCUT"
+    fi
   fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   if [[ $shortcut_ready -eq 1 ]]; then
