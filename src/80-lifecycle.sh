@@ -222,7 +222,11 @@ update_shortcut(){
   if [[ -f $0 ]]; then
     if [[ $0 == "/dev/fd/"* ]]; then
       tmp_src=$(mktemp /tmp/sb-src.XXXXXX) || return 1
-      if ! cat "$0" > "$tmp_src" 2>/dev/null || ! script_source_is_valid "$tmp_src"; then
+      if ! curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$tmp_src" 2>/dev/null && ! wget -qO "$tmp_src" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null; then
+        rm -f "$tmp_src"
+        return 1
+      fi
+      if ! script_source_is_valid "$tmp_src"; then
         rm -f "$tmp_src"
         return 1
       fi
