@@ -6,11 +6,16 @@
 
 ## 使用
 
-```bash
-sudo bash sb.sh
+VPS专用一键脚本如下：快捷方式： `sb`
 
-# 安装完成后
-sudo sb
+```bash
+bash <(wget -qO- https://raw.githubusercontent.com/zhemed/SB/main/sb.sh)
+```
+
+或者
+
+```bash
+bash <(curl -Ls https://raw.githubusercontent.com/zhemed/SB/main/sb.sh)
 ```
 
 脚本支持使用 systemd 的 Ubuntu、Debian、CentOS，以及使用 OpenRC 的 Alpine。脚本不会修改
