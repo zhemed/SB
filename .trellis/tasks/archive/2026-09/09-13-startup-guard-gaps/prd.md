@@ -99,12 +99,23 @@ trap handle_install_interrupt INT TERM HUP  ← 230 行：后装陷阱
 
 ## Acceptance Criteria
 
-- [ ] 清理清单与其测试副本中不再出现无生产者的 `.sb.json.rollback.*`
-- [ ] 撕裂的受管目录不再导致下一次运行拒绝继续
-- [ ] 按选定方案处理启动前哨窗口的中断语义
-- [ ] `bash scripts/build.sh && bash tests/verify.sh` 通过（52 项）
-- [ ] `.trellis/spec/runtime/index.md` 的「已知缺口」章节更新为实际状态
-- [ ] 新增/修改的行为有对应回归测试，且断言「失败时状态被保留」
+- [x] 清理清单与其测试副本中不再出现无生产者的 `.sb.json.rollback.*`
+- [x] 撕裂的受管目录不再导致下一次运行拒绝继续
+- [x] 按选定方案（C）处理启动前哨窗口的中断语义
+- [x] `bash scripts/build.sh && bash tests/verify.sh` 通过（54 项，原 52 + 新增 2）
+- [x] `.trellis/spec/runtime/index.md` 的「已知缺口」章节改为「已解决缺口」
+- [x] 新增行为有回归测试，且两个新用例均已验证在改动前的代码上会失败
+
+## Outcome
+
+全部完成。改动 6 个文件（5 个 src 模块 + tests/repair.sh），
+`sb.sh` 重新生成（哈希 `e3e9b50e…`），提交 `24f6748`。
+
+实施中发现并一并修复了原记录之外的问题：纯布尔「操作进行中」标志会被
+`src/70-management.sh` 的三处恢复点移交路径永久卡住，因此改用按路径归属判定
+（`ACME_INFLIGHT_BACKUP`）。
+
+另因源码行号偏移，重新校验并修正了 32 处 spec 引用。
 
 ## Rules
 
