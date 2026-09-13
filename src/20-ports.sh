@@ -119,6 +119,6 @@ insport(){
     red "生成SOCKS5独立密码失败"
     return 1
   fi
-  blue "Hysteria2 UUID（密码）：${uuid}"
   blue "SOCKS5独立密码：${socks_password}"
+  blue "Hysteria2 UUID（密码）：${uuid}"
 }

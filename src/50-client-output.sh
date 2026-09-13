@@ -296,6 +296,16 @@ sb_client(){
   },
   "outbounds": [
     {
+      "type": "socks",
+      "tag": "socks5-$hostname",
+      "server": "$server_ipcl",
+      "server_port": $socks_port,
+      "version": "5",
+      "username": "$socks_username",
+      "password": "$socks_password",
+      "network": "tcp"
+    },
+    {
       "type": "hysteria2",
       "tag": "hy2-$hostname",
       "server": "$cl_hy2_ip",
@@ -309,16 +319,6 @@ sb_client(){
       }
     },
     {
-      "type": "socks",
-      "tag": "socks5-$hostname",
-      "server": "$server_ipcl",
-      "server_port": $socks_port,
-      "version": "5",
-      "username": "$socks_username",
-      "password": "$socks_password",
-      "network": "tcp"
-    },
-    {
       "type": "dns",
       "tag": "dns-out"
     },
@@ -327,8 +327,8 @@ sb_client(){
       "type": "selector",
       "default": "hy2-$hostname",
       "outbounds": [
-        "hy2-$hostname",
-        "socks5-$hostname"
+        "socks5-$hostname",
+        "hy2-$hostname"
       ]
     },
     {
@@ -387,6 +387,14 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
+- name: socks5-$hostname
+  type: socks5
+  server: $server_ipcl
+  port: $socks_port
+  username: $socks_username
+  password: $socks_password
+  udp: false
+
 - name: hysteria2-$hostname
   type: hysteria2
   server: $cl_hy2_ip
@@ -399,21 +407,13 @@ proxies:
 $hy2_clash_ca
   fast-open: true
 
-- name: socks5-$hostname
-  type: socks5
-  server: $server_ipcl
-  port: $socks_port
-  username: $socks_username
-  password: $socks_password
-  udp: false
-
 proxy-groups:
 - name: 🌍选择代理节点
   type: select
   proxies:
-    - DIRECT
     - hysteria2-$hostname
     - socks5-$hostname
+    - DIRECT
 
 rules:
   - GEOIP,LAN,DIRECT
@@ -432,17 +432,17 @@ EOF
 
 sbshare(){
   local aggregate_tmp hy2_tmp socks_tmp
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || return 1
-  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || { rm -f "$hy2_tmp"; return 1; }
-  if ! result || ! reshy2 "$hy2_tmp" || ! ressocks5 "$socks_tmp"; then
-    rm -f "$hy2_tmp" "$socks_tmp"
+  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f "$socks_tmp"; return 1; }
+  if ! result || ! ressocks5 "$socks_tmp" || ! reshy2 "$hy2_tmp"; then
+    rm -f "$socks_tmp" "$hy2_tmp"
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
     rm -f "$hy2_tmp" "$socks_tmp"
     return 1
   }
-  if ! { cat "$hy2_tmp" && cat "$socks_tmp"; } > "$aggregate_tmp"; then
+  if ! { cat "$socks_tmp" && cat "$hy2_tmp"; } > "$aggregate_tmp"; then
     rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
@@ -454,8 +454,8 @@ sbshare(){
     rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
-  mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$hy2_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
   atomic_copy_private_file "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1
   v2sub=$(cat "$SB_DIR/jhdy.txt" 2>/dev/null) || return 1

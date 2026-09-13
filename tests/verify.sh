@@ -132,6 +132,37 @@ if printf '%s\n' "$client_function" | grep -Fq -- '"default": "auto"'; then
   fail "Sing-box proxy selector still defaults to the removed automatic group"
 fi
 
+# Node presentation order is uniform: SOCKS5 is listed before Hysteria2.
+share_function=$(awk '/^sbshare\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
+[[ -n $share_function ]] || fail "cannot extract share generator"
+# Compare byte offsets: the two generators sit on the same source line, so
+# line numbers would compare equal and silently pass.
+socks_share_off=$(printf '%s\n' "$share_function" | grep -bo 'ressocks5' | head -1 | cut -d: -f1)
+hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | cut -d: -f1)
+[[ -n $socks_share_off && -n $hy2_share_off ]] ||
+  fail "cannot locate share generators in sbshare"
+[[ $socks_share_off -lt $hy2_share_off ]] ||
+  fail "share output lists Hysteria2 before SOCKS5"
+socks_out_off=$(printf '%s\n' "$client_function" | grep -bo 'socks5-\$hostname' | head -1 | cut -d: -f1)
+hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1)
+[[ -n $socks_out_off && -n $hy2_out_off && $socks_out_off -lt $hy2_out_off ]] ||
+  fail "client configuration lists Hysteria2 before SOCKS5"
+
+# Ordering must never be bought by making the plaintext proxy the default.
+if printf '%s\n' "$client_function" | grep -Fq -- '"default": "socks5-$hostname"'; then
+  fail "Sing-box proxy selector defaults to the plaintext SOCKS5 proxy"
+fi
+clash_group=$(printf '%s\n' "$client_function" |
+  awk '/^- name: 🌍选择代理节点/{inside=1} inside{print} inside && /^rules:/{exit}')
+[[ -n $clash_group ]] || fail "cannot extract Clash proxy group"
+clash_first_proxy=$(printf '%s\n' "$clash_group" | awk '/proxies:/{getline; print; exit}')
+[[ -n $clash_first_proxy ]] || fail "cannot read the Clash group default proxy"
+if [[ $clash_first_proxy == *DIRECT* ]]; then
+  fail "Clash select group defaults to DIRECT, so no traffic is proxied"
+fi
+[[ $clash_first_proxy == *'hysteria2-$hostname'* ]] ||
+  fail "Clash select group does not default to the encrypted Hysteria2 proxy"
+
 for secure_pattern in \
   'allow-lan: false' \
   'listen: "127.0.0.1:1053"' \
