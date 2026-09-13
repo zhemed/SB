@@ -195,8 +195,6 @@ menu(){
 
 # Make/update shortcut
 # sb-entrypoint
-prepare_runtime_state || exit 1
-
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
     return 0
@@ -211,7 +209,8 @@ handle_install_interrupt(){
   elif [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
     clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
-  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+  elif [[ -n ${ACME_STATE_BACKUP:-} &&
+          ${ACME_INFLIGHT_BACKUP:-} == "${ACME_STATE_BACKUP:-}" ]]; then
     yellow "证书操作已中断，正在恢复原 ACME 状态……"
     if restore_acme_state_backup; then
       if [[ ${ACME_RESTORE_ACTIVE_ON_INTERRUPT:-0} -eq 1 ]]; then
@@ -228,6 +227,10 @@ handle_install_interrupt(){
   exit 130
 }
 trap handle_install_interrupt INT TERM HUP
+
+# Install the trap first: prepare_runtime_state can create the managed
+# directory and resolve ACME recovery points, so it must not run unguarded.
+prepare_runtime_state || exit 1
 
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true

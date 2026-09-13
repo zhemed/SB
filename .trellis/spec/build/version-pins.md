@@ -72,7 +72,7 @@ fixed and is **not** randomized, unlike its password.
 All upstream downloads must be HTTPS-only, digest-verified, and use the project's own archive URLs.
 
 ```bash
-# src/00-bootstrap.sh:210-212
+# src/00-bootstrap.sh:211-213
 if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 \
   --connect-timeout 10 --max-time 180 -o "$archive" \
   "https://github.com/SagerNet/sing-box/releases/download/v$sbcore/$sbname.tar.gz"; then

@@ -133,14 +133,14 @@ only when nothing failed.
 One trap, installed once, in the entrypoint module:
 
 ```bash
-# src/90-main.sh:230
+# src/90-main.sh:229
 trap handle_install_interrupt INT TERM HUP
 ```
 
 The handler's order is fixed and load-bearing:
 
 ```bash
-# src/90-main.sh:200-229 (structure)
+# src/90-main.sh:198-227 (structure)
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
     return 0                      # (a) finalization in progress → swallow
@@ -152,7 +152,8 @@ handle_install_interrupt(){
   elif [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
     clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
-  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+  elif [[ -n ${ACME_STATE_BACKUP:-} &&
+          ${ACME_INFLIGHT_BACKUP:-} == "${ACME_STATE_BACKUP:-}" ]]; then
     ... restore_acme_state_backup, maybe reactivate the old certificate ...
   fi
   cleanup_core_download_temp >/dev/null 2>&1 || true
@@ -170,11 +171,20 @@ Requirements:
 - **There is no EXIT trap in the main script.** Only the generated ACME deploy child has one
   (`src/10-acme.sh:481-482`).
 
-### Known gap
+### Ordering requirement
 
-`prepare_runtime_state` runs at `src/90-main.sh:198`, **before** the trap is installed at line 230.
-An interrupt during that window — which includes creating `/etc/sb` and resolving orphaned ACME
-recovery points — is unguarded. This is documented as the current state, not as intended design.
+The trap is installed **before** any pre-flight work, so that `prepare_runtime_state` — which creates
+the managed directory and can enter the ACME recovery-point flow — can never run unguarded:
+
+```bash
+# src/90-main.sh — after the `# sb-entrypoint` marker
+handle_install_interrupt(){ ... }
+trap handle_install_interrupt INT TERM HUP
+prepare_runtime_state || exit 1
+```
+
+If you add work to the entrypoint, add it **after** the trap. All flags the handler reads are
+initialized in `src/00-bootstrap.sh`, so the handler is safe to install at the earliest point.
 
 ---
 
@@ -211,7 +221,7 @@ Written **only** from a config that passes the full gate (non-empty, trusted fil
 `check` passes), atomically, and only after the service is confirmed running on it:
 
 ```bash
-# src/40-service.sh:441-443
+# src/40-service.sh:458-460
   if restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
     save_last_good_config "$SB_CONFIG" || yellow "配置已生效，但最后可用配置快照更新失败"

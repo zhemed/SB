@@ -41,7 +41,7 @@ It also never enables `nounset`, so `[[ -n ${VAR:-} ]]` style guards are used at
 variable may not have been declared yet:
 
 ```bash
-# src/90-main.sh:201
+# src/90-main.sh:199
 if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
 ```
 
@@ -87,7 +87,7 @@ break the management flows.
 | `2` | **Failure and automatic rollback also failed** — the user must intervene manually. |
 | `75` | (embedded cron programs only) `EX_TEMPFAIL`, lock contention — retry later. |
 
-`commit_config` is the reference implementation (`src/40-service.sh:418-455`): it returns `1` after a
+`commit_config` is the reference implementation (`src/40-service.sh:435-472`): it returns `1` after a
 successful rollback (`已恢复修改前的配置和服务`) and `2` when the rollback itself failed
 (`自动回滚失败！请立即检查服务；原配置备份保留在 $backup`).
 
@@ -124,20 +124,20 @@ management flows depend on.
   ```bash
   # src/20-ports.sh:5
     ((10#$value >= minimum && 10#$value <= 65535))
-  # src/00-bootstrap.sh:101
+  # src/00-bootstrap.sh:102
       ((10#$octet <= 255)) || return 1
   ```
 - **`[[ ]]` only.** Single-bracket `[ ]` never appears (0 occurrences vs 548 `[[ ]]`).
 - **Arrays**: declare with `local -a name` or `local -a name=()`; never `declare`/`typeset`.
 
 ```bash
-# src/00-bootstrap.sh:107
+# src/00-bootstrap.sh:108
   local -a groups
 ```
 
 - **Read lines with `mapfile`**, not a `while read` pipeline, when order and completeness matter:
   ```bash
-  # src/00-bootstrap.sh:151
+  # src/00-bootstrap.sh:152
     mapfile -t ip_cache < "$cache_file" 2>/dev/null || return 1
   ```
 
@@ -150,7 +150,7 @@ Declare at the top of the function, several per line, with defaults inline:
 ```bash
 # src/70-management.sh:22
   local cert=$1 key=$2 candidate commit_status
-# src/00-bootstrap.sh:196
+# src/00-bootstrap.sh:197
   local sbcore="$CORE_VERSION" sbname temp_dir archive expected_sha256 actual_sha256
 ```
 
@@ -180,7 +180,7 @@ write in `src/`.
   reason (`src/30-server-config.sh:124-127`, `src/40-service.sh:425-430`).
 - Prefer `command -v X >/dev/null 2>&1` for capability checks:
   ```bash
-  # src/40-service.sh:164
+  # src/40-service.sh:181
     if command -v apk >/dev/null 2>&1; then
   ```
 - Use `$SB_BIN`, `$SB_CONFIG`, … constants rather than re-typing `/etc/sb/...` paths.

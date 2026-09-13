@@ -10,7 +10,7 @@ function contains both branches, adjacent, and they must stay semantically ident
 Alpine implies OpenRC. The check is used consistently for the branch, never `systemctl --version`:
 
 ```bash
-# src/40-service.sh:164-168
+# src/40-service.sh:181-185
   if command -v apk >/dev/null 2>&1; then
     openrc_service_definition_is_repairable
   else
@@ -28,7 +28,7 @@ selector (`systemd` + `/run/systemd/system`).
 conflict, not as "both installed":
 
 ```bash
-# src/40-service.sh:313-317 (abridged)
+# src/40-service.sh:330-334 (abridged)
     systemd_service_definition_present "$SB_SERVICE" && return 1
     openrc_unit_is_owned "$OPENRC_UNIT" ...
   else
@@ -43,7 +43,7 @@ Both generators write a **dot-prefixed temporary inside the unit directory** so 
 never observes a half-written unit, then rename:
 
 ```bash
-# src/40-service.sh:174 / 193
+# src/40-service.sh:191 / 210
     unit_tmp=$(mktemp "/etc/init.d/.${SB_SERVICE}.XXXXXX") || return 1
     unit_tmp=$(mktemp "/etc/systemd/system/.${SB_SERVICE}.service.XXXXXX") || return 1
 ```
@@ -51,7 +51,7 @@ never observes a half-written unit, then rename:
 Modes differ deliberately: OpenRC units are executables (700), systemd units are not (600).
 
 ```bash
-# src/40-service.sh:188 / 216
+# src/40-service.sh:205 / 233
     if ! chmod 700 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$OPENRC_UNIT"; then
     if ! chmod 600 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$SYSTEMD_UNIT"; then
 ```
@@ -75,13 +75,13 @@ Both init systems return success in situations that do not mean "done". The code
 instead:
 
 ```bash
-# src/40-service.sh:279-280
+# src/40-service.sh:296-297
     rc-update add "$SB_SERVICE" default >/dev/null 2>&1 ||
       rc-update show default 2>/dev/null | grep -qE "(^|[[:space:]])${SB_SERVICE}([[:space:]]|$)" || return 1
 ```
 
 ```bash
-# src/40-service.sh:398-399
+# src/40-service.sh:415-416
     systemctl disable "$SB_SERVICE" >/dev/null 2>&1 || true
     systemctl is-enabled "$SB_SERVICE" >/dev/null 2>&1 && failed=1
 ```
@@ -89,7 +89,7 @@ instead:
 And always **sleep before judging liveness**:
 
 ```bash
-# src/40-service.sh:291-292
+# src/40-service.sh:308-309
   sleep 1
   service_is_active
 ```
@@ -97,7 +97,7 @@ And always **sleep before judging liveness**:
 Equivalent helper for plain restart, used by `commit_config`:
 
 ```bash
-# src/40-service.sh:295-301
+# src/40-service.sh:312-318
 restartsb(){
   if command -v apk >/dev/null 2>&1; then
     rc-service "$SB_SERVICE" restart
@@ -115,7 +115,7 @@ restartsb(){
 cleanup with **two distinct messages** depending on whether cleanup itself succeeded:
 
 ```bash
-# src/40-service.sh:247-263 (abridged)
+# src/40-service.sh:264-280 (abridged)
     if ! systemctl daemon-reload || ! systemctl enable --now "$SB_SERVICE"; then
       if cleanup_service; then
         red "创建或启动 $SB_SERVICE 服务失败，已清理服务文件"
@@ -139,7 +139,7 @@ Never report a bare "failed" when a cleanup ran — the user needs to know wheth
 error:
 
 ```bash
-# src/40-service.sh:385-405 (abridged)
+# src/40-service.sh:402-422 (abridged)
 cleanup_service(){
   local failed=0
   service_name_conflict && return 1
@@ -170,7 +170,7 @@ Ownership (`systemd_unit_is_owned`, `openrc_unit_is_owned`) means "this is our u
 user intent:
 
 ```bash
-# src/40-service.sh:148-155 (abridged)
+# src/40-service.sh:165-172 (abridged)
 systemd_service_definition_is_repairable(){
   grep -Fqx '# Managed by sb.sh' "$unit" 2>/dev/null || return 1
   systemd_service_has_other_units "$SB_SERVICE" "$unit" && return 1
@@ -192,7 +192,7 @@ prove is ours (`src/10-acme.sh:686-703`, with an explicit comment about drop-ins
 ## 7. Reading state
 
 ```bash
-# src/40-service.sh:303-309
+# src/40-service.sh:320-326
 service_is_active(){
   if command -v apk >/dev/null 2>&1; then
     rc-service "$SB_SERVICE" status >/dev/null 2>&1

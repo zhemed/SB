@@ -37,9 +37,28 @@ tells you what the code must not break. Most of these rules exist because the sc
 5. **Install and repair transactions are never conflated.** Repair never deletes `/etc/sb`;
    install-transaction cleanup does. See `transactions.md` §1.
 
-## Known gaps (documented as-is)
+## Startup guard ordering
 
-- `prepare_runtime_state` runs at `src/90-main.sh:198`, **before** the interrupt trap is installed at
-  `src/90-main.sh:230`. An interrupt during that window is unguarded. Documented, not fixed.
-- `.sb.json.rollback.*` is listed in the repair temp sweep (`src/85-repair.sh:439`) but has no
-  producer anywhere in `src/` — a vestigial defensive entry.
+The entrypoint installs the interrupt trap **before** any pre-flight work:
+
+```
+# src/90-main.sh — after `# sb-entrypoint`
+handle_install_interrupt(){ … }
+trap handle_install_interrupt INT TERM HUP
+prepare_runtime_state || exit 1
+```
+
+`prepare_runtime_state` creates the managed directory and can enter the ACME recovery-point flow, so
+it must never run unguarded. See `transactions.md` §4.
+
+## Resolved gaps
+
+Both items below were found during the initial spec bootstrap and have since been fixed. They are
+kept here as a record of *why* two non-obvious guards exist.
+
+| Was | Now |
+|-----|-----|
+| `prepare_runtime_state` ran before the trap, so an interrupt during startup was unguarded | Trap is installed first (see above) |
+| An interrupt while the script merely *displayed* a discovered recovery point auto-restored and consumed it | The handler restores only a recovery point created by the in-flight operation (`ACME_INFLIGHT_BACKUP`); a discovered orphan is preserved for the next run. See `certificates.md` §8 |
+| `.sb.json.rollback.*` sat in the repair temp sweep with no producer | Removed from both the sweep and the test's pattern list |
+| A torn `/etc/sb` (interrupt between `mkdir` and the marker rename) made every later run refuse with "不属于本脚本" | `managed_directory_is_incomplete_creation` adopts an empty or marker-temporary-only directory. See `managed-assets.md` §4 |

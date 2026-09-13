@@ -40,6 +40,7 @@ ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 INSTALL_TRANSACTION_ACTIVE=0
 ACME_STATE_BACKUP=
+ACME_INFLIGHT_BACKUP=
 ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
 ACME_LOCK_FD=
 ACME_COMPAT_LOCK_FD=
@@ -1375,6 +1376,7 @@ begin_acme_state_backup(){
     fi
   done
   ACME_STATE_BACKUP=$backup
+  ACME_INFLIGHT_BACKUP=$backup
 }
 
 clear_acme_state_backup(){
@@ -2107,11 +2109,28 @@ managed_directory_is_owned(){
     grep -Fqx 'directory=/etc/sb' "$SB_MANAGED_MARKER" 2>/dev/null
 }
 
+managed_directory_is_incomplete_creation(){
+  local entry name
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  managed_directory_is_owned && return 1
+  [[ ! -e $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
+  # mv -fT is atomic, so an interrupt between mkdir and the marker rename can
+  # only leave an empty directory or stray marker temporaries behind.
+  for entry in "$SB_DIR"/* "$SB_DIR"/.[!.]* "$SB_DIR"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    [[ $name == .sb-managed.* ]] || return 1
+  done
+}
+
 prepare_managed_directory(){
   if [[ ! -e $SB_DIR && ! -L $SB_DIR ]]; then
     write_managed_marker
   elif managed_directory_is_owned; then
     chmod 700 "$SB_DIR"
+  elif managed_directory_is_incomplete_creation; then
+    yellow "检测到上次运行中断留下的空 $SB_DIR，按本脚本目录接管"
+    write_managed_marker
   else
     red "检测到不属于本脚本的 $SB_DIR，拒绝覆盖"
     return 1
@@ -5418,9 +5437,9 @@ cleanup_repair_temporary_files(){
   local path failed=0
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
-    "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.sb.json.rollback.* \
-    "$SB_DIR"/.public.key.* "$SB_DIR"/.reality-key.* \
-    "$SB_DIR"/.repair-old-* "$SB_DIR"/.repair-target-*; do
+    "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
+    "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
+    "$SB_DIR"/.repair-target-*; do
     [[ -e $path || -L $path ]] || continue
     if [[ $path == "${REPAIR_TARGET_CORE_SNAPSHOT:-}" ||
           $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ]]; then
@@ -6064,8 +6083,6 @@ menu(){
 
 # Make/update shortcut
 # sb-entrypoint
-prepare_runtime_state || exit 1
-
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
     return 0
@@ -6080,7 +6097,8 @@ handle_install_interrupt(){
   elif [[ ${INSTALL_TRANSACTION_ACTIVE:-0} -eq 1 ]]; then
     clear_acme_state_backup >/dev/null 2>&1 || true
     abort_install_transaction || true
-  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
+  elif [[ -n ${ACME_STATE_BACKUP:-} &&
+          ${ACME_INFLIGHT_BACKUP:-} == "${ACME_STATE_BACKUP:-}" ]]; then
     yellow "证书操作已中断，正在恢复原 ACME 状态……"
     if restore_acme_state_backup; then
       if [[ ${ACME_RESTORE_ACTIVE_ON_INTERRUPT:-0} -eq 1 ]]; then
@@ -6097,6 +6115,10 @@ handle_install_interrupt(){
   exit 130
 }
 trap handle_install_interrupt INT TERM HUP
+
+# Install the trap first: prepare_runtime_state can create the managed
+# directory and resolve ACME recovery points, so it must not run unguarded.
+prepare_runtime_state || exit 1
 
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true

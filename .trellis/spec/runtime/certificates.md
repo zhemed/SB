@@ -321,6 +321,43 @@ makes the script refuse and demand manual intervention (`:982-987`, `1009-1011`)
 the only recovery point while the running configuration still references the ACME certificate
 (`:1051-1055`, `1227-1233`).
 
+### Discovered vs in-flight: `ACME_INFLIGHT_BACKUP`
+
+`ACME_STATE_BACKUP` holds two different things, and the interrupt handler must tell them apart:
+
+| Set by | Meaning |
+|--------|---------|
+| `find_orphaned_acme_state_backup` (`src/10-acme.sh:988`) | A recovery point **discovered at startup** — leftover from a previous run, and the user has not yet chosen what to do with it |
+| `begin_acme_state_backup` (`src/10-acme.sh:1117`) | A recovery point **this process just created** for an operation that is about to mutate live state |
+
+The handler restores only the second kind:
+
+```bash
+# src/90-main.sh
+  elif [[ -n ${ACME_STATE_BACKUP:-} &&
+          ${ACME_INFLIGHT_BACKUP:-} == "${ACME_STATE_BACKUP:-}" ]]; then
+```
+
+`ACME_INFLIGHT_BACKUP` is assigned in exactly one place — beside `ACME_STATE_BACKUP=$backup` at the
+end of `begin_acme_state_backup` — and needs no cleanup, because the condition also requires
+`ACME_STATE_BACKUP` to be non-empty.
+
+Why a path comparison rather than a boolean flag: three management paths
+(`src/70-management.sh:276-277`, `339-340`, `383-384`) deliberately **hand `ACME_STATE_BACKUP` off to
+a local variable and clear the global while keeping the recovery point on disk**. A boolean set on
+create and cleared on `clear_acme_state_backup` would stay stuck at 1 on all three, and the next
+interrupt anywhere in the menu would print `证书操作已中断…` and enter a restore branch that has
+nothing to restore. Keying on the path makes those hand-offs harmless automatically.
+
+Consequence of getting this wrong in either direction:
+
+- Too permissive (the old `[[ -n $ACME_STATE_BACKUP ]]`) — interrupting the script while it merely
+  *asks* about a discovered recovery point silently restores it and consumes it, making a decision
+  the user explicitly declined and potentially reverting a good certificate.
+- Too strict — an interrupt during an actual issuance/replacement stops restoring ACME state.
+
+Regression coverage: `tests/repair.sh` → `interrupt_handler_restores_only_inflight_acme_state`.
+
 ---
 
 ## 9. Change checklist

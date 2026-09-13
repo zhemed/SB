@@ -436,9 +436,9 @@ cleanup_repair_temporary_files(){
   local path failed=0
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
-    "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.sb.json.rollback.* \
-    "$SB_DIR"/.public.key.* "$SB_DIR"/.reality-key.* \
-    "$SB_DIR"/.repair-old-* "$SB_DIR"/.repair-target-*; do
+    "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
+    "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
+    "$SB_DIR"/.repair-target-*; do
     [[ -e $path || -L $path ]] || continue
     if [[ $path == "${REPAIR_TARGET_CORE_SNAPSHOT:-}" ||
           $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ]]; then

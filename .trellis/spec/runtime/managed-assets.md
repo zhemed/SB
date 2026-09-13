@@ -93,7 +93,7 @@ both (`src/40-service.sh:58` and `:74`).
 ### (b) Service unit marker + exact exec lines
 
 ```bash
-# src/40-service.sh:96-98
+# src/40-service.sh:113-115
   grep -Eq "$marker_pattern" "$unit" 2>/dev/null &&
     grep -Fqx "WorkingDirectory=$directory" "$unit" 2>/dev/null &&
     grep -Fqx "ExecStart=$binary run -c $config" "$unit" 2>/dev/null
@@ -129,12 +129,15 @@ Requires: exists, not a symlink, owned by the effective uid, and **not group- or
 Trust is re-derived per path and never inherited into a subtree — see
 `src/85-repair.sh:67-77`.
 
+A fourth predicate decides whether an **unowned** managed directory is our own torn creation rather
+than a foreign one — see §4.
+
 ---
 
 ## 4. Foreign assets are refused, never overwritten
 
 ```bash
-# src/40-service.sh:77-86
+# src/40-service.sh:91-100
 prepare_managed_directory(){
   if [[ ! -e $SB_DIR && ! -L $SB_DIR ]]; then
     write_managed_marker
@@ -150,6 +153,53 @@ prepare_managed_directory(){
 The same shape appears for the service unit (`src/40-service.sh:224-227`, `269-271`), for the reload
 hook target (`src/10-acme.sh:354-358`) and for the shortcut. Every refusal names the path and says
 what was not done.
+
+### Adopting our own torn creation
+
+Creating the managed directory is `mkdir -p` followed by an atomic marker rename. An interrupt
+between the two would leave `/etc/sb` present but unowned — and without a guard, every later run
+would refuse with the *misleading* message `检测到不属于本脚本的 /etc/sb` (the directory is in fact
+ours). An empty directory is indistinguishable from a foreign one purely by ownership, so the code
+recognises the only shapes a torn creation can take:
+
+```bash
+# src/40-service.sh
+managed_directory_is_incomplete_creation(){
+  local entry name
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  managed_directory_is_owned && return 1
+  [[ ! -e $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
+  # mv -fT is atomic, so an interrupt between mkdir and the marker rename can
+  # only leave an empty directory or stray marker temporaries behind.
+  for entry in "$SB_DIR"/* "$SB_DIR"/.[!.]* "$SB_DIR"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    [[ $name == .sb-managed.* ]] || return 1
+  done
+}
+```
+
+`prepare_managed_directory` gains one branch for it:
+
+```bash
+  elif managed_directory_is_incomplete_creation; then
+    yellow "检测到上次运行中断留下的空 $SB_DIR，按本脚本目录接管"
+    write_managed_marker
+```
+
+Boundaries that must not be loosened:
+
+- **Only** an empty directory, or one containing nothing but `.sb-managed.*` temporaries, is adopted.
+  Any other content → still refused, and the content is left untouched.
+- A `.sb-managed` file that **exists but fails validation** is still refused. Because the marker
+  rename is atomic, a torn creation never leaves a valid-looking marker in place; a present-but-wrong
+  marker means corruption or a foreign tool, and preserving it is the safe choice.
+- This applies to directories only. Files, unit definitions, and links keep the strict
+  exists-and-owned checks.
+
+Regression coverage: `tests/repair.sh` →
+`incomplete_managed_directory_is_adopted` (four sub-cases: empty, stray temporary, foreign content,
+invalid marker).
 
 ---
 

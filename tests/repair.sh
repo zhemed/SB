@@ -412,11 +412,93 @@ repair_signal_restores_stack_and_cleans_temporary_files(){
   cmp -s -- "$source_config" "$case_dir/sb/sb.json" || return 1
   [[ -f $case_dir/service-restarted ]] || return 1
   for pattern in .core.* .sing-box.* .sb.json.repair.* .sb.json.rebuild.* \
-    .sb.json.rollback.* .public.key.* .reality-key.* .repair-core-backup.* \
+    .public.key.* .reality-key.* .repair-core-backup.* \
     .repair-service-backup.* .repair-old-* .repair-target-*; do
     compgen -G "$case_dir/sb/$pattern" >/dev/null && return 1
   done
   return 0
+}
+
+incomplete_managed_directory_is_adopted(){
+  (
+    local case_dir="$TEMP_DIR/incomplete-managed"
+    mkdir -p "$case_dir"
+
+    # (a) an empty directory left by an interrupt between mkdir and the marker rename
+    SB_DIR="$case_dir/empty"
+    SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
+    mkdir -p "$SB_DIR"
+    prepare_managed_directory && managed_directory_is_owned || return 1
+
+    # (b) only a stray marker temporary survived
+    SB_DIR="$case_dir/stray"
+    SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
+    mkdir -p "$SB_DIR"
+    : > "$SB_DIR/.sb-managed.AbCdEf"
+    prepare_managed_directory && managed_directory_is_owned || return 1
+
+    # (c) foreign content is still refused, and left untouched
+    SB_DIR="$case_dir/foreign"
+    SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
+    mkdir -p "$SB_DIR"
+    printf '%s\n' keep-me > "$SB_DIR/foreign.txt"
+    if prepare_managed_directory >/dev/null 2>&1; then return 1; fi
+    [[ -f $SB_DIR/foreign.txt && ! -e $SB_MANAGED_MARKER ]] || return 1
+
+    # (d) an existing but unrecognised marker is still refused, and left untouched
+    SB_DIR="$case_dir/badmarker"
+    SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
+    mkdir -p "$SB_DIR"
+    printf '%s\n' 'managed_by=someone-else' > "$SB_MANAGED_MARKER"
+    if prepare_managed_directory >/dev/null 2>&1; then return 1; fi
+    [[ $(cat "$SB_MANAGED_MARKER") == 'managed_by=someone-else' ]] || return 1
+  )
+}
+
+interrupt_handler_restores_only_inflight_acme_state(){
+  local handler_file="$TEMP_DIR/handle-acme-branch.sh"
+  local case_dir="$TEMP_DIR/acme-branch" status=0
+  awk '
+    /^handle_install_interrupt\(\)\{/ { inside=1 }
+    inside { print }
+    inside && /^}$/ { exit }
+  ' "$ROOT_DIR/src/90-main.sh" > "$handler_file" || return 1
+  [[ -s $handler_file ]] || return 1
+  mkdir -p "$case_dir"
+
+  # (a) a recovery point merely discovered at startup must survive an interrupt
+  (
+    ACME_STATE_BACKUP="$case_dir/discovered"
+    ACME_INFLIGHT_BACKUP=
+    REPAIR_TRANSACTION_FINALIZING=0
+    mkdir -p "$ACME_STATE_BACKUP"
+    restore_acme_state_backup(){ printf '%s\n' restored >> "$case_dir/restored.log"; }
+    cleanup_core_download_temp(){ return 0; }
+    # shellcheck source=/dev/null
+    source "$handler_file"
+    trap handle_install_interrupt INT
+    kill -s INT "$BASHPID"
+    return 0
+  ) >/dev/null 2>&1
+  [[ ! -e $case_dir/restored.log && -d $case_dir/discovered ]] || status=1
+
+  # (b) a recovery point created by the in-flight operation is still restored
+  (
+    ACME_STATE_BACKUP="$case_dir/inflight"
+    ACME_INFLIGHT_BACKUP="$case_dir/inflight"
+    REPAIR_TRANSACTION_FINALIZING=0
+    mkdir -p "$ACME_STATE_BACKUP"
+    restore_acme_state_backup(){ printf '%s\n' restored >> "$case_dir/restored.log"; }
+    cleanup_core_download_temp(){ return 0; }
+    # shellcheck source=/dev/null
+    source "$handler_file"
+    trap handle_install_interrupt INT
+    kill -s INT "$BASHPID"
+    return 0
+  ) >/dev/null 2>&1
+  [[ -s $case_dir/restored.log ]] || status=1
+
+  return "$status"
 }
 
 red(){ :; }
@@ -514,6 +596,8 @@ expect_success "managed config with a foreign owner is rejected before core chec
   rejects_simulated_foreign_owner "$SB_CONFIG" managed_config_file_is_valid "$SB_CONFIG"
 expect_success "a directory at the core path is quarantined before core recovery" \
   repairs_core_path_that_is_a_directory
+expect_success "an incomplete managed directory is adopted while foreign ones stay refused" \
+  incomplete_managed_directory_is_adopted
 
 expect_success "managed server values are extracted" load_repair_config_values "$SB_CONFIG"
 [[ $REPAIR_UUID == "$uuid" && $REPAIR_VLESS_PORT == 443 &&
@@ -667,6 +751,8 @@ expect_success "repair requires flock before entering its transaction" \
   repair_core_dependencies_include_flock
 expect_success "repair finalization consumes interrupts without starting a second rollback" \
   repair_finalization_consumes_interrupt
+expect_success "interrupt restores only the in-flight ACME recovery point" \
+  interrupt_handler_restores_only_inflight_acme_state
 expect_success "INT restores the original stack and cleans repair temporaries" \
   repair_signal_restores_stack_and_cleans_temporary_files INT
 expect_success "TERM restores the original stack and cleans repair temporaries" \

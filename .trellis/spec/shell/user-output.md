@@ -8,7 +8,7 @@ helpers are defined once in `src/00-bootstrap.sh:52-69` and used everywhere.
 ## 1. The helpers
 
 ```bash
-# src/00-bootstrap.sh:58-62
+# src/00-bootstrap.sh:59-63
 red(){ echo -e "\033[31m\033[01m$1\033[0m";}
 green(){ echo -e "\033[32m\033[01m$1\033[0m";}
 yellow(){ echo -e "\033[33m\033[01m$1\033[0m";}
@@ -23,7 +23,7 @@ data containing backslashes.
 `readp` is the input primitive; see `input-validation.md`.
 
 ```bash
-# src/00-bootstrap.sh:63-69
+# src/00-bootstrap.sh:64-70
 readp(){
   if [[ -n ${2-} ]]; then
     IFS= read -r -p "$(yellow "$1")" "$2"
@@ -64,7 +64,7 @@ Low-level predicates and helpers stay **silent** and just return status. The fun
 the operation failed prints the message.
 
 ```bash
-# src/40-service.sh:418-430 — commit_config owns the message
+# src/40-service.sh:442-454 — commit_config owns the message
 if ! "$SB_BIN" check -c "$candidate" >/dev/null 2>&1; then
   red "新配置未通过 Sing-box v${CORE_VERSION} 检查，已取消修改"
   "$SB_BIN" check -c "$candidate"

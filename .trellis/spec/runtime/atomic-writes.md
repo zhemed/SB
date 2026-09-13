@@ -55,7 +55,7 @@ Three details are load-bearing:
 | `save_last_good_config` | `src/40-service.sh:362` | validate → skip-if-identical → `cp -p` → chmod → `mv -fT` |
 | `write_service_definition` | `src/40-service.sh:171` | heredoc → chmod → `mv -fT` (temp inside the unit dir) |
 | `inssbjson` | `src/30-server-config.sh:115` | render → chmod 600 → `$SB_BIN check` → `mv -fT` |
-| `commit_config` | `src/40-service.sh:418` | validate → backup → `mv -fT` → restart → verify/rollback |
+| `commit_config` | `src/40-service.sh:435` | validate → backup → `mv -fT` → restart → verify/rollback |
 | `install_managed_link` | `src/10-acme.sh:398` | `mktemp` → `rm -f` → `ln -s` → `mv -Tf` |
 | `switch_current` | `src/10-acme.sh:388` | same symlink protocol for `acme-live/current` |
 | `atomic_install_shortcut` | `src/80-lifecycle.sh:209` | `install -m` → `mv -fT` |
@@ -119,7 +119,7 @@ A config that parses is not a config that *runs*. `commit_config` is the only su
 changing a live node configuration:
 
 ```bash
-# src/40-service.sh:418-455 (structure)
+# src/40-service.sh:435-472 (structure)
 commit_config(){
   local candidate=$1 backup
   ... validate candidate ...
@@ -161,7 +161,7 @@ Contract:
 Idempotent publication preserves mtimes and avoids needless service churn. Compare before writing:
 
 ```bash
-# src/40-service.sh:365-371
+# src/40-service.sh:382-388
   if [[ -e $destination || -L $destination ]]; then
     [[ -f $destination && ! -L $destination ]] || return 1
     if cmp -s -- "$source" "$destination"; then

@@ -1115,6 +1115,7 @@ begin_acme_state_backup(){
     fi
   done
   ACME_STATE_BACKUP=$backup
+  ACME_INFLIGHT_BACKUP=$backup
 }
 
 clear_acme_state_backup(){

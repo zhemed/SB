@@ -47,21 +47,30 @@ umask 077
 ```
 
 ```bash
-# src/00-bootstrap.sh:70-73
+# src/00-bootstrap.sh:71-74
 if [[ $EUID -ne 0 ]]; then
   yellow "请以root模式运行脚本"
   exit 1
 fi
 ```
 
-**`src/90-main.sh` — the entrypoint.** Everything after the `# sb-entrypoint` marker:
+**`src/90-main.sh` — the entrypoint.** Everything after the `# sb-entrypoint` marker. The order is
+fixed: define the handler, install the trap, then do any pre-flight work.
 
 ```bash
 # src/90-main.sh:198
+handle_install_interrupt(){
+...
+# src/90-main.sh:229
+trap handle_install_interrupt INT TERM HUP
+
+# Install the trap first: prepare_runtime_state can create the managed
+# directory and resolve ACME recovery points, so it must not run unguarded.
 prepare_runtime_state || exit 1
 ```
 
-followed by the interrupt trap and the final `menu` call (`src/90-main.sh:230-238`).
+The final `menu` call is the last statement in the file (`src/90-main.sh:241`). See
+`spec/runtime/transactions.md` §4 for why the trap must precede the pre-flight work.
 
 **Every other module contains function definitions only.** No stray `echo`, no module-level
 variable assignments, no `if` blocks at column 0. This is what makes concatenation order safe: by

@@ -74,11 +74,28 @@ managed_directory_is_owned(){
     grep -Fqx 'directory=/etc/sb' "$SB_MANAGED_MARKER" 2>/dev/null
 }
 
+managed_directory_is_incomplete_creation(){
+  local entry name
+  [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
+  managed_directory_is_owned && return 1
+  [[ ! -e $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
+  # mv -fT is atomic, so an interrupt between mkdir and the marker rename can
+  # only leave an empty directory or stray marker temporaries behind.
+  for entry in "$SB_DIR"/* "$SB_DIR"/.[!.]* "$SB_DIR"/..?*; do
+    [[ -e $entry || -L $entry ]] || continue
+    name=${entry##*/}
+    [[ $name == .sb-managed.* ]] || return 1
+  done
+}
+
 prepare_managed_directory(){
   if [[ ! -e $SB_DIR && ! -L $SB_DIR ]]; then
     write_managed_marker
   elif managed_directory_is_owned; then
     chmod 700 "$SB_DIR"
+  elif managed_directory_is_incomplete_creation; then
+    yellow "检测到上次运行中断留下的空 $SB_DIR，按本脚本目录接管"
+    write_managed_marker
   else
     red "检测到不属于本脚本的 $SB_DIR，拒绝覆盖"
     return 1

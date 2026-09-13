@@ -101,7 +101,7 @@ Enforcement: `scripts/build.sh:111-116`, and again on the assembled candidate at
 `scripts/build.sh:138-139`. Everything after the marker is the script body that actually runs:
 
 ```bash
-# src/90-main.sh:198-199
+# src/90-main.sh:233
 prepare_runtime_state || exit 1
 ```
 
