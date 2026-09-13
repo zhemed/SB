@@ -55,6 +55,9 @@ bash scripts/build.sh --check
 
 # 执行构建、语法、ShellCheck（已安装时）和纯函数测试
 bash tests/verify.sh
+
+# 检查「改了 src/ 就必须同步改 VERSION」这条发布规则
+bash scripts/check-version-bump.sh
 ```
 
 也可以使用 `make build`、`make check` 和 `make test`。
@@ -96,6 +99,12 @@ bash tests/verify.sh
 ```bash
 bash scripts/build.sh
 bash tests/verify.sh
+bash scripts/check-version-bump.sh
 ```
+
+**版本号规则**：推到 `main` 即等于发布（脚本会从 `main` 自助更新），所以任何改动 `src/`
+或根目录 `sb.sh` 的提交都必须同时改 `VERSION`，否则两个不同的构建会共用同一个版本号。
+`scripts/check-version-bump.sh` 强制这条规则，CI 也会跑。详细流程见
+`.trellis/spec/build/version-pins.md`。
 
 CI 使用同一套验证入口。发布时只需要分发根目录生成的 `sb.sh`。

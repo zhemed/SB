@@ -143,12 +143,16 @@ hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | 
   fail "cannot locate share generators in sbshare"
 [[ $socks_share_off -lt $hy2_share_off ]] ||
   fail "share output lists Hysteria2 before SOCKS5"
+# Dollar-prefixed names below are literal generated-configuration text.
+# shellcheck disable=SC2016
 socks_out_off=$(printf '%s\n' "$client_function" | grep -bo 'socks5-\$hostname' | head -1 | cut -d: -f1)
+# shellcheck disable=SC2016
 hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1)
 [[ -n $socks_out_off && -n $hy2_out_off && $socks_out_off -lt $hy2_out_off ]] ||
   fail "client configuration lists Hysteria2 before SOCKS5"
 
 # Ordering must never be bought by making the plaintext proxy the default.
+# shellcheck disable=SC2016
 if printf '%s\n' "$client_function" | grep -Fq -- '"default": "socks5-$hostname"'; then
   fail "Sing-box proxy selector defaults to the plaintext SOCKS5 proxy"
 fi
@@ -160,6 +164,7 @@ clash_first_proxy=$(printf '%s\n' "$clash_group" | awk '/proxies:/{getline; prin
 if [[ $clash_first_proxy == *DIRECT* ]]; then
   fail "Clash select group defaults to DIRECT, so no traffic is proxied"
 fi
+# shellcheck disable=SC2016
 [[ $clash_first_proxy == *'hysteria2-$hostname'* ]] ||
   fail "Clash select group does not default to the encrypted Hysteria2 proxy"
 
@@ -264,8 +269,8 @@ if command -v shellcheck >/dev/null 2>&1; then
   shellcheck --shell=bash --severity=info "$ROOT_DIR/sb.sh"
   shellcheck --shell=bash --severity=info "$hook_candidate"
   shellcheck --shell=bash --severity=info \
-    "$ROOT_DIR/scripts/build.sh" "$ROOT_DIR/tests/unit.sh" \
-    "$ROOT_DIR/tests/repair.sh" "$ROOT_DIR/tests/verify.sh"
+    "$ROOT_DIR/scripts/build.sh" "$ROOT_DIR/scripts/check-version-bump.sh" \
+    "$ROOT_DIR/tests/unit.sh" "$ROOT_DIR/tests/repair.sh" "$ROOT_DIR/tests/verify.sh"
 else
   printf 'verify: shellcheck not found; static lint skipped\n' >&2
 fi

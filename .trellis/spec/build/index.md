@@ -27,5 +27,8 @@ how to author a module — that belongs to `spec/shell/`.
 1. **`sb.sh` is a generated artifact. Never edit it directly.** Edit `src/` and rebuild.
 2. **`src/` is a build manifest, not a source directory.** Adding a file to `src/` without
    updating `scripts/build.sh` fails the build.
-3. **`bash tests/verify.sh` is the only gate that matters.** `scripts/build.sh --check` alone is
-   not sufficient; `verify.sh` adds pinned-value, shellcheck, and unit/repair assertions.
+3. **`bash tests/verify.sh` is the gate that matters.** `scripts/build.sh --check` alone is not
+   sufficient; `verify.sh` adds pinned-value, shellcheck, and unit/repair assertions.
+4. **Pushing to `main` is a release,** so a change under `src/` must bump `VERSION` in the same
+   change. `scripts/check-version-bump.sh` enforces this and runs in its own CI step — see
+   `version-pins.md` §1.

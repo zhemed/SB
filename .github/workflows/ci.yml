@@ -12,7 +12,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # The version-bump guard compares against a base revision, so it
+          # needs history rather than the default single-commit checkout.
+          fetch-depth: 0
       - name: Install ShellCheck
         run: sudo apt-get update && sudo apt-get install -y shellcheck
+      - name: Require a version bump for source changes
+        env:
+          BASE_REF: ${{ github.event.before || github.event.pull_request.base.sha }}
+        run: bash scripts/check-version-bump.sh "$BASE_REF"
       - name: Verify generated release
         run: bash tests/verify.sh

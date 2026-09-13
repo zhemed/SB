@@ -41,8 +41,26 @@ version=$(<"$VERSION_FILE")
 2. Update `sb_version` in `src/00-bootstrap.sh`.
 3. Update the "当前项目版本" line in `README.md`.
 4. `bash scripts/build.sh && bash tests/verify.sh`.
+5. `bash scripts/check-version-bump.sh` to confirm the rule below is satisfied.
 
-`README.md:90` also points developers at this procedure for release checks.
+### 推到 main 就必须升版
+
+Pushing to `main` **is** a release: `sb.sh` is served from `main`, and installed hosts re-read it
+through the shortcut fallback. So any change under `src/` or to the checked-in `sb.sh` must carry a
+new `VERSION` in the same change, otherwise two different builds advertise the same version number
+and a user cannot tell which one they have.
+
+`scripts/check-version-bump.sh [base-ref]` enforces this (base defaults to `origin/main`, then
+`HEAD^`). It also rejects a version that moves backwards. CI runs it before `tests/verify.sh`.
+
+**This rule is not enforced by `tests/verify.sh`** — that gate must still run from a tarball or a
+shallow copy, where there is no history to compare against, so the check lives in its own script
+and gets its own CI step.
+
+History note: before this guard existed, `051ac67` and `84975fd` were both labelled `2.0.0`, and one
+of them carried a Clash default-routing regression. That is the failure mode the guard prevents.
+
+`README.md` also points developers at this procedure for release checks.
 
 ---
 

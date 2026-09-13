@@ -81,13 +81,22 @@ inside `/etc/sb` (`$SB_DIR/.xxx.XXXXXX`), which is a different mechanism. See
 # .github/workflows/ci.yml
 - name: Install ShellCheck
   run: sudo apt-get update && sudo apt-get install -y shellcheck
+- name: Require a version bump for source changes
+  env:
+    BASE_REF: ${{ github.event.before || github.event.pull_request.base.sha }}
+  run: bash scripts/check-version-bump.sh "$BASE_REF"
 - name: Verify generated release
   run: bash tests/verify.sh
 ```
 
-CI runs exactly one command. There is no separate lint job, no matrix, and no packaging step.
-**Whatever CI would catch, `bash tests/verify.sh` catches locally** — so always run it before
-committing, and prefer adding an assertion to `tests/verify.sh` over adding a CI step.
+The checkout uses `fetch-depth: 0` because the version-bump guard compares against a base revision
+and cannot work from the default single-commit checkout.
+
+There is no separate lint job, no matrix, and no packaging step. **Whatever CI would catch,
+`bash tests/verify.sh` catches locally** — so always run it before committing, and prefer adding an
+assertion to `tests/verify.sh` over adding a CI step. The version-bump guard is the one deliberate
+exception: it needs git history, so it lives in `scripts/` and gets its own step rather than being
+folded into the gate.
 
 ShellCheck is optional locally (`tests/verify.sh:233-241` prints
 `verify: shellcheck not found; static lint skipped` and continues), but a shellcheck failure **is**
