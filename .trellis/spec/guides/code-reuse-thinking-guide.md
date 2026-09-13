@@ -1,223 +1,141 @@
 # Code Reuse Thinking Guide
 
-> **Purpose**: Stop and think before creating new code - does it already exist?
+> **Purpose**: Find the helper that already exists before writing a new one.
+
+Because `src/` is concatenated into a single namespace, reuse here is not just tidiness — a duplicate
+function name is a **build failure**, and a re-implemented pattern is a new place to get atomicity,
+permissions, or ownership wrong.
 
 ---
 
-## The Problem
+## The rule
 
-**Duplicated code is the #1 source of inconsistency bugs.**
-
-When you copy-paste or rewrite existing logic:
-- Bug fixes don't propagate
-- Behavior diverges over time
-- Codebase becomes harder to understand
-
----
-
-## Before Writing New Code
-
-### Step 1: Search First
+**Before writing any function:**
 
 ```bash
-# Search for similar function names
-grep -r "functionName" .
+# does this already exist?
+grep -rn '^name_you_are_about_to_write()' src/
 
-# Search for similar logic
-grep -r "keyword" .
+# does something in the same family exist?
+grep -rn '^\(atomic_\|managed_\|valid_\|with_\|save_\|write_managed\|install_managed\)' src/
 ```
 
-### Step 2: Ask These Questions
-
-| Question | If Yes... |
-|----------|-----------|
-| Does a similar function exist? | Use or extend it |
-| Is this pattern used elsewhere? | Follow the existing pattern |
-| Could this be a shared utility? | Create it in the right place |
-| Am I copying code from another file? | **STOP** - extract to shared |
-
----
-
-## Common Duplication Patterns
-
-### Pattern 1: Copy-Paste Functions
-
-**Bad**: Copying a validation function to another file
-
-**Good**: Extract to shared utilities, import where needed
-
-### Pattern 2: Similar Components
-
-**Bad**: Creating a new component that's 80% similar to existing
-
-**Good**: Extend existing component with props/variants
-
-### Pattern 3: Repeated Constants
-
-**Bad**: Defining the same constant in multiple files
-
-**Good**: Single source of truth, import everywhere
-
-### Pattern 4: Repeated Payload Field Extraction
-
-**Bad**: Multiple consumers cast the same JSON/event fields locally:
-
-```typescript
-const description = (ev as { description?: string }).description;
-const context = (ev as { context?: ContextEntry[] }).context;
-```
-
-This is duplicated contract logic even when the code is only two lines. Each
-consumer now has its own definition of what a valid payload means.
-
-**Good**: Put the decoder, type guard, or projection next to the data owner:
-
-```typescript
-if (isThreadEvent(ev)) {
-  renderThreadEvent(ev);
-}
-```
-
-**Rule**: If the same untyped payload field is read in 2+ places, create a
-shared type guard / normalizer / projection before adding a third reader.
-
----
-
-## When to Abstract
-
-**Abstract when**:
-- Same code appears 3+ times
-- Logic is complex enough to have bugs
-- Multiple people might need this
-
-**Don't abstract when**:
-- Only used once
-- Trivial one-liner
-- Abstraction would be more complex than duplication
-
----
-
-## After Batch Modifications
-
-When you've made similar changes to multiple files:
-
-1. **Review**: Did you catch all instances?
-2. **Search**: Run grep to find any missed
-3. **Consider**: Should this be abstracted?
-
-### Reducers Should Use Exhaustive Structure
-
-When state is derived from action-like values (`action`, `kind`, `status`,
-`phase`), prefer a reducer with one `switch` over scattered `if/else` updates.
-
-```typescript
-// BAD - action-specific state transitions are hard to audit
-if (action === "opened") { ... }
-else if (action === "comment") { ... }
-else if (action === "status") { ... }
-
-// GOOD - one reducer owns the transition table
-switch (event.action) {
-  case "opened":
-    ...
-    return;
-  case "comment":
-    ...
-    return;
-}
-```
-
-This matters when the event log is the source of truth. A reducer is the
-documented replay model; display code and commands should not duplicate pieces
-of that replay model.
-
----
-
-## Checklist Before Commit
-
-- [ ] Searched for existing similar code
-- [ ] No copy-pasted logic that should be shared
-- [ ] No repeated untyped payload field extraction outside a shared decoder
-- [ ] Constants defined in one place
-- [ ] Similar patterns follow same structure
-- [ ] Reducer/action transitions live in one reducer or command dispatcher
-
----
-
-## Gotcha: Python if/elif/else Exhaustive Check
-
-**Problem**: Python's if/elif/else chains have no compile-time exhaustive check. When you add a new value to a `Literal` type (e.g., `Platform`), existing if/elif/else chains silently fall through to `else` with wrong defaults.
-
-**Symptom**: New platform works partially — some methods return Claude defaults instead of platform-specific values. No error is raised.
-
-**Example** (`cli_adapter.py`):
-```python
-# BAD: "gemini" falls through to else, returns "claude"
-@property
-def cli_name(self) -> str:
-    if self.platform == "opencode":
-        return "opencode"
-    else:
-        return "claude"  # gemini silently gets "claude"!
-
-# GOOD: explicit branch for every platform
-@property
-def cli_name(self) -> str:
-    if self.platform == "opencode":
-        return "opencode"
-    elif self.platform == "gemini":
-        return "gemini"
-    else:
-        return "claude"
-```
-
-**Prevention**: When adding a new value to a Python `Literal` type, search for ALL if/elif/else chains that switch on that type and add explicit branches. Don't rely on `else` being correct for new values.
-
----
-
-## Gotcha: Asymmetric Mechanisms Producing Same Output
-
-**Problem**: When two different mechanisms must produce the same file set (e.g., recursive directory copy for init vs. manual `files.set()` for update), structural changes (renaming, moving, adding subdirectories) only propagate through the automatic mechanism. The manual one silently drifts.
-
-**Symptom**: Init works perfectly, but update creates files at wrong paths or misses files entirely.
-
-**Prevention**:
-- **Best**: Eliminate the asymmetry — have the manual path call the automatic one (e.g., `collectTemplateFiles()` calls `getAllScripts()` instead of maintaining its own list)
-- **If asymmetry is unavoidable**: Add a regression test that compares outputs from both mechanisms
-- When migrating directory structures, search for ALL code paths that reference the old structure
-
-**Real example**: `trellis update` had a manual `files.set()` list for 11 scripts that `getAllScripts()` already tracked. Fix: replaced the manual list with a `for..of getAllScripts()` loop. See `update.ts` refactor in v0.4.0-beta.3.
-
----
-
-## Template File Registration (Trellis-specific)
-
-When adding new files to `src/templates/trellis/scripts/`:
-
-**Single registration point**: `src/templates/trellis/index.ts`
-
-1. Add `export const xxxScript = readTemplate("scripts/path/file.py");`
-2. Add to `getAllScripts()` Map
-
-That's it. `commands/update.ts` uses `getAllScripts()` directly — no manual sync needed.
-
-**Why this matters**: Without registration in `getAllScripts()`, `trellis update` won't sync the file to user projects. Bug fixes and features won't propagate.
-
-**History**: Before v0.4.0-beta.3, `update.ts` had its own hand-maintained file list that frequently fell out of sync with `getAllScripts()`. This caused 11 Python files to be silently skipped during `trellis update`. The fix was to eliminate the duplicate list and use `getAllScripts()` as the single source of truth.
-
-### Quick Checklist for New Scripts
+**Before changing any value:**
 
 ```bash
-# After adding a new .py file, verify it's in getAllScripts():
-grep -l "newFileName" src/templates/trellis/index.ts  # Should match
+grep -rn "value_to_change" src/ tests/ README.md VERSION
 ```
 
-### Template Sync Convention
+---
 
-`.trellis/scripts/` (dogfooded) and `packages/cli/src/templates/trellis/scripts/` (template) must stay identical. After editing `.trellis/scripts/`, always sync:
+## Helper families that already exist
+
+Do not re-implement these. Use them, or extend them where they live.
+
+### Atomic publication (`src/40-service.sh`, `src/10-acme.sh`)
+
+| Helper | Signature / use |
+|--------|-----------------|
+| `atomic_write_private_text <dest> <value>` | Single string → 600 file inside `$SB_DIR` |
+| `atomic_copy_private_file <src> <dest>` | Copy of a file → 600 file inside `$SB_DIR` |
+| `install_managed_link <dest> <relative_target>` | Symlink swap (hook-local) |
+| `write_managed_marker_at <dir>` | Directory + `.sb-managed` marker |
+| `save_last_good_config [source]` | Validated snapshot with skip-if-identical |
+
+Everything else hand-rolls `mktemp` → `chmod` → `mv -fT`. The protocol is in
+`spec/runtime/atomic-writes.md`.
+
+### Trust and ownership (`src/40-service.sh`)
+
+`managed_path_is_trusted`, `managed_regular_file_is_trusted`, `managed_symlink_is_trusted`,
+`managed_directory_is_owned`, `service_is_owned`, `shortcut_is_owned`,
+`service_definition_is_repairable`.
+
+### Validation (`src/20-ports.sh`, `src/00-bootstrap.sh`)
+
+`valid_port`, `valid_uuid`, `valid_socks_password`, `valid_reality_key`, `valid_short_id`,
+`valid_hostname`, `valid_ipv4`, `valid_ipv6`.
+
+### Locking (`src/60-cron.sh`)
+
+`with_acme_lock <command...>` — the only supported way to touch certificate state.
+
+### Output (`src/00-bootstrap.sh`)
+
+`red`, `green`, `yellow`, `blue`, `white`, `readp`.
+
+---
+
+## Duplicated names fail the build
 
 ```bash
-rsync -av --delete --exclude='__pycache__' .trellis/scripts/ packages/cli/src/templates/trellis/scripts/
+# scripts/build.sh:151-153
+duplicate_functions=$(sed -n 's/^\([A-Za-z_][A-Za-z0-9_]*\)()[[:space:]]*{.*/\1/p' "$candidate" |
+  sort | uniq -d)
+[[ -z $duplicate_functions ]] || fail "duplicate function definitions: $duplicate_functions"
 ```
 
-**Gotcha**: Running rsync with wrong source/destination paths can create nested garbage directories (e.g., `.trellis/scripts/packages/cli/...`). Always double-check paths before running.
+The check does not understand heredocs, so **a helper defined inside a generated script counts too**.
+Names used inside `ACMERELOAD` (`switch_current`, `install_managed_link`, `rollback_deployment`,
+`commit_deployment`, `cleanup_deploy_files`, `handle_deploy_signal`, `managed_service_active`,
+`restart_managed_service`) are effectively reserved artifact-wide.
+
+---
+
+## The subtle duplication: same decision, two places
+
+Not all duplication is a copied function. Watch for **the same decision implemented twice**, which
+drifts silently:
+
+- **Service-unit ownership** is checked in `src/40-service.sh` *and* independently inside the ACME
+  hook (`src/10-acme.sh:686-720`). Both must agree on `# Managed by sb.sh` and the exact exec line.
+- **Domain validation** exists as `valid_hostname` (`src/20-ports.sh:24-33`) and again inline in the
+  cron runner (`src/60-cron.sh:310-319`), because the runner cannot call the main script.
+- **The ACME lock protocol** is implemented in `with_acme_lock` and re-implemented with hardcoded
+  descriptors 9 and 8 in the runner (`src/60-cron.sh:343-370`), pinned byte-exactly by an identity
+  check.
+
+Where duplication is unavoidable (a separate process cannot call into the script), it is **pinned by
+an assertion** so drift fails the build. If you create such a duplicate, add a pin.
+
+---
+
+## Anti-patterns
+
+### Re-implementing the atomic write
+
+```bash
+# WRONG — no same-directory temp, no mode on the temp, no cleanup on failure
+printf '%s\n' "$value" > "$SB_DIR/foo"
+```
+
+```bash
+# RIGHT
+atomic_write_private_text "$SB_DIR/foo" "$value" || return 1
+```
+
+### Inlining a regex instead of extending a validator
+
+An inline `[[ $x =~ ... ]]` at one call site means the definition of "valid" diverges between
+install, management, and repair paths. Extend the `valid_*` function instead.
+
+### Repeating the same failure message in several callers
+
+Low-level functions return status silently; the function that owns the decision prints. Otherwise the
+same sentence appears three times with three different phrasings, and a test pin catches only one.
+
+### Copying a helper into a new module "to keep modules self-contained"
+
+Modules are **not** self-contained — they are fragments of one file. Put the helper where its domain
+belongs (`spec/shell/module-structure.md` §1) and call it from anywhere.
+
+---
+
+## Quick checklist
+
+- [ ] I grepped for an existing helper before writing one.
+- [ ] The name I chose is not defined anywhere else in `src/`, including inside heredocs.
+- [ ] I used the existing atomic-write / validator / lock helper rather than an inline equivalent.
+- [ ] If I had to duplicate a decision because a separate process cannot call the script, I added a
+      test pin so drift fails the build.
+- [ ] I grepped `tests/` for literal pins on any value I changed.

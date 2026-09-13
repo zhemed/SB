@@ -1,327 +1,127 @@
 # Cross-Layer Thinking Guide
 
-> **Purpose**: Think through data flow across layers before implementing.
+> **Purpose**: Trace a value across every boundary it crosses *before* you change it.
+
+In a normal application the boundaries are horizontal (API → service → database). Here they are
+**vertical and process-shaped**: values flow from module to module inside one concatenated script,
+and then out of the process entirely into generated programs, cron, and the test suite.
 
 ---
 
-## The Problem
+## The boundaries in this project
 
-**Most bugs happen at layer boundaries**, not within layers.
-
-Common cross-layer bugs:
-
-- API returns format A, frontend expects format B
-- Database stores X, service transforms to Y, but loses data
-- Multiple layers implement the same logic differently
+| Boundary | Mechanism | Common failure |
+|----------|-----------|----------------|
+| `src/` module ↔ `src/` module | **Shell globals** set in one module, read in another (functions share one namespace after concatenation) | Renamed global; one of 3–4 consumers missed |
+| Main script ↔ embedded helper script | Quoted heredoc → file on disk → separate process. **No variables cross.** Paths are hardcoded literals | Assuming a global is visible inside `ACMERELOAD` / `ACMERENEW` |
+| Main script ↔ acme.sh (child process) | Exported environment: `HOME`, `CF_Token`, `CF_Account_ID`, `SB_INITIAL_INSTALL` | Secret leaked into a message, or a credential source not neutralised |
+| Main script ↔ cron | Marker lines in the crontab; the runner's own exit codes | Marker string changed on one side only |
+| Main script ↔ host service | Files under `/etc/sb`, unit files, symlinks | State written without an ownership proof |
+| Product source ↔ test suite | Literal `grep -Fqx` pins, `awk` range anchors on function names | Renamed function or reworded message; suite fails or silently goes vacuous |
 
 ---
 
-## Before Implementing Cross-Layer Features
+## Step 1: Map the value's journey
 
-### Step 1: Map the Data Flow
-
-Draw out how data moves:
+Before changing any protocol field, global, or path, write down every station. Example — the VLESS
+port:
 
 ```
-Source → Transform → Store → Retrieve → Transform → Display
+chooseport (src/20-ports.sh)
+  → global $port_vl_re
+    → render_server_config heredoc      src/30-server-config.sh:20   ("listen_port": ${port_vl_re})
+    → client output / share links       src/50-client-output.sh
+    → management menu [6] rewrite       src/70-management.sh
+    → success message string            src/70-management.sh:645
+    → verify.sh pin                     tests/verify.sh:86 ("Vless-reality端口修改成功")
 ```
 
-For each arrow, ask:
+Five consumers plus a test pin. A rename touches all of them.
 
-- What format is the data in?
-- What could go wrong?
-- Who is responsible for validation?
-
-### Step 2: Identify Boundaries
-
-| Boundary              | Common Issues                     |
-| --------------------- | --------------------------------- |
-| API ↔ Service         | Type mismatches, missing fields   |
-| Service ↔ Database    | Format conversions, null handling |
-| Backend ↔ Frontend    | Serialization, date formats       |
-| Component ↔ Component | Props shape changes               |
-
-### Step 3: Define Contracts
-
-For each boundary:
-
-- What is the exact input format?
-- What is the exact output format?
-- What errors can occur?
+Same exercise for the UUID: `insport` → `$uuid` → server config (`vless` users **and** `hysteria2`
+password) → client output → `changeuuid` (which must **not** touch SOCKS5, asserted at
+`tests/verify.sh:113-118`).
 
 ---
 
-## Common Cross-Layer Mistakes
+## Step 2: Ask the boundary questions
 
-### Mistake 1: Implicit Format Assumptions
+**Module ↔ module**
+- Is this a global? Then it must be declared in `src/00-bootstrap.sh`, not invented mid-module.
+- Who else reads it? Grep before renaming.
+- Does the function name already exist elsewhere? Duplicate definitions are a build failure.
 
-**Bad**: Assuming date format without checking
+**Main script ↔ embedded script**
+- The heredoc is quoted, so **nothing is expanded**. Every value must come from a hardcoded literal,
+  a file read, or the environment.
+- Does the embedded program re-validate everything it reads? It runs unattended from cron.
+- Are its `exit` codes meaningful to the caller (`1` failure, `2` usage, `75` retry)?
 
-**Good**: Explicit format conversion at boundaries
+**Main script ↔ external tool (acme.sh, sing-box, openssl, crontab)**
+- Is the tool's version pinned and its digest verified?
+- Is the credential passed only via the environment, and cleared on every exit path?
+- Is the tool's own state file treated as untrusted input?
 
-### Mistake 2: Scattered Validation
+**Product ↔ tests**
+- Will this rename break an `awk` range anchor (`/^name\(\)\{/`)?
+- Will this reword break a `grep -Fqx` pin?
+- Does an indentation change break an exact-line pin?
 
-**Bad**: Validating the same thing in multiple layers
+---
 
-**Good**: Validate once at the entry point
+## Step 3: Beware implicit format assumptions at the boundary
 
-### Mistake 3: Leaky Abstractions
+- **JSON is generated by heredoc templating**, not a serializer. A new field must be added
+  consistently in `render_server_config`, the client configs, and the Clash YAML — and validated by
+  `"$SB_BIN" check -c` before it goes live.
+- **Numbers**: force base 10 with `10#` whenever a user-supplied or file-supplied value reaches
+  arithmetic, or `08` will be read as invalid octal.
+- **Cron lines** are single strings matched exactly; adding a space breaks `grep -Fxc == 1` currency.
+- **Symlink targets** are relative and compared literally. An absolute target fails validation.
 
-**Bad**: Component knows about database schema
+---
 
-**Good**: Each layer only knows its neighbors
+## Common cross-layer mistakes in this repository
 
-### Mistake 4: Every Consumer Parses The Same Payload
+### Mistake 1: Assuming a heredoc sees your variables
 
-**Bad**: A command reads JSONL events and casts fields inline:
-
-```typescript
-const thread = (ev as { thread?: string }).thread;
-const labels = (ev as { labels?: string[] }).labels;
+```bash
+# inside the ACMERELOAD heredoc — $SB_DIR does NOT exist here
+base="/etc/sb"          # correct: hardcode the literal
 ```
 
-This looks local, but it means every consumer owns a private version of the
-event contract. The next field change will update one command and miss another.
+The test suite rewrites `/etc/sb` with `sed` (`tests/unit.sh:885`), which only works because the hook
+uses literals.
 
-**Good**: Decode once at the event boundary, then export typed projections:
+### Mistake 2: Changing a global without tracing consumers
 
-```typescript
-if (!isThreadEvent(ev)) return false;
-return ev.thread === filter.thread;
-```
+`$port`, `$uuid`, `$ipv`, `$hostname`, `$CERT_*` are read across module boundaries. Grep all of `src/`
+before touching one.
 
-**Rule**: For append-only logs, JSON streams, RPC payloads, or config files,
-create one owner for:
+### Mistake 3: Duplicated decisions at two boundaries
 
-- event / payload type definitions
-- type guards and normalization from `unknown`
-- metadata projections used by UI commands
-- reducers that replay state from the source of truth
+Ownership of a service unit is proved in `src/40-service.sh` **and** independently inside the ACME
+hook. Both must keep agreeing on `# Managed by sb.sh` and the exact `ExecStart` line. Fixing one and
+not the other produces a hook that refuses to restart a service the main script believes is fine.
 
-Rendering code may format fields, but it must not redefine the payload contract.
+### Mistake 4: A new state file nobody sweeps
 
----
+New temp prefixes under `/etc/sb` must be added to the repair sweep's carve-out list, or repair will
+delete your recovery point. See `spec/runtime/managed-assets.md` §2.
 
-## Checklist for Cross-Layer Features
+### Mistake 5: A pin updated in one place
 
-Before implementation:
-
-- [ ] Mapped the complete data flow
-- [ ] Identified all layer boundaries
-- [ ] Defined format at each boundary
-- [ ] Decided where validation happens
-
-After implementation:
-
-- [ ] Tested with edge cases (null, empty, invalid)
-- [ ] Verified error handling at each boundary
-- [ ] Checked data survives round-trip
-- [ ] Checked that consumers import shared decoders / projections instead of
-      casting payload fields locally
-- [ ] Checked that derived state points back to the source event identifier
-      (`seq`, `id`, `version`) instead of inventing a second cursor
+`tests/writing-tests.md` §3 is the authoritative map of every literal the suite pins. When the gate
+fails after a rename, that section tells you which pin is load-bearing and whether the rename was
+worth it.
 
 ---
 
-## Cross-Platform Template Consistency
+## Quick checklist
 
-In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.
-
-### Checklist: After Modifying Any Command Template
-
-- [ ] Find all platforms with the same command: `find src/templates/*/commands/trellis/ -name "<command>.*"`
-- [ ] Update all platform copies (Markdown `.md` and TOML `.toml`)
-- [ ] For Gemini TOML: adapt line continuations (`\\` vs `\`) and triple-quoted strings
-- [ ] Run `/trellis:check-cross-layer` to verify nothing was missed
-
-**Real-world example**: Updated `record-session.md` in Claude to use `--mode record`, but forgot iFlow, Kilo, OpenCode, and Gemini — caught by cross-layer check.
-
----
-
-## Generated Runtime Template Upgrade Consistency
-
-Some generated files are both documentation and runtime input. In Trellis,
-`.trellis/workflow.md` is parsed by `get_context.py`, `workflow_phase.py`,
-SessionStart filters, and per-turn hooks. Template changes must be validated
-against both fresh init and upgrade paths.
-
-### Checklist: After Modifying A Runtime-Parsed Template
-
-- [ ] Identify every runtime parser that reads the template, not just the file
-      writer that installs it
-- [ ] Check whether relevant syntax lives outside obvious managed regions
-      such as tag blocks
-- [ ] Verify fresh `init` output and a versioned `update` scenario that writes
-      the older `.trellis/.version`
-- [ ] Add an upgrade regression using an older pristine template fixture, then
-      assert the installed file reaches the current packaged shape
-- [ ] Update the backend spec that owns the runtime contract
-
----
-
-## Versioned Documentation Boundary
-
-Versioned documentation is a cross-layer boundary: source paths, `docs.json`
-version routing, and the rendered version selector must all describe the same
-release line.
-
-### Checklist: Before Editing Versioned Docs
-
-- [ ] Identify the target release line: stable, beta, or RC
-- [ ] Verify the edited MDX path matches that line:
-  - stable: `docs-site/{start,advanced,...}` and `docs-site/zh/{start,advanced,...}`
-  - beta: `docs-site/beta/**` and `docs-site/zh/beta/**`
-  - RC: `docs-site/rc/**` and `docs-site/zh/rc/**`
-- [ ] Verify `docs.json` navigation points the version label to the same paths
-- [ ] Grep the opposite tree for release-line-specific terms before committing
-- [ ] Treat beta content appearing under root release paths as a source-path bug,
-      not a rendering bug
-
-**Real-world example**: A beta-only task workflow change documented
-`prd.md` + `design.md` + `implement.md`, task-creation consent, and Codex
-mode banners under root `start/` and `advanced/` paths. The docs site then
-served 0.6 beta behavior under the Release selector. The fix was to restore root
-release docs, move the 0.6 content to `beta/` and `zh/beta/`, and add a grep
-audit for beta markers against the root release tree.
-
-**Real-world example**: Codex inline mode changed workflow platform markers from
-`[Codex]` / `[Kilo, Antigravity, Windsurf]` to `[codex-sub-agent]` /
-`[codex-inline, Kilo, Antigravity, Windsurf]`. Fresh init was correct, but
-`trellis update` only merged `[workflow-state:*]` blocks and preserved stale
-markers outside those blocks. Result: upgraded projects got new hook scripts
-but old workflow routing, so `get_context.py --mode phase --platform codex`
-could return empty Phase 2.1 detail.
-
----
-
-## Mode-Detection Probe Checklist
-
-When a CLI auto-detects a mode by probing a remote resource (e.g., checking if `index.json` exists to decide marketplace vs direct download):
-
-### Before implementing:
-
-- [ ] Probe runs in **ALL** code paths that use the result (interactive, `-y`, `--flag` combos)
-- [ ] 404 vs transient error are distinguished — don't treat both as "not found"
-- [ ] Transient errors **abort or retry**, never silently switch modes
-- [ ] Shared state (caches, prefetched data) is **reset** when context changes (e.g., user switches source)
-- [ ] **Shortcut paths** (e.g., `--template` skipping picker) must have the same error-handling quality as the probed path — check that downstream functions don't call catch-all wrappers
-
-### After implementing:
-
-- [ ] Trace every path from probe result to the mode-decision branch — no fallthrough
-- [ ] External format contracts (giget URI, raw URLs) are tested or at least documented as comments
-- [ ] Metadata reads consume a complete response or use a streaming parser — never parse a fixed-size prefix as full JSON
-- [ ] When reconstructing a composite identifier from parsed parts, verify **all** fields are included and in the **correct position** (e.g., `provider:repo/path#ref` not `provider:repo#ref/path`)
-- [ ] Verify that **action functions** called after a shortcut don't internally use the old catch-all fetch — they must use the probe-quality variant when error distinction matters
-
-**Real-world example**: Custom registry flow had 8 bugs across 3 review rounds: (1) probe only ran in interactive mode, (2) transient errors fell through to wrong mode, (3) giget URI had `#ref` in wrong position, (4) prefetched templates leaked across source switches, (5) `--template` shortcut bypassed probe but `downloadTemplateById` internally used catch-all `fetchTemplateIndex`, turning timeouts into "Template not found".
-
-**Real-world example**: Agent-session update hints fetched npm `latest` metadata with `response.read(4096)` and then parsed it as complete JSON. The `@mindfoldhq/trellis` package metadata exceeded 4 KB, so the JSON was truncated, parse failed silently, and the first session injection showed no update hint. Fix: read the complete response before parsing, and add a regression where `version` is followed by an 8 KB metadata tail.
-
----
-
-## Cross-Platform Template Consistency
-
-In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.
-
-### Checklist: After Modifying Any Command Template
-
-- [ ] Find all platforms with the same command: `find src/templates/*/commands/trellis/ -name "<command>.*"`
-- [ ] Update all platform copies (Markdown `.md` and TOML `.toml`)
-- [ ] For Gemini TOML: adapt line continuations (`\\` vs `\`) and triple-quoted strings
-- [ ] Run `/trellis:check-cross-layer` to verify nothing was missed
-
-**Real-world example**: Updated `record-session.md` in Claude to use `--mode record`, but forgot iFlow, Kilo, OpenCode, and Gemini — caught by cross-layer check.
-
----
-
-## Generated Runtime Template Upgrade Consistency
-
-Some generated files are both documentation and runtime input. In Trellis,
-`.trellis/workflow.md` is parsed by `get_context.py`, `workflow_phase.py`,
-SessionStart filters, and per-turn hooks. Template changes must be validated
-against both fresh init and upgrade paths.
-
-### Checklist: After Modifying A Runtime-Parsed Template
-
-- [ ] Identify every runtime parser that reads the template, not just the file
-  writer that installs it
-- [ ] Check whether relevant syntax lives outside obvious managed regions
-  such as tag blocks
-- [ ] Verify fresh `init` output and a versioned `update` scenario that writes
-  the older `.trellis/.version`
-- [ ] Add an upgrade regression using an older pristine template fixture, then
-  assert the installed file reaches the current packaged shape
-- [ ] Update the backend spec that owns the runtime contract
-
-**Real-world example**: Codex inline mode changed workflow platform markers from
-`[Codex]` / `[Kilo, Antigravity, Windsurf]` to `[codex-sub-agent]` /
-`[codex-inline, Kilo, Antigravity, Windsurf]`. Fresh init was correct, but
-`trellis update` only merged `[workflow-state:*]` blocks and preserved stale
-markers outside those blocks. Result: upgraded projects got new hook scripts
-but old workflow routing, so `get_context.py --mode phase --platform codex`
-could return empty Phase 2.1 detail.
-
----
-
-## Mode-Detection Probe Checklist
-
-When a CLI auto-detects a mode by probing a remote resource (e.g., checking if `index.json` exists to decide marketplace vs direct download):
-
-### Before implementing:
-- [ ] Probe runs in **ALL** code paths that use the result (interactive, `-y`, `--flag` combos)
-- [ ] 404 vs transient error are distinguished — don't treat both as "not found"
-- [ ] Transient errors **abort or retry**, never silently switch modes
-- [ ] Shared state (caches, prefetched data) is **reset** when context changes (e.g., user switches source)
-- [ ] **Shortcut paths** (e.g., `--template` skipping picker) must have the same error-handling quality as the probed path — check that downstream functions don't call catch-all wrappers
-
-### After implementing:
-- [ ] Trace every path from probe result to the mode-decision branch — no fallthrough
-- [ ] External format contracts (giget URI, raw URLs) are tested or at least documented as comments
-- [ ] Metadata reads consume a complete response or use a streaming parser — never parse a fixed-size prefix as full JSON
-- [ ] When reconstructing a composite identifier from parsed parts, verify **all** fields are included and in the **correct position** (e.g., `provider:repo/path#ref` not `provider:repo#ref/path`)
-- [ ] Verify that **action functions** called after a shortcut don't internally use the old catch-all fetch — they must use the probe-quality variant when error distinction matters
-
-**Real-world example**: Custom registry flow had 8 bugs across 3 review rounds: (1) probe only ran in interactive mode, (2) transient errors fell through to wrong mode, (3) giget URI had `#ref` in wrong position, (4) prefetched templates leaked across source switches, (5) `--template` shortcut bypassed probe but `downloadTemplateById` internally used catch-all `fetchTemplateIndex`, turning timeouts into "Template not found".
-
-**Real-world example**: Agent-session update hints fetched npm `latest` metadata with `response.read(4096)` and then parsed it as complete JSON. The `@mindfoldhq/trellis` package metadata exceeded 4 KB, so the JSON was truncated, parse failed silently, and the first session injection showed no update hint. Fix: read the complete response before parsing, and add a regression where `version` is followed by an 8 KB metadata tail.
-
----
-
-## When to Create Flow Documentation
-
-Create detailed flow docs when:
-
-- Feature spans 3+ layers
-- Multiple teams are involved
-- Data format is complex
-- Feature has caused bugs before
-
----
-
-## Event Log / Projection Boundary
-
-Append-only logs are cross-layer contracts. A single event travels through:
-
-```
-CLI input → event writer → events.jsonl → reader → filter → reducer → display
-```
-
-### Checklist: After Adding A New Event Kind Or Field
-
-- [ ] Add the event kind to the central event taxonomy
-- [ ] Add a typed event variant or type guard at the event layer
-- [ ] Add normalization helpers for array/object fields that come from
-      user input or JSON
-- [ ] Keep `seq` / `id` assignment in the event writer only
-- [ ] Make filters and reducers consume the typed event guard, not local casts
-- [ ] Make display code consume reducer output or typed events, not raw JSON
-- [ ] Add at least one regression that proves history replay and live filtering
-      use the same filter model
-
-**Real-world example**: Thread channels added `kind: "thread"`, `description`,
-`context`, labels, and `lastSeq`. The first implementation replayed thread
-state correctly, but several commands still re-parsed event payload fields with
-local casts. The fix was to make the core event layer own `ThreadChannelEvent`
-and `isThreadEvent`, make `reduceChannelMetadata` the only channel metadata
-projection, and make `reduceThreads` the only thread replay reducer.
+- [ ] I grepped `src/` for every consumer of the value I am changing.
+- [ ] I grepped `tests/` for a literal pin on it.
+- [ ] I checked whether it crosses into a heredoc-delivered script (where globals do not exist).
+- [ ] I checked whether it is an exported environment variable for a child process.
+- [ ] I checked whether the change affects a marker line, cron entry, or symlink target string.
+- [ ] I ran `bash scripts/build.sh && bash tests/verify.sh`.

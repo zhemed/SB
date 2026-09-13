@@ -21,36 +21,62 @@ the rest conversationally.
 
 ## Status (update the checkboxes as you complete each item)
 
-- [ ] Fill backend guidelines
-- [ ] Fill frontend guidelines
-- [ ] Add code examples
+- [x] Fill shell guidance (authoring `src/*.sh`)
+- [x] Fill runtime guidance (installed-system invariants)
+- [x] Fill build guidance (artifact + version pins)
+- [x] Fill test guidance (harness + rename coupling)
+- [x] Add code examples with real file paths
+- [x] Remove non-applicable template layers (`backend/`, `frontend/`)
+
+**Completed 2026-09-13 by @SB.** The template's `backend`/`frontend` layers do not
+apply — this repository is a single Bash script, not a fullstack application. The
+spec was rebuilt around the repository's real ownership boundaries, with every
+rule backed by a verified `file:line` citation.
 
 ---
 
 ## Spec files to populate
 
+### Shell layer — authoring `src/*.sh`
 
-### Backend guidelines
+| File | What it documents |
+|------|-------------------|
+| `.trellis/spec/shell/module-structure.md` | Module ownership map, top-level code rules, embedded heredoc programs |
+| `.trellis/spec/shell/bash-conventions.md` | No `set -e`, the three error idioms, exit codes 0/1/2/75, quoting, `10#`, `local` |
+| `.trellis/spec/shell/input-validation.md` | `valid_*` predicate contract, prompt/retry loops, menu input |
+| `.trellis/spec/shell/user-output.md` | `red`/`green`/`yellow`/`blue`/`readp` severity model, Chinese UX text |
 
-| File | What to document |
-|------|------------------|
-| `.trellis/spec/backend/directory-structure.md` | Where different file types go (routes, services, utils) |
-| `.trellis/spec/backend/database-guidelines.md` | ORM, migrations, query patterns, naming conventions |
-| `.trellis/spec/backend/error-handling.md` | How errors are caught, logged, and returned |
-| `.trellis/spec/backend/logging-guidelines.md` | Log levels, format, what to log |
-| `.trellis/spec/backend/quality-guidelines.md` | Code review standards, testing requirements |
+### Runtime layer — installed-system invariants
 
+| File | What it documents |
+|------|-------------------|
+| `.trellis/spec/runtime/managed-assets.md` | `/etc/sb` layout, marker files, three ownership proofs, permissions |
+| `.trellis/spec/runtime/atomic-writes.md` | candidate → validate → `mv -fT` protocol; `commit_config` |
+| `.trellis/spec/runtime/service-management.md` | systemd/OpenRC duality, unit ownership, verified start/cleanup |
+| `.trellis/spec/runtime/certificates.md` | ACME staging, generation switching, reload hook, lock ordering, secrets |
+| `.trellis/spec/runtime/transactions.md` | Install vs repair transactions, signal handling, rollback, last-good |
 
-### Frontend guidelines
+### Build layer — artifact & release
 
-| File | What to document |
-|------|------------------|
-| `.trellis/spec/frontend/directory-structure.md` | Component/page/hook organization |
-| `.trellis/spec/frontend/component-guidelines.md` | Component patterns, props conventions |
-| `.trellis/spec/frontend/hook-guidelines.md` | Custom hook naming, patterns |
-| `.trellis/spec/frontend/state-management.md` | State library, patterns, what goes where |
-| `.trellis/spec/frontend/type-safety.md` | TypeScript conventions, type organization |
-| `.trellis/spec/frontend/quality-guidelines.md` | Linting, testing, accessibility |
+| File | What it documents |
+|------|-------------------|
+| `.trellis/spec/build/build-contract.md` | Module manifest, header markers, text hygiene, `sb.sh` generation |
+| `.trellis/spec/build/version-pins.md` | `VERSION` sync in four places, pinned versions/digests, security pins |
+| `.trellis/spec/build/repository-conventions.md` | `.editorconfig`/`.gitattributes`/`.gitignore`, CI entry point, toolchain |
+
+### Tests layer
+
+| File | What it documents |
+|------|-------------------|
+| `.trellis/spec/tests/harness.md` | Gate order, TAP protocol, sandboxing, mocks, function extraction |
+| `.trellis/spec/tests/writing-tests.md` | Recipe for adding a test; the rename coupling map; known gaps |
+
+### Thinking guides (adapted)
+
+`.trellis/spec/guides/` was rewritten from the fullstack template into
+project-grounded versions: cross-layer now covers the module→artifact→child-process→cron→test-pin
+boundaries, and code-reuse covers the existing helper families and the build-fatal duplicate-name
+rule.
 
 
 ### Thinking guides (already populated)
