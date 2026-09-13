@@ -14,9 +14,9 @@ Run `bash tests/verify.sh` after any change in this document's scope.
 
 | Location | Value form | Asserted by |
 |----------|-----------|-------------|
-| `VERSION` | `2.0.0` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
-| `src/00-bootstrap.sh:95` | `sb_version="v2.0.0"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
-| `README.md` "当前项目版本" line | `` 当前项目版本：`2.0.0` `` | `tests/verify.sh:52-53` |
+| `VERSION` | `2.0.1` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
+| `src/00-bootstrap.sh:95` | `sb_version="v2.0.1"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
+| `README.md` "当前项目版本" line | `` 当前项目版本：`2.0.1` `` | `tests/verify.sh:52-53` |
 
 The build derives the required literal from `VERSION` itself:
 
