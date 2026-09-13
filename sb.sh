@@ -92,7 +92,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v1.9.0"
+sb_version="v2.0.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
