@@ -98,7 +98,7 @@ assertion to `tests/verify.sh` over adding a CI step. The version-bump guard is 
 exception: it needs git history, so it lives in `scripts/` and gets its own step rather than being
 folded into the gate.
 
-ShellCheck is optional locally (`tests/verify.sh:233-241` prints
+ShellCheck is optional locally (`tests/verify.sh:268-276` prints
 `verify: shellcheck not found; static lint skipped` and continues), but a shellcheck failure **is**
 fatal where shellcheck is installed — including in CI.
 

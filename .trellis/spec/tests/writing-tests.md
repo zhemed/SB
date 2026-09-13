@@ -159,7 +159,21 @@ Documented as-is; do not assume coverage that does not exist.
 - `tests/repair.sh:4` carries a file-level `shellcheck disable=SC2016,SC2030,SC2031,SC2034,SC2317`
   without per-line justification.
 - `shellcheck` is optional locally and self-skips with `verify: shellcheck not found; static lint
-  skipped` (`tests/verify.sh:240`), so lint is only enforced where it is installed (including CI).
+  skipped` (`tests/verify.sh:275`), so lint is only enforced where it is installed (including CI).
+  **Because of this, a lint failure can reach `main` and only surface in CI.** Install shellcheck
+  locally before trusting a green local gate — a SC2016 in newly added assertions did exactly this
+  and turned CI red for two consecutive pushed commits.
+- **Nothing in the suite validates the generated sing-box configuration semantically.** `MOCKCORE`
+  implements `check` as `jq -e .` (`tests/repair.sh`), i.e. JSON well-formedness only, and no
+  `sing-box` binary exists in the test environment. The product's own `"$SB_BIN" check -c` path is
+  exercised, but against that stub. Consequences:
+  - A change to the **shape** of `sb.json` (adding/removing an inbound, renaming a field) cannot be
+    proven valid here. The gate will pass on a config real sing-box would reject.
+  - Treat any such change as requiring one real-host install before it is trusted. The VLESS Reality
+    removal (2.0.0) was verified that way; until then the config's validity was an assumption, not a
+    tested fact.
+  - Prefer keeping the untouched remainder of the config byte-identical when editing it, so the
+    unverifiable surface stays as small as possible.
 
 ---
 

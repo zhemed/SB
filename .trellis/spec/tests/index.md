@@ -41,6 +41,6 @@ behavioural test runs.
 | 2 | `bash -n` on `sb.sh`, `build.sh`, all three test files | `tests/verify.sh:21-25` |
 | 3 | Pinned versions, digests, HTTPS policy, lifecycle strings, security settings | `tests/verify.sh:27-168` |
 | 4 | Pinned ACME reload hook structure | `tests/verify.sh:170-231` |
-| 5 | `shellcheck --severity=info` (skipped with a message if absent) | `tests/verify.sh:233-241` |
+| 5 | `shellcheck --severity=info` (skipped with a message if absent) | `tests/verify.sh:268-276` |
 | 6 | `bash tests/unit.sh` | `tests/verify.sh:243` |
 | 7 | `bash tests/repair.sh` | `tests/verify.sh:244` |
