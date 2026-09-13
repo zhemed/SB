@@ -262,7 +262,6 @@ inssb(){
 # sb-module: 10-acme
 # Certificate functions
 cert_self_signed(){
-  ym_vl_re=apple.com
   certificatec_hy2="$SB_DIR/cert.pem"
   certificatep_hy2="$SB_DIR/private.key"
   use_acme_cert=0
@@ -537,7 +536,6 @@ cert_acme(){
     return 1
   fi
   write_acme_identity "$identity" || return 1
-  ym_vl_re=apple.com
   certificatec_hy2="$ACME_CERT"
   certificatep_hy2="$ACME_KEY"
   use_acme_cert=1
@@ -1769,14 +1767,6 @@ valid_socks_password(){
   [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
 }
 
-valid_reality_key(){
-  [[ $1 =~ ^[A-Za-z0-9_-]{43}$ ]]
-}
-
-valid_short_id(){
-  [[ $1 =~ ^[0-9A-Fa-f]{8}$ ]]
-}
-
 valid_hostname(){
   local name=$1 label
   local -a labels
@@ -1801,7 +1791,7 @@ port_conflict(){
 }
 
 chooseport(){
-  local network=$1 reserved=${2-}
+  local network=$1
   [[ $network == tcp || $network == udp ]] || return 1
   while true; do
     [[ -z $port ]] && port=$(shuf -i 10000-65535 -n 1)
@@ -1810,10 +1800,7 @@ chooseport(){
     else
       port=$((10#$port))
     fi
-    if valid_port "$port" 1 && [[ -n $reserved && $port == "$reserved" ]]; then
-      red "端口 $port/$network 与已选择的TCP端口冲突"
-      port=
-    elif valid_port "$port" 1 && port_conflict "$port" "$network"; then
+    if valid_port "$port" 1 && port_conflict "$port" "$network"; then
       red "端口 $port/$network 已被占用"
     elif valid_port "$port" 1; then
       break
@@ -1835,15 +1822,9 @@ random_available_port(){
   done
 }
 
-vlport(){
-  readp "\n设置Vless-reality端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp
-  port_vl_re=$port
-}
-
 socksport(){
   readp "\n设置SOCKS5端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp "$port_vl_re"
+  chooseport tcp
   port_socks5=$port
 }
 
@@ -1862,17 +1843,11 @@ insport(){
     readp "请输入【1-2】：" port
     case "$port" in
       ""|1)
-        port_vl_re=$(random_available_port tcp) || return 1
-        while true; do
-          port_socks5=$(random_available_port tcp) || return 1
-          [[ $port_socks5 != "$port_vl_re" ]] && break
-        done
+        port_socks5=$(random_available_port tcp) || return 1
         port_hy2=$(random_available_port udp) || return 1
         break
         ;;
       2)
-        port=
-        vlport
         port=
         socksport
         port=
@@ -1884,7 +1859,6 @@ insport(){
   done
   echo
   blue "各协议端口确认如下"
-  blue "Vless-reality端口：$port_vl_re"
   blue "SOCKS5端口：$port_socks5"
   blue "Hysteria-2端口：$port_hy2"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -1899,7 +1873,7 @@ insport(){
     red "生成SOCKS5独立密码失败"
     return 1
   fi
-  blue "VLESS/Hysteria2 UUID（密码）：${uuid}"
+  blue "Hysteria2 UUID（密码）：${uuid}"
   blue "SOCKS5独立密码：${socks_password}"
 }
 # sb-module: 30-server-config
@@ -1915,33 +1889,6 @@ render_server_config(){
     "timestamp": true
   },
   "inbounds": [
-    {
-      "type": "vless",
-      "sniff": true,
-      "sniff_override_destination": true,
-      "tag": "vless-sb",
-      "listen": "::",
-      "listen_port": ${port_vl_re},
-      "users": [
-        {
-          "uuid": "${uuid}",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "${ym_vl_re}",
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "${ym_vl_re}",
-            "server_port": 443
-          },
-          "private_key": "${private_key}",
-          "short_id": ["${short_id}"]
-        }
-      }
-    },
     {
       "type": "hysteria2",
       "sniff": true,
@@ -2589,21 +2536,15 @@ result(){
     red "保存的公网IP格式无效"
     return 1
   fi
-  uuid=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid' "$SB_CONFIG" 2>/dev/null) || return 1
-  vl_port=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  vl_name=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name' "$SB_CONFIG" 2>/dev/null) || return 1
-  managed_regular_file_is_trusted "$SB_DIR/public.key" || return 1
-  public_key=$(cat "$SB_DIR/public.key" 2>/dev/null)
-  short_id=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0]' "$SB_CONFIG" 2>/dev/null) || return 1
+  uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_username=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].username' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
-  if ! valid_uuid "$uuid" || ! valid_port "$vl_port" || ! valid_port "$socks_port" ||
+  if ! valid_uuid "$uuid" || ! valid_port "$socks_port" ||
      ! valid_port "$hy2_port" || [[ $socks_username != "$SOCKS_USERNAME" ]] ||
-     ! valid_socks_password "$socks_password" || [[ ! $public_key =~ ^[A-Za-z0-9_-]{43}$ ]] ||
-     [[ ! $short_id =~ ^[0-9A-Fa-f]{8}$ ]]; then
+     ! valid_socks_password "$socks_password"; then
     red "服务端配置中的节点参数不完整或格式无效"
     return 1
   fi
@@ -2638,22 +2579,6 @@ result(){
   fi
 }
 
-resvless(){
-  local output=${1:-$SB_DIR/vl_reality.txt}
-  echo
-  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  vl_link="vless://$uuid@$server_ip:$vl_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#vl-reality-$hostname"
-  printf '%s\n' "$vl_link" > "$output" || return 1
-  red "🚀【 vless-reality-vision 】节点信息如下：" && sleep 2
-  echo
-  echo "分享链接【v2rayn(切换singbox内核)、nekobox、小火箭shadowrocket】"
-  echo -e "${yellow}$vl_link${plain}"
-  echo
-  echo "二维码"
-  qrencode -o - -t ANSIUTF8 "$vl_link" || return 1
-  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  echo
-}
 
 reshy2(){
   local output=${1:-$SB_DIR/hy2.txt}
@@ -2825,27 +2750,6 @@ sb_client(){
   },
   "outbounds": [
     {
-      "type": "vless",
-      "tag": "vless-$hostname",
-      "server": "$server_ipcl",
-      "server_port": $vl_port,
-      "uuid": "$uuid",
-      "flow": "xtls-rprx-vision",
-      "tls": {
-        "enabled": true,
-        "server_name": "$vl_name",
-        "utls": {
-          "enabled": true,
-          "fingerprint": "chrome"
-        },
-        "reality": {
-          "enabled": true,
-          "public_key": "$public_key",
-          "short_id": "$short_id"
-        }
-      }
-    },
-    {
       "type": "hysteria2",
       "tag": "hy2-$hostname",
       "server": "$cl_hy2_ip",
@@ -2875,24 +2779,11 @@ sb_client(){
     {
       "tag": "proxy",
       "type": "selector",
-      "default": "auto",
+      "default": "hy2-$hostname",
       "outbounds": [
-        "auto",
-        "vless-$hostname",
         "hy2-$hostname",
         "socks5-$hostname"
       ]
-    },
-    {
-      "tag": "auto",
-      "type": "urltest",
-      "outbounds": [
-        "vless-$hostname",
-        "hy2-$hostname"
-      ],
-      "url": "http://www.gstatic.com/generate_204",
-      "interval": "10m",
-      "tolerance": 50
     },
     {
       "type": "direct",
@@ -2950,21 +2841,6 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-- name: vless-reality-vision-$hostname
-  type: vless
-  server: $server_ipcl
-  port: $vl_port
-  uuid: $uuid
-  network: tcp
-  udp: true
-  tls: true
-  flow: xtls-rprx-vision
-  servername: $vl_name
-  reality-opts:
-    public-key: $public_key
-    short-id: $short_id
-  client-fingerprint: chrome
-
 - name: hysteria2-$hostname
   type: hysteria2
   server: $cl_hy2_ip
@@ -2986,31 +2862,10 @@ $hy2_clash_ca
   udp: false
 
 proxy-groups:
-- name: 负载均衡
-  type: load-balance
-  url: https://www.gstatic.com/generate_204
-  interval: 300
-  strategy: round-robin
-  proxies:
-    - vless-reality-vision-$hostname
-    - hysteria2-$hostname
-
-- name: 自动选择
-  type: url-test
-  url: https://www.gstatic.com/generate_204
-  interval: 300
-  tolerance: 50
-  proxies:
-    - vless-reality-vision-$hostname
-    - hysteria2-$hostname
-
 - name: 🌍选择代理节点
   type: select
   proxies:
-    - 负载均衡
-    - 自动选择
     - DIRECT
-    - vless-reality-vision-$hostname
     - hysteria2-$hostname
     - socks5-$hostname
 
@@ -3030,31 +2885,29 @@ EOF
 }
 
 sbshare(){
-  local aggregate_tmp vl_tmp hy2_tmp socks_tmp
-  vl_tmp=$(mktemp "$SB_DIR/.vl_reality.XXXXXX") || return 1
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f "$vl_tmp"; return 1; }
-  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || { rm -f "$vl_tmp" "$hy2_tmp"; return 1; }
-  if ! result || ! resvless "$vl_tmp" || ! reshy2 "$hy2_tmp" || ! ressocks5 "$socks_tmp"; then
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp"
+  local aggregate_tmp hy2_tmp socks_tmp
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || return 1
+  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || { rm -f "$hy2_tmp"; return 1; }
+  if ! result || ! reshy2 "$hy2_tmp" || ! ressocks5 "$socks_tmp"; then
+    rm -f "$hy2_tmp" "$socks_tmp"
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp"
+    rm -f "$hy2_tmp" "$socks_tmp"
     return 1
   }
-  if ! { cat "$vl_tmp" && cat "$hy2_tmp" && cat "$socks_tmp"; } > "$aggregate_tmp"; then
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+  if ! { cat "$hy2_tmp" && cat "$socks_tmp"; } > "$aggregate_tmp"; then
+    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  chmod 600 "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp" || {
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+  chmod 600 "$hy2_tmp" "$socks_tmp" "$aggregate_tmp" || {
+    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   }
   if ! sb_client; then
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  mv -fT -- "$vl_tmp" "$SB_DIR/vl_reality.txt" || { rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
@@ -4244,135 +4097,32 @@ change_cert_mode(){
   done
 }
 
-# Change VL reality SNI
-change_vl_sni(){
-  local current_sni new_sni candidate retry commit_status
-  if ! sbactive; then
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  echo
-  if ! current_sni=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前SNI失败，配置未修改"
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  green "当前VL reality SNI域名: $current_sni"
-  while true; do
-    readp "请输入新的SNI域名 (回车使用apple.com，输入0返回主菜单): " new_sni || return 1
-    [[ $new_sni == 0 ]] && return 0
-    new_sni=${new_sni:-apple.com}
-    if ! valid_hostname "$new_sni"; then
-      red "SNI必须是合法域名，例如 apple.com"
-      yellow "请重新输入SNI域名"
-      continue
-    fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建SNI候选配置失败，原配置未修改"
-      readp "按回车重试，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! jq --arg sni "$new_sni" '
-      if ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) != 1
-      then error("vless inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name) = $sni |
-           (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.handshake.server) = $sni
-      end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg sni "$new_sni" '[.inbounds[] | select(.type == "vless" and .tag == "vless-sb" and .tls.server_name == $sni and .tls.reality.handshake.server == $sni)] | length == 1' "$candidate" >/dev/null; then
-      rm -f "$candidate"
-      red "生成SNI候选配置失败，原配置未修改"
-      readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if commit_config "$candidate"; then
-      refresh_share_files_after_change || true
-      green "VL reality SNI域名修改成功：$new_sni"
-      readp "按回车返回主菜单..."
-      return 0
-    fi
-    commit_status=$?
-    if [[ $commit_status -eq 2 ]]; then
-      red "SNI修改失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回主菜单..."
-      return 2
-    fi
-    red "SNI修改失败，原配置未修改或已恢复"
-    readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-    [[ $retry == 0 ]] && return 1
-  done
-}
 
 # Change ports
 change_ports(){
-  local nport port candidate menu retry commit_status vl_port socks_port hy2_port port_vl_re port_socks5 port_hy2
+  local nport port candidate menu retry commit_status socks_port hy2_port port_socks5 port_hy2
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! vl_port=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
-     ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
+  if ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
      ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前端口失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
-  port_vl_re=$vl_port
   port_socks5=$socks_port
   port_hy2=$hy2_port
   echo
   while true; do
     green "更改端口"
-    green "1：Vless-reality端口 ${yellow}当前: $vl_port${plain}"
-    green "2：Hysteria2主端口 ${yellow}当前: $hy2_port${plain}"
-    green "3：SOCKS5端口 ${yellow}当前: $socks_port${plain}"
+    green "1：Hysteria2主端口 ${yellow}当前: $hy2_port${plain}"
+    green "2：SOCKS5端口 ${yellow}当前: $socks_port${plain}"
     green "0：返回主菜单"
-    readp "请选择【0-3】：" menu || return 1
+    readp "请选择【0-2】：" menu || return 1
     case "$menu" in
       ""|0) return 0 ;;
       1)
-        readp "请输入新端口 (1-65535，留空随机10000-65535): " nport || return 1
-        port="$nport"
-        chooseport tcp "$socks_port" || continue
-        if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-          red "创建端口候选配置失败，原配置未修改"
-          readp "按回车重试，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if ! jq --argjson p "$port" '
-          if ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) != 1
-          then error("vless inbound missing or duplicated")
-          else (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port) = $p end
-        ' "$SB_CONFIG" > "$candidate" || \
-          ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "vless" and .tag == "vless-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
-          rm -f "$candidate"
-          red "生成端口候选配置失败，原配置未修改"
-          readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if commit_config "$candidate"; then
-          refresh_share_files_after_change || true
-          green "Vless-reality端口修改成功：$port"
-          yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
-          readp "按回车返回主菜单..."
-          return 0
-        else
-          commit_status=$?
-        fi
-        if [[ $commit_status -eq 2 ]]; then
-          red "端口修改失败且自动回滚失败，请先检查服务和备份配置"
-          readp "按回车返回主菜单..."
-          return 2
-        fi
-        red "端口修改失败，原配置未修改或已恢复"
-        readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-        [[ $retry == 0 ]] && return 1
-        ;;
-      2)
         readp "请输入新主端口 (1-65535，留空随机10000-65535): " nport || return 1
         port="$nport"
         chooseport udp || continue
@@ -4412,10 +4162,10 @@ change_ports(){
         readp "按回车重新输入，输入0返回主菜单：" retry || return 1
         [[ $retry == 0 ]] && return 1
         ;;
-      3)
+      2)
         readp "请输入新SOCKS5端口 (1-65535，留空随机10000-65535): " nport || return 1
         port="$nport"
-        chooseport tcp "$vl_port" || continue
+        chooseport tcp || continue
         if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
           red "创建端口候选配置失败，原配置未修改"
           readp "按回车重试，输入0返回主菜单：" retry || return 1
@@ -4453,7 +4203,7 @@ change_ports(){
         [[ $retry == 0 ]] && return 1
         ;;
       *)
-        red "请输入0、1、2或3"
+        red "请输入0、1或2"
         ;;
     esac
   done
@@ -4472,13 +4222,13 @@ changeuuid(){
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! olduuid=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid' "$SB_CONFIG" 2>/dev/null); then
+  if ! olduuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前UUID失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
   echo
-  green "当前VLESS/Hysteria2 UUID（密码）：$olduuid"
+  green "当前Hysteria2 UUID（密码）：$olduuid"
   while true; do
     readp "输入新UUID（回车随机生成，输入0返回凭据菜单）：" choice || return 1
     [[ $choice == 0 ]] && return 0
@@ -4499,14 +4249,12 @@ changeuuid(){
       continue
     fi
     if ! jq --arg uuid "$uuid" '
-      if ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) != 1 or
-         ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
+      if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
       then error("required inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid) = $uuid |
-           (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password) = $uuid
+      else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password) = $uuid
       end
     ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg uuid "$uuid" '([.inbounds[] | select(.type == "vless" and .tag == "vless-sb" and .users[0].uuid == $uuid)] | length == 1) and ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .users[0].password == $uuid)] | length == 1)' "$candidate" >/dev/null; then
+      ! jq -e --arg uuid "$uuid" '([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .users[0].password == $uuid)] | length == 1)' "$candidate" >/dev/null; then
       rm -f "$candidate"
       red "生成UUID候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
@@ -4515,7 +4263,7 @@ changeuuid(){
     fi
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
-      green "VLESS/Hysteria2 UUID（密码）修改成功：${uuid}"
+      green "Hysteria2 UUID（密码）修改成功：${uuid}"
       readp "按回车返回凭据菜单..."
       return 0
     else
@@ -4602,7 +4350,7 @@ change_credentials(){
   while true; do
     echo
     green "凭据管理"
-    green "1：更改VLESS/Hysteria2 UUID（密码）"
+    green "1：更改Hysteria2 UUID（密码）"
     green "2：更改SOCKS5独立密码"
     green "0：返回主菜单"
     readp "请选择【0-2】：" choice || return 1
@@ -5002,14 +4750,10 @@ install_dependencies(){
 # sb-module: 85-repair
 # Diagnose and repair an owned sb installation without deleting node data.
 load_repair_config_values(){
-  local source=$1 hy2_uuid
+  local source=$1
   REPAIR_UUID=
-  REPAIR_VLESS_PORT=
   REPAIR_SOCKS_PORT=
   REPAIR_HY2_PORT=
-  REPAIR_SNI=
-  REPAIR_PRIVATE_KEY=
-  REPAIR_SHORT_ID=
   REPAIR_SOCKS_PASSWORD=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
@@ -5018,30 +4762,19 @@ load_repair_config_values(){
   [[ -s $source ]] && managed_regular_file_is_trusted "$source" || return 1
   jq -e '
     type == "object" and (.inbounds | type == "array") and
-    ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) == 1 and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
     ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
-  REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid | select(type == "string")' "$source") || return 1
-  hy2_uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
-  REPAIR_VLESS_PORT=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port | select(type == "number")' "$source") || return 1
+  REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  REPAIR_SNI=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name | select(type == "string")' "$source") || return 1
-  REPAIR_PRIVATE_KEY=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.private_key | select(type == "string")' "$source") || return 1
-  REPAIR_SHORT_ID=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0] | select(type == "string")' "$source") || return 1
   REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | select(.users[0].username == "sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
   REPAIR_KEY_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path | select(type == "string")' "$source") || return 1
-  valid_uuid "$REPAIR_UUID" && [[ $hy2_uuid == "$REPAIR_UUID" ]] || return 1
-  valid_port "$REPAIR_VLESS_PORT" && valid_port "$REPAIR_SOCKS_PORT" &&
-    valid_port "$REPAIR_HY2_PORT" || return 1
-  [[ $REPAIR_VLESS_PORT != "$REPAIR_SOCKS_PORT" ]] || return 1
-  valid_hostname "$REPAIR_SNI" || return 1
-  valid_reality_key "$REPAIR_PRIVATE_KEY" || return 1
-  valid_short_id "$REPAIR_SHORT_ID" || return 1
+  valid_uuid "$REPAIR_UUID" || return 1
+  valid_port "$REPAIR_SOCKS_PORT" && valid_port "$REPAIR_HY2_PORT" || return 1
   valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -5055,11 +4788,11 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  local uuid=$REPAIR_UUID port_vl_re=$REPAIR_VLESS_PORT port_socks5=$REPAIR_SOCKS_PORT
+  local uuid=$REPAIR_UUID port_socks5=$REPAIR_SOCKS_PORT
   # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
-  local port_hy2=$REPAIR_HY2_PORT ym_vl_re=$REPAIR_SNI private_key=$REPAIR_PRIVATE_KEY
-  local short_id=$REPAIR_SHORT_ID socks_password=$REPAIR_SOCKS_PASSWORD ipv=$REPAIR_STRATEGY
+  local port_hy2=$REPAIR_HY2_PORT
+  local socks_password=$REPAIR_SOCKS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
   render_server_config "$output"
@@ -5197,14 +4930,26 @@ install_repair_config(){
   fi
 }
 
+config_contains_removed_protocol(){
+  local source=$1
+  jq -e '[.inbounds[]? | select(.type == "vless")] | length > 0' "$source" >/dev/null 2>&1
+}
+
 try_repair_config_source(){
   local source=$1 label=$2 candidate
   load_repair_config_values "$source" || return 1
   ensure_repair_certificate || return 1
   if [[ $source == "$SB_CONFIG" && $REPAIR_CERT_FELL_BACK -eq 0 ]] &&
+     ! config_contains_removed_protocol "$source" &&
      managed_config_file_is_valid "$source"; then
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
+  fi
+  # A config that still carries the removed VLESS inbound must be rewritten
+  # rather than left untouched: sing-box still accepts it, so the version
+  # check alone would classify it as healthy and keep the protocol alive.
+  if config_contains_removed_protocol "$source"; then
+    label+="，并移除已废弃的 VLESS inbound"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
@@ -5248,52 +4993,9 @@ repair_or_restore_config(){
   return 1
 }
 
-derive_reality_public_key(){
-  local private_key=$1 encoded temp_dir result
-  valid_reality_key "$private_key" || return 1
-  temp_dir=$(mktemp -d "$SB_DIR/.reality-key.XXXXXX") || return 1
-  encoded=$(printf '%s' "$private_key" | tr '_-' '/+')=
-  if ! printf '%s' "$encoded" | base64 -d > "$temp_dir/raw.key" 2>/dev/null ||
-     [[ $(stat -c '%s' "$temp_dir/raw.key" 2>/dev/null) != 32 ]]; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20' > "$temp_dir/private.der"
-  cat "$temp_dir/raw.key" >> "$temp_dir/private.der" || { rm -rf "$temp_dir"; return 1; }
-  if ! openssl pkey -inform DER -in "$temp_dir/private.der" -pubout -outform DER \
-       -out "$temp_dir/public.der" 2>/dev/null ||
-     [[ $(stat -c '%s' "$temp_dir/public.der" 2>/dev/null) != 44 ]]; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  result=$(tail -c 32 "$temp_dir/public.der" | base64 | tr '+/' '-_' | tr -d '=\r\n')
-  rm -rf "$temp_dir"
-  valid_reality_key "$result" || return 1
-  printf '%s\n' "$result"
-}
-
-repair_reality_public_key(){
-  local private_key public_key expected_public_key public_tmp
-  private_key=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.private_key' "$SB_CONFIG" 2>/dev/null) || return 1
-  expected_public_key=$(derive_reality_public_key "$private_key") || return 1
-  if managed_regular_file_is_trusted "$SB_DIR/public.key" &&
-     public_key=$(cat "$SB_DIR/public.key" 2>/dev/null) &&
-     [[ $public_key == "$expected_public_key" ]]; then
-    chmod 600 "$SB_DIR/public.key"
-    REPAIR_PUBLIC_KEY_ACTION="Reality公钥正常"
-    return 0
-  fi
-  public_tmp=$(mktemp "$SB_DIR/.public.key.XXXXXX") || return 1
-  if ! printf '%s\n' "$expected_public_key" > "$public_tmp" || ! chmod 600 "$public_tmp" ||
-     ! mv -fT -- "$public_tmp" "$SB_DIR/public.key"; then
-    rm -f "$public_tmp"
-    return 1
-  fi
-  REPAIR_PUBLIC_KEY_ACTION="已从Reality私钥恢复公钥"
-}
 
 rebuild_config_in_place(){
-  local confirmation key_pair private_key public_key short_id candidate acme_identity
+  local confirmation candidate acme_identity
   red "现有配置和恢复副本都无法提取完整节点参数"
   yellow "可以保留证书与ACME账户，在原目录生成全新节点；旧客户端配置将失效"
   readp "请输入 REBUILD 确认原地重建，其他输入取消：" confirmation || return 1
@@ -5314,20 +5016,10 @@ rebuild_config_in_place(){
     REPAIR_CERT_ACTION="使用已重建的自签证书"
   fi
   insport || return 1
-  key_pair=$("$SB_BIN" generate reality-keypair 2>/dev/null) || return 1
-  private_key=$(printf '%s\n' "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
-  public_key=$(printf '%s\n' "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
-  valid_reality_key "$private_key" && valid_reality_key "$public_key" || return 1
-  short_id=$("$SB_BIN" generate rand --hex 4 2>/dev/null) || return 1
-  valid_short_id "$short_id" || return 1
   v6only
   REPAIR_UUID=$uuid
-  REPAIR_VLESS_PORT=$port_vl_re
   REPAIR_SOCKS_PORT=$port_socks5
   REPAIR_HY2_PORT=$port_hy2
-  REPAIR_SNI=apple.com
-  REPAIR_PRIVATE_KEY=$private_key
-  REPAIR_SHORT_ID=$short_id
   REPAIR_SOCKS_PASSWORD=$socks_password
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
@@ -5338,8 +5030,6 @@ rebuild_config_in_place(){
     return 1
   fi
   install_repair_config "$candidate" "已原地生成全新节点配置" || return 1
-  atomic_write_private_text "$SB_DIR/public.key" "$public_key" || return 1
-  REPAIR_PUBLIC_KEY_ACTION="已生成新的Reality公钥"
   REPAIR_NODE_REBUILT=1
 }
 
@@ -5351,7 +5041,7 @@ repair_managed_permissions(){
     managed_regular_file_is_trusted "$SB_BIN" || return 1
   chmod 600 "$SB_MANAGED_MARKER" "$SB_CONFIG" || return 1
   chmod 755 "$SB_BIN" || return 1
-  for path in "$last_good" "$SB_DIR/public.key" "$SB_DIR/cert.pem" "$SB_DIR/private.key"; do
+  for path in "$last_good" "$SB_DIR/cert.pem" "$SB_DIR/private.key"; do
     [[ -e $path || -L $path ]] || continue
     managed_regular_file_is_trusted "$path" || return 1
     chmod 600 "$path" || return 1
@@ -5407,7 +5097,6 @@ initialize_repair_report(){
   REPAIR_CONFIG_ACTION="未执行"
   REPAIR_CERT_ACTION="未执行"
   REPAIR_SERVICE_ACTION="未执行"
-  REPAIR_PUBLIC_KEY_ACTION="未执行"
   REPAIR_SHORTCUT_ACTION="未执行"
   REPAIR_ACME_ACTION="未执行"
   REPAIR_CRON_ACTION="未执行"
@@ -5436,6 +5125,8 @@ initialize_repair_report(){
 cleanup_repair_temporary_files(){
   local path failed=0
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
+  # .public.key.* and .reality-key.* have no producer any more, but released
+  # versions wrote them, so an upgraded host can still carry leftovers.
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
     "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
@@ -5621,7 +5312,6 @@ restore_original_repair_stack(){
        repair_managed_service >/dev/null 2>&1; then
       REPAIR_ROLLBACK_STATE=target_restored
       REPAIR_SERVICE_ACTION="修复前状态恢复失败；已重新启用修复后内核、配置和服务"
-      repair_reality_public_key || true
     fi
     return 1
   fi
@@ -5644,7 +5334,6 @@ restore_original_repair_stack(){
   REPAIR_CONFIG_ACTION+="；已恢复修复前可用配置"
   REPAIR_SERVICE_ACTION="已恢复修复前服务定义并确认运行"
   REPAIR_NODE_REBUILT=0
-  repair_reality_public_key || true
   return "$cleanup_failed"
 }
 
@@ -5699,7 +5388,6 @@ show_repair_report(){
   printf '配置: %s\n' "$REPAIR_CONFIG_ACTION"
   printf '证书: %s\n' "$REPAIR_CERT_ACTION"
   printf '服务: %s\n' "$REPAIR_SERVICE_ACTION"
-  printf 'Reality公钥: %s\n' "$REPAIR_PUBLIC_KEY_ACTION"
   printf '快捷命令: %s\n' "$REPAIR_SHORTCUT_ACTION"
   printf '证书续期: %s\n' "$REPAIR_ACME_ACTION"
   printf '每日任务: %s\n' "$REPAIR_CRON_ACTION"
@@ -5755,10 +5443,6 @@ repair_singbox_locked(){
       show_repair_report
       return 1
     fi
-  fi
-  if ! repair_reality_public_key; then
-    REPAIR_PUBLIC_KEY_ACTION="恢复失败；服务可运行，但节点文件无法刷新"
-    maintenance_failed=1
   fi
   REPAIR_SERVICE_CHANGED=1
   if repair_managed_service; then
@@ -5889,7 +5573,7 @@ repair_singbox(){
 # sb-module: 90-main
 # Installation main flow
 install_singbox(){
-  local key_pair private_key public_key short_id shortcut_ready=0
+  local shortcut_ready=0
   if service_name_conflict; then
     red "检测到不属于本脚本的同名 $SB_SERVICE 服务，请先自行处理服务名冲突"
     return 1
@@ -5923,31 +5607,6 @@ install_singbox(){
   insport || { abort_install_transaction; return 1; }
   sleep 2
   echo
-  blue "Vless-reality相关key与id将自动生成……"
-  key_pair=$("$SB_BIN" generate reality-keypair 2>/dev/null)
-  if [[ -z "$key_pair" ]]; then
-    red "生成reality密钥失败，请检查sing-box内核是否正常"
-    abort_install_transaction
-    return 1
-  fi
-  private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
-  public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
-  if [[ -z $private_key || -z $public_key ]]; then
-    red "解析Reality密钥失败"
-    abort_install_transaction
-    return 1
-  fi
-  if ! atomic_write_private_text "$SB_DIR/public.key" "$public_key"; then
-    red "保存Reality公钥失败"
-    abort_install_transaction
-    return 1
-  fi
-  short_id=$("$SB_BIN" generate rand --hex 4 2>/dev/null)
-  if [[ ! $short_id =~ ^[0-9A-Fa-f]{8}$ ]]; then
-    red "生成Reality short_id失败"
-    abort_install_transaction
-    return 1
-  fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "五、生成配置文件和启动服务"
   inssbjson || { abort_install_transaction; return 1; }
@@ -5958,7 +5617,7 @@ install_singbox(){
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
-  yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_vl_re}/tcp、${port_socks5}/tcp 与 ${port_hy2}/udp"
+  yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_socks5}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
   fi
@@ -6020,14 +5679,13 @@ menu(){
     green " 2. 修复"
     green " 3. 查看节点配置"
     green " 4. 证书管理"
-    green " 5. 更改SNI域名"
-    green " 6. 更改端口"
-    green " 7. 更改协议凭据"
-    green " 8. 切换IP优先级"
-    green " 9. 卸载"
+    green " 5. 更改端口"
+    green " 6. 更改协议凭据"
+    green " 7. 切换IP优先级"
+    green " 8. 卸载"
     green " 0. 退出脚本"
     echo
-    readp "请输入数字 [0-9]: " Input || exit 0
+    readp "请输入数字 [0-8]: " Input || exit 0
     case "$Input" in
       1)
         if is_installed; then
@@ -6053,21 +5711,20 @@ menu(){
           sleep 1
         fi
         ;;
-      4|5|6|7|8)
+      4|5|6|7)
         if ! is_installed; then
           red "请先安装或修复 Sing-box"
           sleep 1
         else
           case "$Input" in
             4) change_cert_mode ;;
-            5) change_vl_sni ;;
-            6) change_ports ;;
-            7) change_credentials ;;
-            8) switch_ip_priority ;;
+            5) change_ports ;;
+            6) change_credentials ;;
+            7) switch_ip_priority ;;
           esac
         fi
         ;;
-      9)
+      8)
         if is_installed || service_exists || managed_directory_is_owned || [[ -x $SB_BIN || -s $SB_CONFIG ]]; then
           uninstall
         else

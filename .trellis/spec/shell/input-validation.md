@@ -27,8 +27,6 @@ The full family (all in `src/20-ports.sh` unless noted):
 | `valid_port` | 1–65535, optional minimum via `$2` (`src/20-ports.sh:2-6`) |
 | `valid_uuid` | canonical 8-4-4-4-12 hex UUID |
 | `valid_socks_password` | length 16–128, charset `[A-Za-z0-9._~-]` |
-| `valid_reality_key` | exactly 43 chars of `[A-Za-z0-9_-]` |
-| `valid_short_id` | exactly 8 hex chars |
 | `valid_hostname` | ≤253 chars, ≥2 labels, per-label 1–63, no leading/trailing hyphen |
 | `valid_ipv4` | `src/00-bootstrap.sh:96-103`, octets ≤255 via `10#` |
 | `valid_ipv6` | `src/00-bootstrap.sh:105-125`, rejects `::1`, `FE80::/10`, `FC00::/7`, double `::` |
@@ -47,7 +45,7 @@ Occasionally a non-boolean is genuinely useful — a caller can distinguish "arg
 "resource is taken":
 
 ```bash
-# src/20-ports.sh:38-45
+# src/20-ports.sh:30-37
   case "$network" in
     tcp) ss_args=(-H -lnt) ;;
     udp) ss_args=(-H -lnu) ;;
@@ -94,28 +92,27 @@ Conventions shown here, all of them expected in new input code:
 - The failure message names the **specific** problem (`已被占用` vs `与已选择的TCP端口冲突`), not
   "input invalid".
 - The retry prompt restates the accepted range and the empty-input behaviour.
-- Cross-field constraints (SOCKS5 port ≠ VLESS port) are checked here with the `$reserved`
-  parameter, not deferred to config validation:
+- There are currently **no cross-field port constraints** left: Hysteria2 listens on UDP and
+  SOCKS5 on TCP, so they cannot collide. `chooseport` therefore takes only the network family; the
+  `$reserved` parameter and its retry branch were removed together with the protocol that needed
+  them. Do not reintroduce a reserved argument without a real caller.
 
 ```bash
-# src/20-ports.sh:88-92
 socksport(){
   readp "\n设置SOCKS5端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp "$port_vl_re"
+  chooseport tcp
   port_socks5=$port
 }
 ```
 
 - The loop writes into a **global** (`port`), which the caller then assigns to a domain global
-  (`port_vl_re`, `port_socks5`, `port_hy2`). Reset `port=` before each selection so a stale value
-  cannot be reused:
+  (`port_socks5`, `port_hy2`). Reset `port=` before each selection so a stale value cannot be reused:
 
 ```bash
-# src/20-ports.sh:118-123
-        port=
-        vlport
         port=
         socksport
+        port=
+        hy2port
 ```
 
 ---
@@ -126,15 +123,15 @@ Top-level menu dispatch is a `case` on a validated string, with a catch-all that
 than aborting:
 
 ```bash
-# src/90-main.sh:142-143
-    readp "请输入数字 [0-9]: " Input || exit 0
+# src/90-main.sh:116-117
+    readp "请输入数字 [0-8]: " Input || exit 0
     case "$Input" in
 ```
 
 - `readp … || exit 0` treats EOF (Ctrl-D) as "quit", which is the only input path allowed to exit.
-- `0|"") exit 0` — Enter also quits the main menu (`src/90-main.sh:190`).
-- The catch-all is `*) red "请输入正确数字"; sleep 1 ;;` (`src/90-main.sh:191`).
-- Sub-menus use explicit range prompts such as `请选择【0-3】` and
+- `0|"") exit 0` — Enter also quits the main menu (`src/90-main.sh:164`).
+- The catch-all is `*) red "请输入正确数字"; sleep 1 ;;` (`src/90-main.sh:165`).
+- Sub-menus use explicit range prompts such as `请选择【0-2】` and
   `请输入【1-2】` (`src/20-ports.sh:106`); `tests/verify.sh:108-109` asserts one of these strings
   still exists, so keep the prompt text when adding options.
 

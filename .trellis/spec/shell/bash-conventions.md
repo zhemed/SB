@@ -41,7 +41,7 @@ It also never enables `nounset`, so `[[ -n ${VAR:-} ]]` style guards are used at
 variable may not have been declared yet:
 
 ```bash
-# src/90-main.sh:199
+# src/90-main.sh:172
 if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
 ```
 
@@ -59,7 +59,7 @@ Choose the idiom by intent, not by habit:
 |-------|---------|--------------|
 | `cmd \|\| return 1` | This failure invalidates the operation. Abort and let the caller decide. | `src/00-bootstrap.sh:143` |
 | `cmd \|\| true` | Best-effort. The operation continues and the failure is not actionable here. | `src/40-service.sh:389` |
-| `if ! cmd; then … fi` | You need to emit a message, clean up, or branch on the failure. | `src/30-server-config.sh:118-122` |
+| `if ! cmd; then … fi` | You need to emit a message, clean up, or branch on the failure. | `src/30-server-config.sh:91-95` |
 
 Inside a function whose result is a boolean, **plain `return 1` on the failing branch** — do not
 print. Validators and predicates stay silent:
@@ -177,7 +177,7 @@ write in `src/`.
 - Suppress noise on probes, not on real work: `stat -c '%u' "$path" 2>/dev/null` is expected;
   suppressing stderr on the command whose error the user must see is not.
 - Where a diagnostic matters, print it a second time without suppression so the user sees the
-  reason (`src/30-server-config.sh:124-127`, `src/40-service.sh:425-430`).
+  reason (`src/30-server-config.sh:97-100`, `src/40-service.sh:442-447`).
 - Prefer `command -v X >/dev/null 2>&1` for capability checks:
   ```bash
   # src/40-service.sh:181

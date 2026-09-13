@@ -51,27 +51,6 @@ repairs_core_path_that_is_a_directory(){
   )
 }
 
-public_key_symlink_is_replaced_without_following(){
-  local outside="$TEMP_DIR/public-key-outside"
-  printf '%s\n' outside-sentinel > "$outside"
-  rm -rf -- "$SB_DIR/public.key"
-  ln -s -- "$outside" "$SB_DIR/public.key" || return 1
-  repair_reality_public_key || return 1
-  [[ -f $SB_DIR/public.key && ! -L $SB_DIR/public.key &&
-     $(<"$SB_DIR/public.key") == "$fixture_public" &&
-     $(<"$outside") == outside-sentinel ]]
-}
-
-public_key_directory_is_rejected(){
-  local status=0
-  rm -rf -- "$SB_DIR/public.key"
-  mkdir "$SB_DIR/public.key" || return 1
-  repair_reality_public_key >/dev/null 2>&1 && status=1
-  [[ -d $SB_DIR/public.key && ! -L $SB_DIR/public.key ]] || status=1
-  rm -rf -- "$SB_DIR/public.key"
-  repair_reality_public_key || status=1
-  return "$status"
-}
 
 server_ip_symlink_is_replaced_without_following(){
   (
@@ -188,7 +167,6 @@ optional_dependency_failure_occurs_after_core_service_recovery(){
     begin_repair_transaction(){ return 0; }
     installed_core_is_current(){ return 0; }
     repair_or_restore_config(){ return 0; }
-    repair_reality_public_key(){ REPAIR_PUBLIC_KEY_ACTION=ok; return 0; }
     repair_managed_service(){ order="${order}service "; return 0; }
     commit_repair_transaction(){ return 0; }
     save_last_good_config(){ return 0; }
@@ -396,6 +374,8 @@ repair_signal_restores_stack_and_cleans_temporary_files(){
     REPAIR_CONFIG_CHANGED=1
     : > "$SB_DIR/.sing-box.signal"
     : > "$SB_DIR/.sb.json.repair.signal"
+    # .reality-key.* / .public.key.* have no producer any more, but released
+    # versions wrote them; the sweep must still clear pre-upgrade leftovers.
     mkdir "$SB_DIR/.reality-key.signal"
     CORE_DOWNLOAD_TEMP_DIR="$SB_DIR/.core.signal"
     mkdir "$CORE_DOWNLOAD_TEMP_DIR"
@@ -501,6 +481,36 @@ interrupt_handler_restores_only_inflight_acme_state(){
   return "$status"
 }
 
+legacy_vless_config_is_migrated(){
+  (
+    local case_dir="$TEMP_DIR/legacy-vless" action
+    mkdir -p "$case_dir"
+    jq --arg uuid "$uuid" '
+      .inbounds += [{
+        type: "vless", sniff: true, sniff_override_destination: true,
+        tag: "vless-sb", listen: "::", listen_port: 443,
+        users: [{uuid: $uuid, flow: "xtls-rprx-vision"}],
+        tls: {enabled: true, server_name: "apple.com",
+              reality: {enabled: true,
+                        handshake: {server: "apple.com", server_port: 443},
+                        private_key: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+                        short_id: ["0123abcd"]}}
+      }]
+    ' "$SB_CONFIG" > "$case_dir/legacy.json" || return 1
+    SB_CONFIG="$case_dir/legacy.json"
+    REPAIR_CERT_FELL_BACK=0
+    # the retired inbound must not make the config unusable as a repair source
+    load_repair_config_values "$SB_CONFIG" || return 1
+    config_contains_removed_protocol "$SB_CONFIG" || return 1
+    try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置" || return 1
+    action=$REPAIR_CONFIG_ACTION
+    # the inbound is gone, the node values survive, and the report says so
+    jq -e '[.inbounds[] | select(.type == "vless")] | length == 0' "$SB_CONFIG" >/dev/null || return 1
+    jq -e --arg uuid "$uuid"       'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)'       "$SB_CONFIG" >/dev/null || return 1
+    [[ $action == *VLESS* ]]
+  )
+}
+
 red(){ :; }
 green(){ :; }
 yellow(){ :; }
@@ -565,17 +575,9 @@ chmod 755 "$SB_BIN"
 uuid=123e4567-e89b-42d3-a456-426614174000
 # Values below are consumed through Bash dynamic scope by render_server_config.
 # shellcheck disable=SC2034
-port_vl_re=443
-# shellcheck disable=SC2034
 port_socks5=1080
 # shellcheck disable=SC2034
 port_hy2=8443
-# shellcheck disable=SC2034
-ym_vl_re=apple.com
-# shellcheck disable=SC2034
-private_key=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA
-# shellcheck disable=SC2034
-short_id=0123abcd
 socks_password=0123456789abcdef0123456789abcdef
 # shellcheck disable=SC2034
 ipv=prefer_ipv4
@@ -600,7 +602,7 @@ expect_success "an incomplete managed directory is adopted while foreign ones st
   incomplete_managed_directory_is_adopted
 
 expect_success "managed server values are extracted" load_repair_config_values "$SB_CONFIG"
-[[ $REPAIR_UUID == "$uuid" && $REPAIR_VLESS_PORT == 443 &&
+[[ $REPAIR_UUID == "$uuid" &&
    $REPAIR_SOCKS_PORT == 1080 && $REPAIR_HY2_PORT == 8443 &&
    $REPAIR_CERT_MODE == self_signed ]] || fail "extracted repair values are incorrect"
 pass "managed server extraction preserves node values"
@@ -608,21 +610,20 @@ pass "managed server extraction preserves node values"
 canonical="$TEMP_DIR/canonical.json"
 expect_success "canonical repair config is rendered" render_repair_config "$canonical"
 jq -e --arg uuid "$uuid" --arg password "$socks_password" '
-  any(.inbounds[]; .tag == "vless-sb" and .users[0].uuid == $uuid) and
   any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid) and
   any(.inbounds[]; .tag == "socks5-sb" and .users[0].password == $password)
 ' "$canonical" >/dev/null || fail "canonical repair changed node credentials"
 pass "canonical repair keeps protocol credentials"
 
-jq '(.inbounds[] | select(.tag == "hy2-sb") | .users[0].password) = "different"' \
+jq '(.inbounds[] | select(.tag == "hy2-sb") | .users[0].password) = "not-a-uuid"' \
   "$SB_CONFIG" > "$TEMP_DIR/mismatched.json"
-expect_failure "mismatched VLESS and Hysteria2 credentials are rejected" \
+expect_failure "a malformed Hysteria2 credential is rejected" \
   load_repair_config_values "$TEMP_DIR/mismatched.json"
 jq '(.inbounds[] | select(.tag == "hy2-sb") | .tls.key_path) = "/tmp/key"' \
   "$SB_CONFIG" > "$TEMP_DIR/foreign-cert.json"
 expect_failure "foreign certificate paths are rejected" \
   load_repair_config_values "$TEMP_DIR/foreign-cert.json"
-jq '.inbounds += [.inbounds[] | select(.tag == "vless-sb")]' \
+jq '.inbounds += [.inbounds[] | select(.tag == "hy2-sb")]' \
   "$SB_CONFIG" > "$TEMP_DIR/duplicate.json"
 expect_failure "duplicate managed inbounds are rejected" \
   load_repair_config_values "$TEMP_DIR/duplicate.json"
@@ -641,61 +642,27 @@ pass "last-good configuration is private"
 
 printf '%s\n' '{broken' > "$SB_CONFIG"
 expect_success "broken config is restored from last-good state" repair_or_restore_config
-jq -e --arg uuid "$uuid" 'any(.inbounds[]; .tag == "vless-sb" and .users[0].uuid == $uuid)' \
+jq -e --arg uuid "$uuid" 'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' \
   "$SB_CONFIG" >/dev/null || fail "last-good restore changed the UUID"
 pass "last-good restore preserves the UUID"
 [[ -n $REPAIR_CONFIG_BACKUP && -f $REPAIR_CONFIG_BACKUP ]] ||
   fail "broken config was not preserved"
 pass "broken config is preserved for inspection"
 
-openssl genpkey -algorithm X25519 -outform DER -out "$TEMP_DIR/x25519-private.der" 2>/dev/null ||
-  fail "cannot generate X25519 fixture"
-openssl pkey -inform DER -in "$TEMP_DIR/x25519-private.der" -pubout -outform DER \
-  -out "$TEMP_DIR/x25519-public.der" 2>/dev/null || fail "cannot derive X25519 fixture public key"
-fixture_private=$(tail -c 32 "$TEMP_DIR/x25519-private.der" | base64 | tr '+/' '-_' | tr -d '=\r\n')
-fixture_public=$(tail -c 32 "$TEMP_DIR/x25519-public.der" | base64 | tr '+/' '-_' | tr -d '=\r\n')
-derived_public=$(derive_reality_public_key "$fixture_private") || fail "repair public-key derivation failed"
-[[ $derived_public == "$fixture_public" ]] || fail "derived Reality public key is incorrect"
-pass "Reality public key is derived from its private key"
-
-jq --arg key "$fixture_private" '
-  (.inbounds[] | select(.tag == "vless-sb") | .tls.reality.private_key) = $key
-' "$SB_CONFIG" > "$TEMP_DIR/with-derived-key.json"
-mv "$TEMP_DIR/with-derived-key.json" "$SB_CONFIG"
-rm -f "$SB_DIR/public.key"
-expect_success "missing Reality public key is repaired" repair_reality_public_key
-[[ $(<"$SB_DIR/public.key") == "$fixture_public" ]] || fail "repaired public key file is wrong"
-pass "repaired Reality public key is stored"
-
-openssl genpkey -algorithm X25519 -outform DER -out "$TEMP_DIR/other-private.der" 2>/dev/null ||
-  fail "cannot generate mismatched X25519 fixture"
-openssl pkey -inform DER -in "$TEMP_DIR/other-private.der" -pubout -outform DER \
-  -out "$TEMP_DIR/other-public.der" 2>/dev/null || fail "cannot derive mismatched fixture public key"
-other_public=$(tail -c 32 "$TEMP_DIR/other-public.der" | base64 | tr '+/' '-_' | tr -d '=\r\n')
-[[ $other_public != "$fixture_public" ]] || fail "mismatched fixture unexpectedly matches"
-printf '%s\n' "$other_public" > "$SB_DIR/public.key"
-expect_success "valid but mismatched Reality public key is repaired" repair_reality_public_key
-[[ $(<"$SB_DIR/public.key") == "$fixture_public" ]] || fail "mismatched Reality public key was retained"
-pass "Reality public key is verified against the configured private key"
-
 symlink_probe_target="$TEMP_DIR/symlink-probe-target"
 symlink_probe="$TEMP_DIR/symlink-probe"
 printf '%s\n' probe > "$symlink_probe_target"
 if ln -s -- "$symlink_probe_target" "$symlink_probe" 2>/dev/null && [[ -L $symlink_probe ]]; then
   rm -f -- "$symlink_probe"
-  expect_success "public.key symlink is replaced without following its target" \
-    public_key_symlink_is_replaced_without_following
   expect_success "server IP symlink is replaced without following its target" \
     server_ip_symlink_is_replaced_without_following
   expect_success "SHA256 symlink is replaced without following its target" \
     sha256_symlink_is_replaced_without_following
 else
   rm -f -- "$symlink_probe"
-  skip "public.key symlink is replaced without following its target" "symlinks unavailable"
   skip "server IP symlink is replaced without following its target" "symlinks unavailable"
   skip "SHA256 symlink is replaced without following its target" "symlinks unavailable"
 fi
-expect_success "a directory at public.key is rejected and preserved" public_key_directory_is_rejected
 expect_success "a directory at the server IP path is rejected and preserved" server_ip_directory_is_rejected
 expect_success "a directory at the SHA256 path is rejected and preserved" sha256_directory_is_rejected
 grep -Fq 'atomic_write_private_text "$SB_DIR/SHA256.txt" "$SHA256"' \
@@ -717,7 +684,7 @@ expect_failure "foreign systemd unit is not repairable" service_definition_is_re
 
 initialize_repair_report
 for report_value in "$REPAIR_CORE_ACTION" "$REPAIR_CONFIG_ACTION" "$REPAIR_CERT_ACTION" \
-  "$REPAIR_SERVICE_ACTION" "$REPAIR_PUBLIC_KEY_ACTION" "$REPAIR_SHORTCUT_ACTION" \
+  "$REPAIR_SERVICE_ACTION" "$REPAIR_SHORTCUT_ACTION" \
   "$REPAIR_ACME_ACTION" "$REPAIR_CRON_ACTION" "$REPAIR_SHARE_ACTION" \
   "$REPAIR_PERMISSION_ACTION"; do
   [[ $report_value == "未执行" ]] || fail "repair report contains an empty default"
@@ -751,6 +718,8 @@ expect_success "repair requires flock before entering its transaction" \
   repair_core_dependencies_include_flock
 expect_success "repair finalization consumes interrupts without starting a second rollback" \
   repair_finalization_consumes_interrupt
+expect_success "a legacy VLESS config is migrated and keeps its node values" \
+  legacy_vless_config_is_migrated
 expect_success "interrupt restores only the in-flight ACME recovery point" \
   interrupt_handler_restores_only_inflight_acme_state
 expect_success "INT restores the original stack and cleans repair temporaries" \

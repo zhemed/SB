@@ -1,6 +1,6 @@
 # Test Harness
 
-Sources: `tests/verify.sh` (247 lines), `tests/unit.sh` (1623), `tests/repair.sh` (692).
+Sources: `tests/verify.sh` (246 lines), `tests/unit.sh` (1623), `tests/repair.sh` (747).
 
 ---
 
@@ -218,7 +218,7 @@ Test signals by extracting the **real** handler, installing it in a subshell, an
 subshell:
 
 ```bash
-# tests/repair.sh:402-403
+# tests/repair.sh:382-383
   trap handle_install_interrupt INT TERM HUP
   kill -s "$signal" "$BASHPID"
 ```

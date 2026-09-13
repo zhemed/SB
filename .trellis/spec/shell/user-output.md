@@ -79,7 +79,7 @@ user sees the underlying reason. Do this whenever the suppressed check is the us
 Callers then add context rather than duplicating the reason:
 
 ```bash
-# src/90-main.sh:65 (abridged)
+# src/90-main.sh:40 (abridged)
 inssbjson || { abort_install_transaction; return 1; }
 ```
 
@@ -106,7 +106,7 @@ Long flows print a section header in the established shape — a `red` rule, a `
 `yellow`/`blue` detail lines:
 
 ```bash
-# src/20-ports.sh:101-104
+# src/20-ports.sh:84-87
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "三、设置各协议端口"
   yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认。请确保VPS后台已开放所有端口"
@@ -123,7 +123,7 @@ Long flows print a section header in the established shape — a `red` rule, a `
 Flows that change state pause before returning to the menu:
 
 ```bash
-# src/70-management.sh — 16 occurrences
+# src/70-management.sh — 10 occurrences
   readp "按回车返回主菜单..."
 ```
 
@@ -132,7 +132,7 @@ them from modification flows fails the gate. Use it at the end of any management
 output must be read before the pause, prefer a short `sleep`:
 
 ```bash
-# src/20-ports.sh:67
+# src/20-ports.sh:56
   blue "确认的端口：$port" && sleep 2
 ```
 

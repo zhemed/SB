@@ -54,7 +54,7 @@ Three details are load-bearing:
 | `write_managed_marker_at` | `src/40-service.sh:52` | `mkdir`+chmod 700, then marker via `mv -fT` |
 | `save_last_good_config` | `src/40-service.sh:362` | validate → skip-if-identical → `cp -p` → chmod → `mv -fT` |
 | `write_service_definition` | `src/40-service.sh:171` | heredoc → chmod → `mv -fT` (temp inside the unit dir) |
-| `inssbjson` | `src/30-server-config.sh:115` | render → chmod 600 → `$SB_BIN check` → `mv -fT` |
+| `inssbjson` | `src/30-server-config.sh:88` | render → chmod 600 → `$SB_BIN check` → `mv -fT` |
 | `commit_config` | `src/40-service.sh:435` | validate → backup → `mv -fT` → restart → verify/rollback |
 | `install_managed_link` | `src/10-acme.sh:398` | `mktemp` → `rm -f` → `ln -s` → `mv -Tf` |
 | `switch_current` | `src/10-acme.sh:388` | same symlink protocol for `acme-live/current` |
@@ -70,7 +70,7 @@ Use one of these rather than hand-rolling the sequence.
 removed. Forgetting this makes `ln -s` fail and the whole write abort.
 
 ```bash
-# src/10-acme.sh:398-406
+# src/10-acme.sh:396-404
 install_managed_link(){
   local destination=$1 target=$2 link_tmp
   link_tmp=$(mktemp "$base/.acme-link.XXXXXX") || return 1
@@ -95,7 +95,7 @@ is validated by comparing `readlink` output as a literal relative string
 For configuration, the candidate is checked by the core before it becomes live:
 
 ```bash
-# src/30-server-config.sh:124-130
+# src/30-server-config.sh:97-103
   if ! "$SB_BIN" check -c "$candidate" >/dev/null 2>&1; then
     red "初始配置未通过Sing-box v${CORE_VERSION}检查"
     "$SB_BIN" check -c "$candidate"
@@ -185,7 +185,7 @@ If something other than a regular file (or our own symlink) sits at the destinat
 than clobbering it:
 
 ```bash
-# src/10-acme.sh:354-358
+# src/10-acme.sh:352-356
   if [[ -e $ACME_RELOAD || -L $ACME_RELOAD ]] && \
      [[ ! -f $ACME_RELOAD || -L $ACME_RELOAD ]]; then
     ...

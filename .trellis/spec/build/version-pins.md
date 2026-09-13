@@ -112,11 +112,13 @@ formatting is fine; weakening these values is a gate failure by design.
 
 ## 5. Protocol credentials are pinned
 
-- VLESS and Hysteria2 **share one UUID**; SOCKS5 has its own random password.
+- Hysteria2 uses a UUID as its password; SOCKS5 has its own random password.
 - `tests/verify.sh:113-118` extracts the `changeuuid()` body and fails if it mentions `socks5-sb`,
   i.e. changing the UUID must not touch SOCKS5 credentials.
-- SOCKS5 must not participate in automatic testing or load balancing: `tests/verify.sh:120-134`
-  extracts the `auto` (sing-box) and `负载均衡` (Clash) blocks and fails if `socks5-` appears there.
+- SOCKS5 must not participate in automatic testing or load balancing. The generated client
+  configuration contains **no** automatic-selection groups at all, and `tests/verify.sh` asserts
+  their absence (`"type": "urltest"`, `"tag": "auto"`, `type: load-balance`, `type: url-test`,
+  `负载均衡`, `自动选择`) plus that the sing-box proxy selector does not default to a removed group.
 - SOCKS5 is TCP-only and plaintext; `tests/verify.sh:152-155` requires the UDP block route and the
   `SOCKS5本身不加密` warning to remain.
 - `tests/verify.sh:72-80` pins `SHORTCUT="/usr/bin/sb"` and requires the Cloudflare API Token prompt

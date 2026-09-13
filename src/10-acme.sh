@@ -1,7 +1,6 @@
 # sb-module: 10-acme
 # Certificate functions
 cert_self_signed(){
-  ym_vl_re=apple.com
   certificatec_hy2="$SB_DIR/cert.pem"
   certificatep_hy2="$SB_DIR/private.key"
   use_acme_cert=0
@@ -276,7 +275,6 @@ cert_acme(){
     return 1
   fi
   write_acme_identity "$identity" || return 1
-  ym_vl_re=apple.com
   certificatec_hy2="$ACME_CERT"
   certificatep_hy2="$ACME_KEY"
   use_acme_cert=1

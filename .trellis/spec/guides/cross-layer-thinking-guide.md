@@ -23,24 +23,30 @@ and then out of the process entirely into generated programs, cron, and the test
 
 ## Step 1: Map the value's journey
 
-Before changing any protocol field, global, or path, write down every station. Example — the VLESS
-port:
+Before changing any protocol field, global, or path, write down every station. Example — the
+Hysteria2 port:
 
 ```
-chooseport (src/20-ports.sh)
-  → global $port_vl_re
-    → render_server_config heredoc      src/30-server-config.sh:20   ("listen_port": ${port_vl_re})
+chooseport / random_available_port (src/20-ports.sh)
+  → global $port_hy2
+    → render_server_config heredoc      src/30-server-config.sh   ("listen_port": ${port_hy2})
+    → repair extraction + rebuild       src/85-repair.sh          (REPAIR_HY2_PORT)
     → client output / share links       src/50-client-output.sh
-    → management menu [6] rewrite       src/70-management.sh
-    → success message string            src/70-management.sh:645
-    → verify.sh pin                     tests/verify.sh:86 ("Vless-reality端口修改成功")
+    → management ports menu             src/70-management.sh
+    → success message string            src/70-management.sh ("Hysteria2主端口修改成功")
+    → verify.sh pin                     tests/verify.sh:84
 ```
 
-Five consumers plus a test pin. A rename touches all of them.
+Six consumers plus a test pin. A rename touches all of them.
 
-Same exercise for the UUID: `insport` → `$uuid` → server config (`vless` users **and** `hysteria2`
-password) → client output → `changeuuid` (which must **not** touch SOCKS5, asserted at
-`tests/verify.sh:113-118`).
+Same exercise for the UUID: `insport` → `$uuid` → server config (`hysteria2` **password**) →
+client output (`result()` reads it back from that same inbound) → `changeuuid` (which must **not**
+touch SOCKS5, asserted at `tests/verify.sh:113-118`).
+
+Note how the last step changed when VLESS Reality was removed: the UUID used to be read back from
+the `vless` inbound, so deleting that protocol silently broke every share-link generation until the
+read was re-pointed at the `hysteria2` inbound. That is exactly the class of bug this guide exists
+to catch — the producer and the consumer were in different modules.
 
 ---
 

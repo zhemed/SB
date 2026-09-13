@@ -32,14 +32,14 @@ Rules:
   `acme-private.key`, which must be **relative** symlinks into it — validated by comparing
   `readlink` output as a literal string:
   ```bash
-  # src/10-acme.sh:137-138
+  # src/10-acme.sh:136-137
     [[ $(readlink "$ACME_CERT" 2>/dev/null) == 'acme-live/current/fullchain.pem' &&
        $(readlink "$ACME_KEY" 2>/dev/null) == 'acme-live/current/private.key' ]] || return 1
   ```
 - `current` may only point at a directory named `generations/gen.<alnum>`, re-checked before every
   switch and before any prune:
   ```bash
-  # src/10-acme.sh:388
+  # src/10-acme.sh:386
     [[ $target =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 1
   ```
 - Layout validation requires real directories where directories belong and symlinks only for
@@ -59,7 +59,7 @@ ACME_STAGE_KEY="$ACME_STAGE/private.key"
 ```
 
 ```bash
-# src/10-acme.sh:843
+# src/10-acme.sh:841
   --key-file "$ACME_STAGE_KEY" --fullchain-file "$ACME_STAGE_CERT" \
 ```
 
@@ -71,7 +71,7 @@ swap is delegated entirely to `Le_ReloadCmd`. "Deployment config is current" the
 acme.sh state names exactly the stage paths and our reload hook:
 
 ```bash
-# src/10-acme.sh:195-196
+# src/10-acme.sh:194-195
     for key in Le_RealCertPath Le_RealCACertPath Le_RealKeyPath Le_RealFullChainPath Le_ReloadCmd; do
       read_acme_domain_conf_value "$identity" "$key" >/dev/null || return 1
 ```
@@ -95,7 +95,7 @@ Four hard requirements, all gate-enforced:
 test suite can parameterise them by substitution:
 
 ```bash
-# src/10-acme.sh:366-370
+# src/10-acme.sh:364-368
   base="/etc/sb"
   cert="/etc/sb/acme-cert.pem"
   identity_file="/etc/sb/acme_server_name"
@@ -129,7 +129,7 @@ count, the exact 7-line shape of the missing-config bypass, and a list of byte-e
 including their leading whitespace:
 
 ```bash
-# src/10-acme.sh:790-791
+# src/10-acme.sh:788-789
     grep -Fqx '     ! mv -Tf -- "$pointer_tmp" "$base/acme-live/current"; then' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx "     ! install_managed_link \"\$cert\" 'acme-live/current/fullchain.pem'; then" "$ACME_RELOAD" 2>/dev/null &&
 ```
@@ -149,14 +149,14 @@ effective, hostname present in the SAN, and the certificate's public key matchin
 key:
 
 ```bash
-# src/10-acme.sh:504-507
+# src/10-acme.sh:502-505
   openssl x509 -in "$stage_cert" -noout -checkend 0 >/dev/null 2>&1 || exit 1
   ...
   [[ $not_before_epoch -le $(date +%s) ]] || exit 1
 ```
 
 ```bash
-# src/10-acme.sh:518-520
+# src/10-acme.sh:516-518
   cert_public=$(openssl x509 -in "$stage_cert" -pubkey -noout 2>/dev/null) || exit 1
   [[ -n "$cert_public" && "$cert_public" == "$key_public" ]] || exit 1
 ```
@@ -167,7 +167,7 @@ Then it copies into a **new generation** and flips the pointer atomically, and o
 **verified restart** does it prune superseded generations:
 
 ```bash
-# src/10-acme.sh:740-745
+# src/10-acme.sh:738-743
   if restart_managed_service && sleep 1 && managed_service_active; then
     commit_deployment
     ...
@@ -306,7 +306,7 @@ Any mutating certificate flow creates a 0700 recovery point first and removes it
 success:
 
 ```bash
-# src/10-acme.sh:1080-1082
+# src/10-acme.sh:1078-1080
   [[ -z ${ACME_STATE_BACKUP:-} ]] || return 1
   backup=$(mktemp -d "$SB_DIR/.acme-backup.XXXXXX") || return 1
   chmod 700 "$backup" || { rm -rf -- "$backup"; return 1; }

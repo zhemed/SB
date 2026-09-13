@@ -31,10 +31,10 @@ therefore writing part of a single, very long Bash script.
 
 ## Orientation
 
-- **234 functions** across 11 modules. `src/10-acme.sh` (53), `src/40-service.sh` (35),
-  `src/85-repair.sh` (30), `src/60-cron.sh` (28) are the largest.
+- **229 functions** across 11 modules. `src/10-acme.sh` (53), `src/40-service.sh` (36),
+  `src/85-repair.sh` (29), `src/60-cron.sh` (28) are the largest.
 - The runtime script sets **no `set -e` / `set -u` / `set -o pipefail`**. Every failure is handled
   explicitly. See `bash-conventions.md` §5.
-- All 234 function definitions are written `name(){` at **column 0** — no leading indentation, no
+- All 229 function definitions are written `name(){` at **column 0** — no leading indentation, no
   space before `{`.
 - User-facing text is **Chinese**; identifiers, comments, and specs are English.

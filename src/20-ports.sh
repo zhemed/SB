@@ -13,14 +13,6 @@ valid_socks_password(){
   [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
 }
 
-valid_reality_key(){
-  [[ $1 =~ ^[A-Za-z0-9_-]{43}$ ]]
-}
-
-valid_short_id(){
-  [[ $1 =~ ^[0-9A-Fa-f]{8}$ ]]
-}
-
 valid_hostname(){
   local name=$1 label
   local -a labels
@@ -45,7 +37,7 @@ port_conflict(){
 }
 
 chooseport(){
-  local network=$1 reserved=${2-}
+  local network=$1
   [[ $network == tcp || $network == udp ]] || return 1
   while true; do
     [[ -z $port ]] && port=$(shuf -i 10000-65535 -n 1)
@@ -54,10 +46,7 @@ chooseport(){
     else
       port=$((10#$port))
     fi
-    if valid_port "$port" 1 && [[ -n $reserved && $port == "$reserved" ]]; then
-      red "端口 $port/$network 与已选择的TCP端口冲突"
-      port=
-    elif valid_port "$port" 1 && port_conflict "$port" "$network"; then
+    if valid_port "$port" 1 && port_conflict "$port" "$network"; then
       red "端口 $port/$network 已被占用"
     elif valid_port "$port" 1; then
       break
@@ -79,15 +68,9 @@ random_available_port(){
   done
 }
 
-vlport(){
-  readp "\n设置Vless-reality端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp
-  port_vl_re=$port
-}
-
 socksport(){
   readp "\n设置SOCKS5端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp "$port_vl_re"
+  chooseport tcp
   port_socks5=$port
 }
 
@@ -106,17 +89,11 @@ insport(){
     readp "请输入【1-2】：" port
     case "$port" in
       ""|1)
-        port_vl_re=$(random_available_port tcp) || return 1
-        while true; do
-          port_socks5=$(random_available_port tcp) || return 1
-          [[ $port_socks5 != "$port_vl_re" ]] && break
-        done
+        port_socks5=$(random_available_port tcp) || return 1
         port_hy2=$(random_available_port udp) || return 1
         break
         ;;
       2)
-        port=
-        vlport
         port=
         socksport
         port=
@@ -128,7 +105,6 @@ insport(){
   done
   echo
   blue "各协议端口确认如下"
-  blue "Vless-reality端口：$port_vl_re"
   blue "SOCKS5端口：$port_socks5"
   blue "Hysteria-2端口：$port_hy2"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -143,6 +119,6 @@ insport(){
     red "生成SOCKS5独立密码失败"
     return 1
   fi
-  blue "VLESS/Hysteria2 UUID（密码）：${uuid}"
+  blue "Hysteria2 UUID（密码）：${uuid}"
   blue "SOCKS5独立密码：${socks_password}"
 }

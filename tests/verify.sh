@@ -61,8 +61,8 @@ for lifecycle_pattern in \
   'trap handle_install_interrupt INT TERM HUP' \
   'green " 1. 安装"' \
   'green " 2. 修复"' \
-  'green " 9. 卸载"' \
-  'readp "请输入数字 [0-9]: " Input'; do
+  'green " 8. 卸载"' \
+  'readp "请输入数字 [0-8]: " Input'; do
   grep -Fq -- "$lifecycle_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing installation lifecycle behavior: $lifecycle_pattern"
 done
@@ -81,12 +81,10 @@ fi
 
 for success_message in \
   '证书模式切换成功' \
-  'VL reality SNI域名修改成功' \
-  'Vless-reality端口修改成功' \
   'Hysteria2主端口修改成功' \
   'SOCKS5端口修改成功' \
   'IP优先级修改成功' \
-  'VLESS/Hysteria2 UUID（密码）修改成功' \
+  'Hysteria2 UUID（密码）修改成功' \
   'SOCKS5独立密码修改成功'; do
   grep -Fq -- "$success_message" "$ROOT_DIR/sb.sh" ||
     fail "missing modification success message: $success_message"
@@ -105,8 +103,10 @@ for socks_pattern in \
   grep -Fq -- "$socks_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing SOCKS5 integration: $socks_pattern"
 done
-grep -Fq -- '请选择【0-3】' "$ROOT_DIR/sb.sh" ||
+grep -Fq -- '请选择【0-2】' "$ROOT_DIR/sb.sh" ||
   fail "SOCKS5 port is missing from management menu"
+grep -Fq -- 'green "2：SOCKS5端口' "$ROOT_DIR/sb.sh" ||
+  fail "SOCKS5 port option is missing from the ports submenu"
 [[ $(grep -Fc -- '按回车返回主菜单...' "$ROOT_DIR/sb.sh" || true) -ge 5 ]] ||
   fail "modification flows do not consistently wait before returning"
 
@@ -120,17 +120,16 @@ fi
 client_function=$(awk '/^sb_client\(\)\{/{inside=1} /^sbshare\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $client_function ]] || fail "cannot extract client configuration generator"
-auto_block=$(printf '%s\n' "$client_function" |
-  awk '/"tag": "auto"/{inside=1} inside{print} inside && /"type": "direct"/{exit}')
-[[ -n $auto_block ]] || fail "cannot extract Sing-box urltest block"
-if printf '%s\n' "$auto_block" | grep -Fq -- 'socks5-'; then
-  fail "SOCKS5 must not participate in Sing-box automatic testing"
-fi
-clash_auto_block=$(printf '%s\n' "$client_function" |
-  awk '/^- name: 负载均衡/{inside=1} inside{print} /^- name: 🌍选择代理节点/{exit}')
-[[ -n $clash_auto_block ]] || fail "cannot extract Clash automatic groups"
-if printf '%s\n' "$clash_auto_block" | grep -Fq -- 'socks5-'; then
-  fail "SOCKS5 must not participate in Clash automatic groups"
+for auto_pattern in '"type": "urltest"' '"tag": "auto"' \
+  'type: load-balance' 'type: url-test' '负载均衡' '自动选择'; do
+  if printf '%s\n' "$client_function" | grep -Fq -- "$auto_pattern"; then
+    fail "client configuration still contains an automatic selection group: $auto_pattern"
+  fi
+done
+grep -Fq -- '"tag": "proxy"' <<< "$client_function" ||
+  fail "cannot extract Sing-box proxy selector"
+if printf '%s\n' "$client_function" | grep -Fq -- '"default": "auto"'; then
+  fail "Sing-box proxy selector still defaults to the removed automatic group"
 fi
 
 for secure_pattern in \

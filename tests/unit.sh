@@ -1299,7 +1299,7 @@ jq(){
           LAST_GENERATED_SOCKS_USERNAME=${6-}
           LAST_SOCKS_FILTER=${7-}
           candidate_uuid=$UUID_ORIGINAL
-          if [[ $LAST_SOCKS_FILTER == *'vless-sb'* || $LAST_SOCKS_FILTER == *'hy2-sb'* ]]; then
+          if [[ $LAST_SOCKS_FILTER == *'hy2-sb'* ]]; then
             candidate_uuid=$LAST_GENERATED_SOCKS_PASSWORD
           fi
           printf '{"candidate":true,"uuid":"%s","socks_password":"%s","socks_username":"%s"}\n' \
@@ -1349,7 +1349,7 @@ pass "UUID format failure is shown"
 [[ $FLOW_MESSAGES == *'UUID修改失败，原配置未修改或已恢复'* ]] ||
   fail "UUID commit failure was not shown"
 pass "UUID commit failure is shown"
-[[ $FLOW_MESSAGES == *"VLESS/Hysteria2 UUID（密码）修改成功：$UUID_TWO"* ]] ||
+[[ $FLOW_MESSAGES == *"Hysteria2 UUID（密码）修改成功：$UUID_TWO"* ]] ||
   fail "UUID success was not shown"
 pass "UUID success is shown"
 [[ $FLOW_PROMPTS == *'按回车返回凭据菜单...'* ]] || fail "UUID success did not wait for return"
@@ -1381,12 +1381,12 @@ pass "SOCKS password flow retries the failed commit"
 pass "SOCKS password flow commits the final value"
 [[ $LAST_GENERATED_SOCKS_USERNAME == sb ]] || fail "SOCKS password flow changed the username"
 pass "SOCKS password flow preserves the fixed username"
-[[ $LAST_SOCKS_FILTER != *'vless-sb'* && $LAST_SOCKS_FILTER != *'hy2-sb'* ]] ||
+[[ $LAST_SOCKS_FILTER != *'hy2-sb'* ]] ||
   fail "SOCKS password flow unexpectedly targets UUID protocols"
 pass "SOCKS password flow does not target UUID protocols"
 [[ $LAST_COMMITTED_CANDIDATE == *"\"uuid\":\"$UUID_ORIGINAL\""* ]] ||
-  fail "SOCKS password flow changed the VLESS/Hysteria2 UUID"
-pass "SOCKS password flow preserves the VLESS/Hysteria2 UUID"
+  fail "SOCKS password flow changed the Hysteria2 UUID"
+pass "SOCKS password flow preserves the Hysteria2 UUID"
 [[ $FLOW_MESSAGES == *'SOCKS5密码必须为16-128位'* ]] ||
   fail "SOCKS password format failure was not shown"
 pass "SOCKS password format failure is shown"

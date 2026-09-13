@@ -82,21 +82,15 @@ result(){
     red "保存的公网IP格式无效"
     return 1
   fi
-  uuid=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid' "$SB_CONFIG" 2>/dev/null) || return 1
-  vl_port=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  vl_name=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name' "$SB_CONFIG" 2>/dev/null) || return 1
-  managed_regular_file_is_trusted "$SB_DIR/public.key" || return 1
-  public_key=$(cat "$SB_DIR/public.key" 2>/dev/null)
-  short_id=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0]' "$SB_CONFIG" 2>/dev/null) || return 1
+  uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_username=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].username' "$SB_CONFIG" 2>/dev/null) || return 1
   socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
-  if ! valid_uuid "$uuid" || ! valid_port "$vl_port" || ! valid_port "$socks_port" ||
+  if ! valid_uuid "$uuid" || ! valid_port "$socks_port" ||
      ! valid_port "$hy2_port" || [[ $socks_username != "$SOCKS_USERNAME" ]] ||
-     ! valid_socks_password "$socks_password" || [[ ! $public_key =~ ^[A-Za-z0-9_-]{43}$ ]] ||
-     [[ ! $short_id =~ ^[0-9A-Fa-f]{8}$ ]]; then
+     ! valid_socks_password "$socks_password"; then
     red "服务端配置中的节点参数不完整或格式无效"
     return 1
   fi
@@ -131,22 +125,6 @@ result(){
   fi
 }
 
-resvless(){
-  local output=${1:-$SB_DIR/vl_reality.txt}
-  echo
-  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  vl_link="vless://$uuid@$server_ip:$vl_port?encryption=none&flow=xtls-rprx-vision&security=reality&sni=$vl_name&fp=chrome&pbk=$public_key&sid=$short_id&type=tcp&headerType=none#vl-reality-$hostname"
-  printf '%s\n' "$vl_link" > "$output" || return 1
-  red "🚀【 vless-reality-vision 】节点信息如下：" && sleep 2
-  echo
-  echo "分享链接【v2rayn(切换singbox内核)、nekobox、小火箭shadowrocket】"
-  echo -e "${yellow}$vl_link${plain}"
-  echo
-  echo "二维码"
-  qrencode -o - -t ANSIUTF8 "$vl_link" || return 1
-  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  echo
-}
 
 reshy2(){
   local output=${1:-$SB_DIR/hy2.txt}
@@ -318,27 +296,6 @@ sb_client(){
   },
   "outbounds": [
     {
-      "type": "vless",
-      "tag": "vless-$hostname",
-      "server": "$server_ipcl",
-      "server_port": $vl_port,
-      "uuid": "$uuid",
-      "flow": "xtls-rprx-vision",
-      "tls": {
-        "enabled": true,
-        "server_name": "$vl_name",
-        "utls": {
-          "enabled": true,
-          "fingerprint": "chrome"
-        },
-        "reality": {
-          "enabled": true,
-          "public_key": "$public_key",
-          "short_id": "$short_id"
-        }
-      }
-    },
-    {
       "type": "hysteria2",
       "tag": "hy2-$hostname",
       "server": "$cl_hy2_ip",
@@ -368,24 +325,11 @@ sb_client(){
     {
       "tag": "proxy",
       "type": "selector",
-      "default": "auto",
+      "default": "hy2-$hostname",
       "outbounds": [
-        "auto",
-        "vless-$hostname",
         "hy2-$hostname",
         "socks5-$hostname"
       ]
-    },
-    {
-      "tag": "auto",
-      "type": "urltest",
-      "outbounds": [
-        "vless-$hostname",
-        "hy2-$hostname"
-      ],
-      "url": "http://www.gstatic.com/generate_204",
-      "interval": "10m",
-      "tolerance": 50
     },
     {
       "type": "direct",
@@ -443,21 +387,6 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-- name: vless-reality-vision-$hostname
-  type: vless
-  server: $server_ipcl
-  port: $vl_port
-  uuid: $uuid
-  network: tcp
-  udp: true
-  tls: true
-  flow: xtls-rprx-vision
-  servername: $vl_name
-  reality-opts:
-    public-key: $public_key
-    short-id: $short_id
-  client-fingerprint: chrome
-
 - name: hysteria2-$hostname
   type: hysteria2
   server: $cl_hy2_ip
@@ -479,31 +408,10 @@ $hy2_clash_ca
   udp: false
 
 proxy-groups:
-- name: 负载均衡
-  type: load-balance
-  url: https://www.gstatic.com/generate_204
-  interval: 300
-  strategy: round-robin
-  proxies:
-    - vless-reality-vision-$hostname
-    - hysteria2-$hostname
-
-- name: 自动选择
-  type: url-test
-  url: https://www.gstatic.com/generate_204
-  interval: 300
-  tolerance: 50
-  proxies:
-    - vless-reality-vision-$hostname
-    - hysteria2-$hostname
-
 - name: 🌍选择代理节点
   type: select
   proxies:
-    - 负载均衡
-    - 自动选择
     - DIRECT
-    - vless-reality-vision-$hostname
     - hysteria2-$hostname
     - socks5-$hostname
 
@@ -523,31 +431,29 @@ EOF
 }
 
 sbshare(){
-  local aggregate_tmp vl_tmp hy2_tmp socks_tmp
-  vl_tmp=$(mktemp "$SB_DIR/.vl_reality.XXXXXX") || return 1
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f "$vl_tmp"; return 1; }
-  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || { rm -f "$vl_tmp" "$hy2_tmp"; return 1; }
-  if ! result || ! resvless "$vl_tmp" || ! reshy2 "$hy2_tmp" || ! ressocks5 "$socks_tmp"; then
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp"
+  local aggregate_tmp hy2_tmp socks_tmp
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || return 1
+  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || { rm -f "$hy2_tmp"; return 1; }
+  if ! result || ! reshy2 "$hy2_tmp" || ! ressocks5 "$socks_tmp"; then
+    rm -f "$hy2_tmp" "$socks_tmp"
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp"
+    rm -f "$hy2_tmp" "$socks_tmp"
     return 1
   }
-  if ! { cat "$vl_tmp" && cat "$hy2_tmp" && cat "$socks_tmp"; } > "$aggregate_tmp"; then
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+  if ! { cat "$hy2_tmp" && cat "$socks_tmp"; } > "$aggregate_tmp"; then
+    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  chmod 600 "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp" || {
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+  chmod 600 "$hy2_tmp" "$socks_tmp" "$aggregate_tmp" || {
+    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   }
   if ! sb_client; then
-    rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
     return 1
   fi
-  mv -fT -- "$vl_tmp" "$SB_DIR/vl_reality.txt" || { rm -f "$vl_tmp" "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }

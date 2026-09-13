@@ -24,9 +24,11 @@ Defined once in `src/00-bootstrap.sh:15-31`. Use the constants; do not re-type p
 
 ### Non-secret artefacts inside `SB_DIR`
 
-`public.key`, `SHA256.txt`, `server_ip.log`, `server_ipcl.log`, `vl_reality.txt`, `hy2.txt`,
-`socks5.txt`, `jhdy.txt`, `jhsub.txt`, `sbox.json`, `clash.yaml`, `cert.pem`, `private.key`,
-`.ip_cache`, `.deps_ok`.
+`SHA256.txt`, `server_ip.log`, `server_ipcl.log`, `hy2.txt`, `socks5.txt`, `jhdy.txt`,
+`jhsub.txt`, `sbox.json`, `clash.yaml`, `cert.pem`, `private.key`, `.ip_cache`, `.deps_ok`.
+
+`public.key` no longer has a producer — it is still named in `managed_install_data_present` only so
+a pre-removal Reality installation is still recognised as existing install data.
 
 ### ACME subtree
 
@@ -47,7 +49,7 @@ that the final `mv` is a same-filesystem atomic rename. Prefixes are `<subsystem
 | Prefix | Produced by |
 |--------|-------------|
 | `.sb.json.XXXXXX` | Config candidates for management flows (`src/70-management.sh`) |
-| `.sb.json.install.XXXXXX` | Install-time config candidate (`src/30-server-config.sh:117`) |
+| `.sb.json.install.XXXXXX` | Install-time config candidate (`src/30-server-config.sh:90`) |
 | `.sb.json.last-good.XXXXXX` | Last-good snapshot (`src/40-service.sh:372`) |
 | `.sb.json.backup.XXXXXX` | Pre-commit config backup (`src/40-service.sh:431`) |
 | `.managed-write.XXXXXX` / `.managed-copy.XXXXXX` | Generic private writers (`src/40-service.sh:30,44`) |
@@ -231,7 +233,7 @@ sanctioned platform branch, and it applies only to mode checks — never to owne
 checks:
 
 ```bash
-# src/10-acme.sh:889-890
+# src/10-acme.sh:887-888
   case $(uname -s 2>/dev/null) in
     MINGW*|MSYS*) enforce_modes=0 ;;
 ```

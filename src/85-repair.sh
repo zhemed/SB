@@ -1,14 +1,10 @@
 # sb-module: 85-repair
 # Diagnose and repair an owned sb installation without deleting node data.
 load_repair_config_values(){
-  local source=$1 hy2_uuid
+  local source=$1
   REPAIR_UUID=
-  REPAIR_VLESS_PORT=
   REPAIR_SOCKS_PORT=
   REPAIR_HY2_PORT=
-  REPAIR_SNI=
-  REPAIR_PRIVATE_KEY=
-  REPAIR_SHORT_ID=
   REPAIR_SOCKS_PASSWORD=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
@@ -17,30 +13,19 @@ load_repair_config_values(){
   [[ -s $source ]] && managed_regular_file_is_trusted "$source" || return 1
   jq -e '
     type == "object" and (.inbounds | type == "array") and
-    ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) == 1 and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
     ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
-  REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid | select(type == "string")' "$source") || return 1
-  hy2_uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
-  REPAIR_VLESS_PORT=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port | select(type == "number")' "$source") || return 1
+  REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  REPAIR_SNI=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name | select(type == "string")' "$source") || return 1
-  REPAIR_PRIVATE_KEY=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.private_key | select(type == "string")' "$source") || return 1
-  REPAIR_SHORT_ID=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.short_id[0] | select(type == "string")' "$source") || return 1
   REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | select(.users[0].username == "sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
   REPAIR_KEY_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path | select(type == "string")' "$source") || return 1
-  valid_uuid "$REPAIR_UUID" && [[ $hy2_uuid == "$REPAIR_UUID" ]] || return 1
-  valid_port "$REPAIR_VLESS_PORT" && valid_port "$REPAIR_SOCKS_PORT" &&
-    valid_port "$REPAIR_HY2_PORT" || return 1
-  [[ $REPAIR_VLESS_PORT != "$REPAIR_SOCKS_PORT" ]] || return 1
-  valid_hostname "$REPAIR_SNI" || return 1
-  valid_reality_key "$REPAIR_PRIVATE_KEY" || return 1
-  valid_short_id "$REPAIR_SHORT_ID" || return 1
+  valid_uuid "$REPAIR_UUID" || return 1
+  valid_port "$REPAIR_SOCKS_PORT" && valid_port "$REPAIR_HY2_PORT" || return 1
   valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -54,11 +39,11 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  local uuid=$REPAIR_UUID port_vl_re=$REPAIR_VLESS_PORT port_socks5=$REPAIR_SOCKS_PORT
+  local uuid=$REPAIR_UUID port_socks5=$REPAIR_SOCKS_PORT
   # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
-  local port_hy2=$REPAIR_HY2_PORT ym_vl_re=$REPAIR_SNI private_key=$REPAIR_PRIVATE_KEY
-  local short_id=$REPAIR_SHORT_ID socks_password=$REPAIR_SOCKS_PASSWORD ipv=$REPAIR_STRATEGY
+  local port_hy2=$REPAIR_HY2_PORT
+  local socks_password=$REPAIR_SOCKS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
   render_server_config "$output"
@@ -196,14 +181,26 @@ install_repair_config(){
   fi
 }
 
+config_contains_removed_protocol(){
+  local source=$1
+  jq -e '[.inbounds[]? | select(.type == "vless")] | length > 0' "$source" >/dev/null 2>&1
+}
+
 try_repair_config_source(){
   local source=$1 label=$2 candidate
   load_repair_config_values "$source" || return 1
   ensure_repair_certificate || return 1
   if [[ $source == "$SB_CONFIG" && $REPAIR_CERT_FELL_BACK -eq 0 ]] &&
+     ! config_contains_removed_protocol "$source" &&
      managed_config_file_is_valid "$source"; then
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
+  fi
+  # A config that still carries the removed VLESS inbound must be rewritten
+  # rather than left untouched: sing-box still accepts it, so the version
+  # check alone would classify it as healthy and keep the protocol alive.
+  if config_contains_removed_protocol "$source"; then
+    label+="，并移除已废弃的 VLESS inbound"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
@@ -247,52 +244,9 @@ repair_or_restore_config(){
   return 1
 }
 
-derive_reality_public_key(){
-  local private_key=$1 encoded temp_dir result
-  valid_reality_key "$private_key" || return 1
-  temp_dir=$(mktemp -d "$SB_DIR/.reality-key.XXXXXX") || return 1
-  encoded=$(printf '%s' "$private_key" | tr '_-' '/+')=
-  if ! printf '%s' "$encoded" | base64 -d > "$temp_dir/raw.key" 2>/dev/null ||
-     [[ $(stat -c '%s' "$temp_dir/raw.key" 2>/dev/null) != 32 ]]; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  printf '\x30\x2e\x02\x01\x00\x30\x05\x06\x03\x2b\x65\x6e\x04\x22\x04\x20' > "$temp_dir/private.der"
-  cat "$temp_dir/raw.key" >> "$temp_dir/private.der" || { rm -rf "$temp_dir"; return 1; }
-  if ! openssl pkey -inform DER -in "$temp_dir/private.der" -pubout -outform DER \
-       -out "$temp_dir/public.der" 2>/dev/null ||
-     [[ $(stat -c '%s' "$temp_dir/public.der" 2>/dev/null) != 44 ]]; then
-    rm -rf "$temp_dir"
-    return 1
-  fi
-  result=$(tail -c 32 "$temp_dir/public.der" | base64 | tr '+/' '-_' | tr -d '=\r\n')
-  rm -rf "$temp_dir"
-  valid_reality_key "$result" || return 1
-  printf '%s\n' "$result"
-}
-
-repair_reality_public_key(){
-  local private_key public_key expected_public_key public_tmp
-  private_key=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.private_key' "$SB_CONFIG" 2>/dev/null) || return 1
-  expected_public_key=$(derive_reality_public_key "$private_key") || return 1
-  if managed_regular_file_is_trusted "$SB_DIR/public.key" &&
-     public_key=$(cat "$SB_DIR/public.key" 2>/dev/null) &&
-     [[ $public_key == "$expected_public_key" ]]; then
-    chmod 600 "$SB_DIR/public.key"
-    REPAIR_PUBLIC_KEY_ACTION="Reality公钥正常"
-    return 0
-  fi
-  public_tmp=$(mktemp "$SB_DIR/.public.key.XXXXXX") || return 1
-  if ! printf '%s\n' "$expected_public_key" > "$public_tmp" || ! chmod 600 "$public_tmp" ||
-     ! mv -fT -- "$public_tmp" "$SB_DIR/public.key"; then
-    rm -f "$public_tmp"
-    return 1
-  fi
-  REPAIR_PUBLIC_KEY_ACTION="已从Reality私钥恢复公钥"
-}
 
 rebuild_config_in_place(){
-  local confirmation key_pair private_key public_key short_id candidate acme_identity
+  local confirmation candidate acme_identity
   red "现有配置和恢复副本都无法提取完整节点参数"
   yellow "可以保留证书与ACME账户，在原目录生成全新节点；旧客户端配置将失效"
   readp "请输入 REBUILD 确认原地重建，其他输入取消：" confirmation || return 1
@@ -313,20 +267,10 @@ rebuild_config_in_place(){
     REPAIR_CERT_ACTION="使用已重建的自签证书"
   fi
   insport || return 1
-  key_pair=$("$SB_BIN" generate reality-keypair 2>/dev/null) || return 1
-  private_key=$(printf '%s\n' "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
-  public_key=$(printf '%s\n' "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
-  valid_reality_key "$private_key" && valid_reality_key "$public_key" || return 1
-  short_id=$("$SB_BIN" generate rand --hex 4 2>/dev/null) || return 1
-  valid_short_id "$short_id" || return 1
   v6only
   REPAIR_UUID=$uuid
-  REPAIR_VLESS_PORT=$port_vl_re
   REPAIR_SOCKS_PORT=$port_socks5
   REPAIR_HY2_PORT=$port_hy2
-  REPAIR_SNI=apple.com
-  REPAIR_PRIVATE_KEY=$private_key
-  REPAIR_SHORT_ID=$short_id
   REPAIR_SOCKS_PASSWORD=$socks_password
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
@@ -337,8 +281,6 @@ rebuild_config_in_place(){
     return 1
   fi
   install_repair_config "$candidate" "已原地生成全新节点配置" || return 1
-  atomic_write_private_text "$SB_DIR/public.key" "$public_key" || return 1
-  REPAIR_PUBLIC_KEY_ACTION="已生成新的Reality公钥"
   REPAIR_NODE_REBUILT=1
 }
 
@@ -350,7 +292,7 @@ repair_managed_permissions(){
     managed_regular_file_is_trusted "$SB_BIN" || return 1
   chmod 600 "$SB_MANAGED_MARKER" "$SB_CONFIG" || return 1
   chmod 755 "$SB_BIN" || return 1
-  for path in "$last_good" "$SB_DIR/public.key" "$SB_DIR/cert.pem" "$SB_DIR/private.key"; do
+  for path in "$last_good" "$SB_DIR/cert.pem" "$SB_DIR/private.key"; do
     [[ -e $path || -L $path ]] || continue
     managed_regular_file_is_trusted "$path" || return 1
     chmod 600 "$path" || return 1
@@ -406,7 +348,6 @@ initialize_repair_report(){
   REPAIR_CONFIG_ACTION="未执行"
   REPAIR_CERT_ACTION="未执行"
   REPAIR_SERVICE_ACTION="未执行"
-  REPAIR_PUBLIC_KEY_ACTION="未执行"
   REPAIR_SHORTCUT_ACTION="未执行"
   REPAIR_ACME_ACTION="未执行"
   REPAIR_CRON_ACTION="未执行"
@@ -435,6 +376,8 @@ initialize_repair_report(){
 cleanup_repair_temporary_files(){
   local path failed=0
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
+  # .public.key.* and .reality-key.* have no producer any more, but released
+  # versions wrote them, so an upgraded host can still carry leftovers.
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
     "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
@@ -620,7 +563,6 @@ restore_original_repair_stack(){
        repair_managed_service >/dev/null 2>&1; then
       REPAIR_ROLLBACK_STATE=target_restored
       REPAIR_SERVICE_ACTION="修复前状态恢复失败；已重新启用修复后内核、配置和服务"
-      repair_reality_public_key || true
     fi
     return 1
   fi
@@ -643,7 +585,6 @@ restore_original_repair_stack(){
   REPAIR_CONFIG_ACTION+="；已恢复修复前可用配置"
   REPAIR_SERVICE_ACTION="已恢复修复前服务定义并确认运行"
   REPAIR_NODE_REBUILT=0
-  repair_reality_public_key || true
   return "$cleanup_failed"
 }
 
@@ -698,7 +639,6 @@ show_repair_report(){
   printf '配置: %s\n' "$REPAIR_CONFIG_ACTION"
   printf '证书: %s\n' "$REPAIR_CERT_ACTION"
   printf '服务: %s\n' "$REPAIR_SERVICE_ACTION"
-  printf 'Reality公钥: %s\n' "$REPAIR_PUBLIC_KEY_ACTION"
   printf '快捷命令: %s\n' "$REPAIR_SHORTCUT_ACTION"
   printf '证书续期: %s\n' "$REPAIR_ACME_ACTION"
   printf '每日任务: %s\n' "$REPAIR_CRON_ACTION"
@@ -754,10 +694,6 @@ repair_singbox_locked(){
       show_repair_report
       return 1
     fi
-  fi
-  if ! repair_reality_public_key; then
-    REPAIR_PUBLIC_KEY_ACTION="恢复失败；服务可运行，但节点文件无法刷新"
-    maintenance_failed=1
   fi
   REPAIR_SERVICE_CHANGED=1
   if repair_managed_service; then

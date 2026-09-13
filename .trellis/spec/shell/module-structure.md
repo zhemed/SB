@@ -12,9 +12,9 @@ the one that is "closest" to the call site.
 | `src/20-ports.sh` | All `valid_*` validators, port conflict detection and selection, credential generation |
 | `src/30-server-config.sh` | Server-side `sb.json` rendering and its install-time candidate validation |
 | `src/40-service.sh` | Managed-path trust checks, atomic private writers, systemd/OpenRC unit rendering + ownership, `commit_config`, last-good config, service start/stop/state |
-| `src/50-client-output.sh` | Share links (VLESS / Hysteria2 / SOCKS5) and generated client files `sbox.json` / `clash.yaml` |
+| `src/50-client-output.sh` | Share links (Hysteria2 / SOCKS5) and generated client files `sbox.json` / `clash.yaml` |
 | `src/60-cron.sh` | Crontab marker management, the `ACMERENEW` renewal runner, daily restart task, `with_acme_lock` |
-| `src/70-management.sh` | Management menus 4–8: certificate mode, SNI, ports, credentials, IP priority |
+| `src/70-management.sh` | Management menus 4–7: certificate mode, ports, credentials, IP priority |
 | `src/80-lifecycle.sh` | Dependency installation, `/usr/bin/sb` shortcut, `prepare_runtime_state`, uninstall |
 | `src/85-repair.sh` | Diagnosis and the repair transaction |
 | `src/90-main.sh` | Install flow, main menu, interrupt trap, the entrypoint |
@@ -58,10 +58,10 @@ fi
 fixed: define the handler, install the trap, then do any pre-flight work.
 
 ```bash
-# src/90-main.sh:198
+# src/90-main.sh:171
 handle_install_interrupt(){
 ...
-# src/90-main.sh:229
+# src/90-main.sh:202
 trap handle_install_interrupt INT TERM HUP
 
 # Install the trap first: prepare_runtime_state can create the managed
@@ -69,12 +69,12 @@ trap handle_install_interrupt INT TERM HUP
 prepare_runtime_state || exit 1
 ```
 
-The final `menu` call is the last statement in the file (`src/90-main.sh:241`). See
+The final `menu` call is the last statement in the file (`src/90-main.sh:214`). See
 `spec/runtime/transactions.md` §4 for why the trap must precede the pre-flight work.
 
 **Every other module contains function definitions only.** No stray `echo`, no module-level
 variable assignments, no `if` blocks at column 0. This is what makes concatenation order safe: by
-the time `menu` runs, all 234 functions exist.
+the time `menu` runs, all 229 functions exist.
 
 Global variables that persist across calls are therefore declared **only** in `00-bootstrap.sh`:
 
@@ -118,13 +118,13 @@ ACMERENEW
 carry their own traps:
 
 ```bash
-# src/10-acme.sh:481-482
+# src/10-acme.sh:479-480
 trap cleanup_deploy_files EXIT
 trap handle_deploy_signal HUP INT TERM
 ```
 
 ```bash
-# src/10-acme.sh:459-463
+# src/10-acme.sh:457-461
 handle_deploy_signal(){
   trap '' HUP INT TERM
   rollback_deployment || true

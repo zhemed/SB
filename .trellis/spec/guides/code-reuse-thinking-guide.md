@@ -53,8 +53,7 @@ Everything else hand-rolls `mktemp` → `chmod` → `mv -fT`. The protocol is in
 
 ### Validation (`src/20-ports.sh`, `src/00-bootstrap.sh`)
 
-`valid_port`, `valid_uuid`, `valid_socks_password`, `valid_reality_key`, `valid_short_id`,
-`valid_hostname`, `valid_ipv4`, `valid_ipv6`.
+`valid_port`, `valid_uuid`, `valid_socks_password`, `valid_hostname`, `valid_ipv4`, `valid_ipv6`.
 
 ### Locking (`src/60-cron.sh`)
 

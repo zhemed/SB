@@ -93,7 +93,7 @@ Rules enforced by `scripts/build.sh:94-110`:
 The last module must contain `# sb-entrypoint` exactly once; no other module may contain it.
 
 ```bash
-# src/90-main.sh:197
+# src/90-main.sh:170
 # sb-entrypoint
 ```
 
@@ -101,7 +101,7 @@ Enforcement: `scripts/build.sh:111-116`, and again on the assembled candidate at
 `scripts/build.sh:138-139`. Everything after the marker is the script body that actually runs:
 
 ```bash
-# src/90-main.sh:233
+# src/90-main.sh:206
 prepare_runtime_state || exit 1
 ```
 

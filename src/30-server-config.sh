@@ -12,33 +12,6 @@ render_server_config(){
   },
   "inbounds": [
     {
-      "type": "vless",
-      "sniff": true,
-      "sniff_override_destination": true,
-      "tag": "vless-sb",
-      "listen": "::",
-      "listen_port": ${port_vl_re},
-      "users": [
-        {
-          "uuid": "${uuid}",
-          "flow": "xtls-rprx-vision"
-        }
-      ],
-      "tls": {
-        "enabled": true,
-        "server_name": "${ym_vl_re}",
-        "reality": {
-          "enabled": true,
-          "handshake": {
-            "server": "${ym_vl_re}",
-            "server_port": 443
-          },
-          "private_key": "${private_key}",
-          "short_id": ["${short_id}"]
-        }
-      }
-    },
-    {
       "type": "hysteria2",
       "sniff": true,
       "sniff_override_destination": true,

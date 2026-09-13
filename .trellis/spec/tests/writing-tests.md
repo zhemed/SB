@@ -14,9 +14,9 @@ They partition the domain deliberately — do not duplicate coverage:
 
 - `unit.sh`: cron/hook identity and regeneration, renewal runner and state, ACME state
   backup/restore, credential flows, install-transaction cleanup and uninstall.
-- `repair.sh`: ownership, core quarantine, last-good restore, Reality key, atomic writers versus
+- `repair.sh`: ownership, core quarantine, last-good restore, atomic writers versus
   symlinks/directories, ACME fallback, service-unit repairability, report defaults, transaction
-  abort, and INT/TERM/HUP.
+  abort, legacy-protocol migration, and INT/TERM/HUP.
 
 There is **no shared `tests/lib.sh`** — each file redefines `pass` / `fail` / `expect_*` and its own
 collaborator stubs. Follow that; do not add a library.
@@ -112,7 +112,7 @@ the README version line. See `spec/build/version-pins.md`.
 
 ### (d) User-visible messages
 
-Eight modification success messages are required (`tests/verify.sh:82-93`), as are lifecycle strings
+Six modification success messages are required (`tests/verify.sh:82-92`), as are lifecycle strings
 (`:54-68`), SOCKS5 integration strings (`:94-107`), client security settings (`:136-150`), and the
 `SOCKS5本身不加密` warning (`:154-155`). `tests/unit.sh:1347-1348` pins `UUID格式错误`.
 

@@ -43,7 +43,7 @@ Rules:
   `return 1` without cleanup — those refusals are at `src/90-main.sh:5-26` and must stay first.
 - **Cosmetic steps do not abort.** Non-critical failures are downgraded:
   ```bash
-  # src/90-main.sh:71
+  # src/90-main.sh:46
     save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   ```
 - **Success clears the flag without cleaning** (`src/90-main.sh:105`).
@@ -133,14 +133,14 @@ only when nothing failed.
 One trap, installed once, in the entrypoint module:
 
 ```bash
-# src/90-main.sh:229
+# src/90-main.sh:202
 trap handle_install_interrupt INT TERM HUP
 ```
 
 The handler's order is fixed and load-bearing:
 
 ```bash
-# src/90-main.sh:198-227 (structure)
+# src/90-main.sh:171-200 (structure)
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
     return 0                      # (a) finalization in progress → swallow

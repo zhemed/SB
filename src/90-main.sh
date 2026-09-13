@@ -1,7 +1,7 @@
 # sb-module: 90-main
 # Installation main flow
 install_singbox(){
-  local key_pair private_key public_key short_id shortcut_ready=0
+  local shortcut_ready=0
   if service_name_conflict; then
     red "检测到不属于本脚本的同名 $SB_SERVICE 服务，请先自行处理服务名冲突"
     return 1
@@ -35,31 +35,6 @@ install_singbox(){
   insport || { abort_install_transaction; return 1; }
   sleep 2
   echo
-  blue "Vless-reality相关key与id将自动生成……"
-  key_pair=$("$SB_BIN" generate reality-keypair 2>/dev/null)
-  if [[ -z "$key_pair" ]]; then
-    red "生成reality密钥失败，请检查sing-box内核是否正常"
-    abort_install_transaction
-    return 1
-  fi
-  private_key=$(echo "$key_pair" | awk '/PrivateKey/ {print $2}' | tr -d '"')
-  public_key=$(echo "$key_pair" | awk '/PublicKey/ {print $2}' | tr -d '"')
-  if [[ -z $private_key || -z $public_key ]]; then
-    red "解析Reality密钥失败"
-    abort_install_transaction
-    return 1
-  fi
-  if ! atomic_write_private_text "$SB_DIR/public.key" "$public_key"; then
-    red "保存Reality公钥失败"
-    abort_install_transaction
-    return 1
-  fi
-  short_id=$("$SB_BIN" generate rand --hex 4 2>/dev/null)
-  if [[ ! $short_id =~ ^[0-9A-Fa-f]{8}$ ]]; then
-    red "生成Reality short_id失败"
-    abort_install_transaction
-    return 1
-  fi
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "五、生成配置文件和启动服务"
   inssbjson || { abort_install_transaction; return 1; }
@@ -70,7 +45,7 @@ install_singbox(){
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
-  yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_vl_re}/tcp、${port_socks5}/tcp 与 ${port_hy2}/udp"
+  yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_socks5}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
   fi
@@ -132,14 +107,13 @@ menu(){
     green " 2. 修复"
     green " 3. 查看节点配置"
     green " 4. 证书管理"
-    green " 5. 更改SNI域名"
-    green " 6. 更改端口"
-    green " 7. 更改协议凭据"
-    green " 8. 切换IP优先级"
-    green " 9. 卸载"
+    green " 5. 更改端口"
+    green " 6. 更改协议凭据"
+    green " 7. 切换IP优先级"
+    green " 8. 卸载"
     green " 0. 退出脚本"
     echo
-    readp "请输入数字 [0-9]: " Input || exit 0
+    readp "请输入数字 [0-8]: " Input || exit 0
     case "$Input" in
       1)
         if is_installed; then
@@ -165,21 +139,20 @@ menu(){
           sleep 1
         fi
         ;;
-      4|5|6|7|8)
+      4|5|6|7)
         if ! is_installed; then
           red "请先安装或修复 Sing-box"
           sleep 1
         else
           case "$Input" in
             4) change_cert_mode ;;
-            5) change_vl_sni ;;
-            6) change_ports ;;
-            7) change_credentials ;;
-            8) switch_ip_priority ;;
+            5) change_ports ;;
+            6) change_credentials ;;
+            7) switch_ip_priority ;;
           esac
         fi
         ;;
-      9)
+      8)
         if is_installed || service_exists || managed_directory_is_owned || [[ -x $SB_BIN || -s $SB_CONFIG ]]; then
           uninstall
         else

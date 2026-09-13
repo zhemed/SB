@@ -530,135 +530,32 @@ change_cert_mode(){
   done
 }
 
-# Change VL reality SNI
-change_vl_sni(){
-  local current_sni new_sni candidate retry commit_status
-  if ! sbactive; then
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  echo
-  if ! current_sni=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前SNI失败，配置未修改"
-    readp "按回车返回主菜单..."
-    return 1
-  fi
-  green "当前VL reality SNI域名: $current_sni"
-  while true; do
-    readp "请输入新的SNI域名 (回车使用apple.com，输入0返回主菜单): " new_sni || return 1
-    [[ $new_sni == 0 ]] && return 0
-    new_sni=${new_sni:-apple.com}
-    if ! valid_hostname "$new_sni"; then
-      red "SNI必须是合法域名，例如 apple.com"
-      yellow "请重新输入SNI域名"
-      continue
-    fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建SNI候选配置失败，原配置未修改"
-      readp "按回车重试，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! jq --arg sni "$new_sni" '
-      if ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) != 1
-      then error("vless inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.server_name) = $sni |
-           (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .tls.reality.handshake.server) = $sni
-      end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg sni "$new_sni" '[.inbounds[] | select(.type == "vless" and .tag == "vless-sb" and .tls.server_name == $sni and .tls.reality.handshake.server == $sni)] | length == 1' "$candidate" >/dev/null; then
-      rm -f "$candidate"
-      red "生成SNI候选配置失败，原配置未修改"
-      readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if commit_config "$candidate"; then
-      refresh_share_files_after_change || true
-      green "VL reality SNI域名修改成功：$new_sni"
-      readp "按回车返回主菜单..."
-      return 0
-    fi
-    commit_status=$?
-    if [[ $commit_status -eq 2 ]]; then
-      red "SNI修改失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回主菜单..."
-      return 2
-    fi
-    red "SNI修改失败，原配置未修改或已恢复"
-    readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-    [[ $retry == 0 ]] && return 1
-  done
-}
 
 # Change ports
 change_ports(){
-  local nport port candidate menu retry commit_status vl_port socks_port hy2_port port_vl_re port_socks5 port_hy2
+  local nport port candidate menu retry commit_status socks_port hy2_port port_socks5 port_hy2
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! vl_port=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
-     ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
+  if ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
      ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前端口失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
-  port_vl_re=$vl_port
   port_socks5=$socks_port
   port_hy2=$hy2_port
   echo
   while true; do
     green "更改端口"
-    green "1：Vless-reality端口 ${yellow}当前: $vl_port${plain}"
-    green "2：Hysteria2主端口 ${yellow}当前: $hy2_port${plain}"
-    green "3：SOCKS5端口 ${yellow}当前: $socks_port${plain}"
+    green "1：Hysteria2主端口 ${yellow}当前: $hy2_port${plain}"
+    green "2：SOCKS5端口 ${yellow}当前: $socks_port${plain}"
     green "0：返回主菜单"
-    readp "请选择【0-3】：" menu || return 1
+    readp "请选择【0-2】：" menu || return 1
     case "$menu" in
       ""|0) return 0 ;;
       1)
-        readp "请输入新端口 (1-65535，留空随机10000-65535): " nport || return 1
-        port="$nport"
-        chooseport tcp "$socks_port" || continue
-        if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-          red "创建端口候选配置失败，原配置未修改"
-          readp "按回车重试，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if ! jq --argjson p "$port" '
-          if ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) != 1
-          then error("vless inbound missing or duplicated")
-          else (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .listen_port) = $p end
-        ' "$SB_CONFIG" > "$candidate" || \
-          ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "vless" and .tag == "vless-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
-          rm -f "$candidate"
-          red "生成端口候选配置失败，原配置未修改"
-          readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if commit_config "$candidate"; then
-          refresh_share_files_after_change || true
-          green "Vless-reality端口修改成功：$port"
-          yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
-          readp "按回车返回主菜单..."
-          return 0
-        else
-          commit_status=$?
-        fi
-        if [[ $commit_status -eq 2 ]]; then
-          red "端口修改失败且自动回滚失败，请先检查服务和备份配置"
-          readp "按回车返回主菜单..."
-          return 2
-        fi
-        red "端口修改失败，原配置未修改或已恢复"
-        readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-        [[ $retry == 0 ]] && return 1
-        ;;
-      2)
         readp "请输入新主端口 (1-65535，留空随机10000-65535): " nport || return 1
         port="$nport"
         chooseport udp || continue
@@ -698,10 +595,10 @@ change_ports(){
         readp "按回车重新输入，输入0返回主菜单：" retry || return 1
         [[ $retry == 0 ]] && return 1
         ;;
-      3)
+      2)
         readp "请输入新SOCKS5端口 (1-65535，留空随机10000-65535): " nport || return 1
         port="$nport"
-        chooseport tcp "$vl_port" || continue
+        chooseport tcp || continue
         if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
           red "创建端口候选配置失败，原配置未修改"
           readp "按回车重试，输入0返回主菜单：" retry || return 1
@@ -739,7 +636,7 @@ change_ports(){
         [[ $retry == 0 ]] && return 1
         ;;
       *)
-        red "请输入0、1、2或3"
+        red "请输入0、1或2"
         ;;
     esac
   done
@@ -758,13 +655,13 @@ changeuuid(){
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! olduuid=$(jq -er '.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid' "$SB_CONFIG" 2>/dev/null); then
+  if ! olduuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前UUID失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
   echo
-  green "当前VLESS/Hysteria2 UUID（密码）：$olduuid"
+  green "当前Hysteria2 UUID（密码）：$olduuid"
   while true; do
     readp "输入新UUID（回车随机生成，输入0返回凭据菜单）：" choice || return 1
     [[ $choice == 0 ]] && return 0
@@ -785,14 +682,12 @@ changeuuid(){
       continue
     fi
     if ! jq --arg uuid "$uuid" '
-      if ([.inbounds[] | select(.type == "vless" and .tag == "vless-sb")] | length) != 1 or
-         ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
+      if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
       then error("required inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "vless" and .tag == "vless-sb") | .users[0].uuid) = $uuid |
-           (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password) = $uuid
+      else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password) = $uuid
       end
     ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg uuid "$uuid" '([.inbounds[] | select(.type == "vless" and .tag == "vless-sb" and .users[0].uuid == $uuid)] | length == 1) and ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .users[0].password == $uuid)] | length == 1)' "$candidate" >/dev/null; then
+      ! jq -e --arg uuid "$uuid" '([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .users[0].password == $uuid)] | length == 1)' "$candidate" >/dev/null; then
       rm -f "$candidate"
       red "生成UUID候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
@@ -801,7 +696,7 @@ changeuuid(){
     fi
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
-      green "VLESS/Hysteria2 UUID（密码）修改成功：${uuid}"
+      green "Hysteria2 UUID（密码）修改成功：${uuid}"
       readp "按回车返回凭据菜单..."
       return 0
     else
@@ -888,7 +783,7 @@ change_credentials(){
   while true; do
     echo
     green "凭据管理"
-    green "1：更改VLESS/Hysteria2 UUID（密码）"
+    green "1：更改Hysteria2 UUID（密码）"
     green "2：更改SOCKS5独立密码"
     green "0：返回主菜单"
     readp "请选择【0-2】：" choice || return 1
