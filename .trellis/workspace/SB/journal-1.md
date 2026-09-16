@@ -79,3 +79,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: v3.1.0：SS-2022 入口改为可选（默认不装），菜单[8] 变可选功能
+<!-- trellis-session: v=2 fp=a65f2dd0eca75974 -->
+
+**Date**: 2026-09-16
+**Task**: v3.1.0：SS-2022 入口改为可选（默认不装），菜单[8] 变可选功能
+**Branch**: `main`
+
+### Summary
+
+新建安装只装 hysteria2（只问 hy2 端口、只生成 UUID）；Shadowsocks-2022 入站改为菜单[8]可选功能里显式启用/停用/改端口/改密钥，客户端产物随入站存在与否变化（停用时删掉遗留 ss.txt，selector 变单成员）；修复保留已有 ss-sb、继续迁移旧 socks5、hy2-only 不补齐；判据不新增状态文件，配置里有没有 ss-sb 就是真相。验证：门禁绿（shellcheck 0.10.0、unit 290、repair 50）+ 真实内核 hy2-only 与启用后两种配置 check+真启动 + SS 真握手 + 客户端两形态按行校验 + 中转链路回归。过程中抓到并修掉一个 check 查不出的真 bug：命令替换吃掉片段结尾换行，导致 Clash 里 udp:false 与下一个代理粘连、分组少一个成员；已加回归用例。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8d0da3c` | feat(sb): SS-2022 入口改为可选（默认不装），菜单[8] 变为可选功能（v3.1.0） |
+
+### Status
+
+[OK] **Completed**
