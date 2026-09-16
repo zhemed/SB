@@ -228,6 +228,61 @@ expect_success "an empty answer cancels a destructive action" confirm_rejects ''
 expect_success "unrelated text cancels a destructive action" confirm_rejects YESPLEASE
 unset -f readp
 
+# The caller must also *say* that nothing happened: the original bug was a
+# silent return, so an aborted disable looked like a dead menu entry.
+cancelled_disable_is_reported(){
+  (
+    local dir="$relay_roundtrip/cancel"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell owns these globals
+    SB_DIR="$dir"
+    # shellcheck disable=SC2030
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":443,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
+    # the answer is "no", so the flow must stop before any commit
+    FLOW_RESPONSES=('no' '')
+    FLOW_RESPONSE_INDEX=0
+    FLOW_MESSAGES=
+    FLOW_PROMPTS=
+    # Called indirectly by the sourced management flows.
+    # shellcheck disable=SC2317
+    readp(){
+      local prompt=$1 target=${2-} response
+      FLOW_PROMPTS+="$prompt"$'\n'
+      [[ $FLOW_RESPONSE_INDEX -lt ${#FLOW_RESPONSES[@]} ]] || return 1
+      response=${FLOW_RESPONSES[$FLOW_RESPONSE_INDEX]}
+      FLOW_RESPONSE_INDEX=$((FLOW_RESPONSE_INDEX + 1))
+      if [[ -n $target ]]; then
+        printf -v "$target" '%s' "$response"
+      else
+        REPLY=$response
+      fi
+    }
+    # shellcheck disable=SC2317
+    yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    red(){ FLOW_MESSAGES+="red:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    green(){ FLOW_MESSAGES+="green:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    blue(){ FLOW_MESSAGES+="blue:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    white(){ :; }
+    # shellcheck disable=SC2317
+    sbactive(){ return 0; }
+    # shellcheck disable=SC2317
+    commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }
+    COMMIT_INDEX=0
+    disable_ss_entry || return 1
+    [[ $COMMIT_INDEX -eq 0 ]] || return 1
+    [[ $FLOW_MESSAGES == *'已取消，未做任何修改'* ]] || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 1' "$SB_CONFIG" >/dev/null || return 1
+    return 0
+  )
+}
+expect_success "an unconfirmed disable reports the cancellation and changes nothing" \
+  cancelled_disable_is_reported
+
 relay_candidate_builders(){
   (
     local dir="$relay_roundtrip/candidate" key="$ss_key_valid"
