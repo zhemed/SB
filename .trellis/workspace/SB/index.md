@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 5
+- **Total Sessions**: 6
 - **Last Active**: 2026-09-16
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~147 | Active |
+| `journal-1.md` | ~169 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 6 | 2026-09-16 | v3.1.3：启用/改端口/改密钥后显示分享链接与密钥 | `a4b0ac6` | `main` |
 | 5 | 2026-09-16 | v3.1.2：确认改为回车即确认，并给出显式 n | `d4f6313` | `main` |
 | 4 | 2026-09-16 | v3.1.1：修确认提示大小写导致的静默取消 | `6c7cd41` | `main` |
 | 3 | 2026-09-16 | v3.1.0：SS-2022 入口改为可选（默认不装），菜单[8] 变可选功能 | `8d0da3c` | `main` |

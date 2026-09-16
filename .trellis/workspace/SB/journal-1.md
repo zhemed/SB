@@ -145,3 +145,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 6: v3.1.3：启用/改端口/改密钥后显示分享链接与密钥
+<!-- trellis-session: v=2 fp=a72c611b84469c67 -->
+
+**Date**: 2026-09-16
+**Task**: v3.1.3：启用/改端口/改密钥后显示分享链接与密钥
+**Branch**: `main`
+
+### Summary
+
+用户反馈：菜单[8]启用 SS-2022 后没有分享链接、也没有密钥。复现结论：ss.txt 与 ss-sb.password 其实都已生成（菜单[3]可见），但启用流程只打印端口与警告，从未回显结果——是显示缺口而非数据丢失。修复：新增 print_ss_entry_share（打印链接+说明写入 ss.txt+二维码在菜单[3]+服务端 PSK，文件缺失时明确告知去菜单[3]刷新），接到启用/改端口/改密钥三处；顺带修掉 change_ss_password 里过期的「返回凭据菜单」提示。规范补一条：改动客户端可见值的成功必须把新值打出来。新增 enable-flow 沙箱（从 hy2-only 出发走真实 enable_ss_entry+sbshare），断言输出含端口/链接/密钥、ss.txt 已写、链接解出的密钥与配置一致、配置通过真实内核 check。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a4b0ac6` | fix(sb): 启用/改端口/改密钥后直接给出分享链接与密钥（v3.1.3） |
+
+### Status
+
+[OK] **Completed**
