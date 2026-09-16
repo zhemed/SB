@@ -174,6 +174,24 @@ resss(){
   echo
 }
 
+# After enabling or changing the optional Shadowsocks-2022 entry the operator
+# needs exactly two things: the share link (sbshare has already written it) and
+# the server-side key. Printing only the port read as "no link and no key".
+print_ss_entry_share(){
+  local password=$1 path="$SB_DIR/ss.txt" link=
+  echo
+  green "分享链接（客户端导入用；已写入 $path，菜单[3]可重看并出二维码）"
+  if managed_regular_file_is_trusted "$path" && [[ -s $path ]]; then
+    link=$(cat "$path" 2>/dev/null) || link=
+  fi
+  if [[ -n $link ]]; then
+    echo -e "${yellow}$link${plain}"
+  else
+    yellow "分享文件暂不可用，请用菜单[3]刷新节点配置后重试"
+  fi
+  green "服务端密钥（Shadowsocks-2022 PSK）：$password"
+}
+
 # Client config generation (kept compatible with sing-box 1.10.7)
 sb_client(){
   local sbox_candidate clash_candidate hy2_certificate_field=

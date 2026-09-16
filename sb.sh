@@ -107,7 +107,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.1.2"
+sb_version="v3.1.3"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -2755,6 +2755,24 @@ resss(){
   echo
 }
 
+# After enabling or changing the optional Shadowsocks-2022 entry the operator
+# needs exactly two things: the share link (sbshare has already written it) and
+# the server-side key. Printing only the port read as "no link and no key".
+print_ss_entry_share(){
+  local password=$1 path="$SB_DIR/ss.txt" link=
+  echo
+  green "分享链接（客户端导入用；已写入 $path，菜单[3]可重看并出二维码）"
+  if managed_regular_file_is_trusted "$path" && [[ -s $path ]]; then
+    link=$(cat "$path" 2>/dev/null) || link=
+  fi
+  if [[ -n $link ]]; then
+    echo -e "${yellow}$link${plain}"
+  else
+    yellow "分享文件暂不可用，请用菜单[3]刷新节点配置后重试"
+  fi
+  green "服务端密钥（Shadowsocks-2022 PSK）：$password"
+}
+
 # Client config generation (kept compatible with sing-box 1.10.7)
 sb_client(){
   local sbox_candidate clash_candidate hy2_certificate_field=
@@ -4458,7 +4476,8 @@ change_ss_password(){
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
       green "Shadowsocks-2022密钥修改成功：${new_password}"
-      readp "按回车返回凭据菜单..."
+      print_ss_entry_share "$new_password" || true
+      readp "按回车返回可选功能..."
       return 0
     else
       commit_status=$?
@@ -4683,6 +4702,11 @@ ss_entry_port(){
     "$SB_CONFIG" 2>/dev/null
 }
 
+ss_entry_password(){
+  jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' \
+    "$SB_CONFIG" 2>/dev/null
+}
+
 # Candidate builders for the optional entry. Both are idempotent: the inbound and
 # its UDP-block rule are removed before being (re)inserted, so applying them twice
 # yields the same configuration. They patch the live config with jq rather than
@@ -4762,6 +4786,7 @@ enable_ss_entry(){
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
       green "Shadowsocks-2022 入口已启用：端口 ${port}/tcp"
+      print_ss_entry_share "$password"
       yellow "密钥不可推导，丢失只能重签；协议用时间戳抗重放，请确保本机 NTP 正常"
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
       readp "按回车返回可选功能..."
@@ -4864,6 +4889,7 @@ change_ss_port(){
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
       green "Shadowsocks-2022端口修改成功：$port"
+      print_ss_entry_share "$(ss_entry_password)" || true
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
       readp "按回车返回可选功能..."
       return 0

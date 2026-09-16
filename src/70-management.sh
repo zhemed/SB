@@ -719,7 +719,8 @@ change_ss_password(){
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
       green "Shadowsocks-2022密钥修改成功：${new_password}"
-      readp "按回车返回凭据菜单..."
+      print_ss_entry_share "$new_password" || true
+      readp "按回车返回可选功能..."
       return 0
     else
       commit_status=$?
@@ -944,6 +945,11 @@ ss_entry_port(){
     "$SB_CONFIG" 2>/dev/null
 }
 
+ss_entry_password(){
+  jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' \
+    "$SB_CONFIG" 2>/dev/null
+}
+
 # Candidate builders for the optional entry. Both are idempotent: the inbound and
 # its UDP-block rule are removed before being (re)inserted, so applying them twice
 # yields the same configuration. They patch the live config with jq rather than
@@ -1023,6 +1029,7 @@ enable_ss_entry(){
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
       green "Shadowsocks-2022 入口已启用：端口 ${port}/tcp"
+      print_ss_entry_share "$password"
       yellow "密钥不可推导，丢失只能重签；协议用时间戳抗重放，请确保本机 NTP 正常"
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
       readp "按回车返回可选功能..."
@@ -1125,6 +1132,7 @@ change_ss_port(){
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
       green "Shadowsocks-2022端口修改成功：$port"
+      print_ss_entry_share "$(ss_entry_password)" || true
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
       readp "按回车返回可选功能..."
       return 0

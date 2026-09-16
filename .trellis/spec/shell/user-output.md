@@ -99,6 +99,17 @@ service. Compare:
 An agent adding a new failure path must include the same information: what failed, what state the
 system is in now, and what the user should do.
 
+### A success that changes a client-facing value must print the new value
+
+"修改成功" alone is not a finished success message when the thing that changed is what a **client**
+has to be configured with. Changing a port/key/cipher has to end by showing the resulting share link
+and the server-side key, otherwise the operator is left asking "where is my link?" — which is exactly
+what the 3.1.0 enable flow did (it printed only the port; the link existed in `ss.txt` and menu [3]
+but nobody was told). `print_ss_entry_share` (`src/50-client-output.sh`) is that ending for the
+optional Shadowsocks-2022 entry: the link, the file it was written to, menu [3] for the QR code, and
+the PSK. When the share file is missing it says so and points at menu [3] instead of silently
+showing nothing.
+
 ---
 
 ## 5. Section framing and layout

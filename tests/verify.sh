@@ -45,12 +45,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SS_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
-[[ $(grep -Fxc 'sb_version="v3.1.2"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 3.1.2"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.1.2' ]] ||
-  fail "VERSION file is not 3.1.2"
-grep -Fq -- "当前项目版本：\`3.1.2\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 3.1.2"
+[[ $(grep -Fxc 'sb_version="v3.1.3"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 3.1.3"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.1.3' ]] ||
+  fail "VERSION file is not 3.1.3"
+grep -Fq -- "当前项目版本：\`3.1.3\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 3.1.3"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -136,7 +136,10 @@ for ss_pattern in \
   'clear_relay_upstream()' \
   'Shadowsocks-2022 入口默认不安装' \
   '本次只安装 Hysteria2' \
-  'remove_saved_ss_link()'; do
+  'remove_saved_ss_link()' \
+  'print_ss_entry_share()' \
+  '分享链接（客户端导入用' \
+  '服务端密钥（Shadowsocks-2022 PSK）'; do
   grep -Fq -- "$ss_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing Shadowsocks-2022 integration: $ss_pattern"
 done

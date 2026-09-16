@@ -228,6 +228,36 @@ expect_success "single y confirms a destructive action" confirm_accepts y
 expect_success "n cancels a destructive action" confirm_rejects n
 expect_success "NO cancels a destructive action" confirm_rejects NO
 expect_success "unrelated text cancels a destructive action" confirm_rejects YESPLEASE
+
+# print_ss_entry_share is what makes "enabled but no link and no key" impossible:
+# it echoes the link sbshare wrote and always prints the server-side key.
+ss_share_printing(){
+  (
+    local dir="$relay_roundtrip/ss-print" key="$ss_key_valid" out
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell owns SB_DIR
+    SB_DIR="$dir"
+    out="$dir/stdout.txt"
+    # shellcheck disable=SC2317
+    green(){ FLOW_MESSAGES+="green:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
+    # No share file yet: it must say so instead of pretending, and still show the key.
+    FLOW_MESSAGES=
+    print_ss_entry_share "$key" > "$out" || return 1
+    [[ $FLOW_MESSAGES == *'分享文件暂不可用'* ]] || return 1
+    [[ $FLOW_MESSAGES == *"服务端密钥（Shadowsocks-2022 PSK）：$key"* ]] || return 1
+    # With the file present the link itself is echoed for the operator to copy.
+    printf '%s\n' 'ss://BASE64@1.2.3.4:443#ss-host' > "$SB_DIR/ss.txt"
+    chmod 600 "$SB_DIR/ss.txt"
+    FLOW_MESSAGES=
+    print_ss_entry_share "$key" > "$out" || return 1
+    grep -q 'ss://BASE64@1.2.3.4:443#ss-host' "$out" || return 1
+    [[ $FLOW_MESSAGES == *"$SB_DIR/ss.txt"* ]] || return 1
+    return 0
+  )
+}
+expect_success "the optional entry reports its link and key after a change" ss_share_printing
 unset -f readp
 
 # The caller must also *say* that nothing happened: the original bug was a
@@ -1771,7 +1801,7 @@ pass "SS-2022 key commit failure is shown"
 [[ $FLOW_MESSAGES == *"Shadowsocks-2022密钥修改成功：$SS_KEY_TWO"* ]] ||
   fail "SS-2022 key success was not shown"
 pass "SS-2022 key success is shown"
-[[ $FLOW_PROMPTS == *'按回车返回凭据菜单...'* ]] ||
+[[ $FLOW_PROMPTS == *'按回车返回可选功能...'* ]] ||
   fail "SS-2022 key success did not wait for return"
 pass "SS-2022 key success waits before returning"
 
