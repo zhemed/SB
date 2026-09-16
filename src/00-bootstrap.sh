@@ -69,6 +69,18 @@ readp(){
     IFS= read -r -p "$(yellow "$1")"
   fi
 }
+
+# Confirmation gate for destructive actions. Accepts yes/y in any case, and
+# returns non-zero for anything else (including EOF) so the caller can say that
+# nothing happened — a silent `return` looks exactly like a broken menu item.
+confirm_yes(){
+  local prompt=$1 answer
+  readp "$prompt" answer || return 1
+  case "${answer^^}" in
+    YES|Y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 if [[ $EUID -ne 0 ]]; then
   yellow "请以root模式运行脚本"
   exit 1
@@ -93,7 +105,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.1.0"
+sb_version="v3.1.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet

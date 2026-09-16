@@ -193,6 +193,41 @@ relay_settings_roundtrip(){
 }
 expect_success "relay state file round-trips, validates and clears" relay_settings_roundtrip
 
+# confirm_yes lives in src/00-bootstrap.sh, which this file does not source.
+# The case-sensitivity here was a real bug: typing `yes` at a `YES` prompt
+# cancelled silently, so the menu looked broken.
+confirm_source="$TEMP_DIR/confirm-yes.sh"
+# confirm_yes is followed by top-level bootstrap code, so stop at its closing
+# brace rather than at the next function definition.
+awk '
+  !inside && $0 == "confirm_yes(){" {inside=1; print; next}
+  inside && /^\}/ {print; exit}
+  inside {print}
+' "$ROOT_DIR/sb.sh" > "$confirm_source"
+[[ -s $confirm_source ]] || fail "cannot extract confirm_yes"
+confirm_answer=
+# Called indirectly by the sourced confirm_yes.
+# shellcheck disable=SC2317
+readp(){ printf -v "$2" '%s' "$confirm_answer"; }
+# shellcheck source=/dev/null
+source "$confirm_source"
+
+confirm_accepts(){
+  confirm_answer=$1
+  confirm_yes "prompt"
+}
+confirm_rejects(){
+  confirm_answer=$1
+  ! confirm_yes "prompt"
+}
+expect_success "YES confirms a destructive action" confirm_accepts YES
+expect_success "lowercase yes confirms a destructive action" confirm_accepts yes
+expect_success "mixed-case Yes confirms a destructive action" confirm_accepts Yes
+expect_success "single y confirms a destructive action" confirm_accepts y
+expect_success "an empty answer cancels a destructive action" confirm_rejects ''
+expect_success "unrelated text cancels a destructive action" confirm_rejects YESPLEASE
+unset -f readp
+
 relay_candidate_builders(){
   (
     local dir="$relay_roundtrip/candidate" key="$ss_key_valid"

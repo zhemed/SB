@@ -69,6 +69,18 @@ readp(){
     IFS= read -r -p "$(yellow "$1")"
   fi
 }
+
+# Confirmation gate for destructive actions. Accepts yes/y in any case, and
+# returns non-zero for anything else (including EOF) so the caller can say that
+# nothing happened — a silent `return` looks exactly like a broken menu item.
+confirm_yes(){
+  local prompt=$1 answer
+  readp "$prompt" answer || return 1
+  case "${answer^^}" in
+    YES|Y) return 0 ;;
+    *) return 1 ;;
+  esac
+}
 if [[ $EUID -ne 0 ]]; then
   yellow "请以root模式运行脚本"
   exit 1
@@ -93,7 +105,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.1.0"
+sb_version="v3.1.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -4512,7 +4524,7 @@ relay_candidate_without_upstream(){
 }
 
 set_relay_upstream(){
-  local server port password candidate confirm commit_status retry
+  local server port password candidate commit_status retry
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
@@ -4540,8 +4552,11 @@ set_relay_upstream(){
     if ! relay_upstream_reachable "$server" "$port"; then
       yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动或地址填错）"
       yellow "启用后所有出网流量都会走它，上游不通等于断网；清除上游可立即恢复直连"
-      readp "确认仍要保存？输入 YES 继续，其他输入重新填写：" confirm || return 1
-      [[ $confirm == YES ]] || continue
+      if ! confirm_yes "确认仍要保存？输入 YES/y 继续（其他输入取消）："; then
+        yellow "已取消，未做任何修改"
+        readp "按回车返回可选功能..."
+        return 0
+      fi
     fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建上游候选配置失败，原配置未修改"
@@ -4579,7 +4594,7 @@ set_relay_upstream(){
 }
 
 clear_relay_upstream(){
-  local candidate confirm commit_status
+  local candidate commit_status
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
@@ -4591,8 +4606,11 @@ clear_relay_upstream(){
     return 0
   fi
   echo
-  readp "确认清除上游并恢复直连出网？输入 YES 确认：" confirm || return 1
-  [[ $confirm == YES ]] || return 0
+  if ! confirm_yes "确认清除上游并恢复直连出网？输入 YES/y 确认（其他输入取消）："; then
+    yellow "已取消，未做任何修改"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
   if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
     red "创建上游候选配置失败，原配置未修改"
     readp "按回车返回主菜单..."
@@ -4761,7 +4779,7 @@ enable_ss_entry(){
 }
 
 disable_ss_entry(){
-  local candidate confirm commit_status
+  local candidate commit_status
   if ! sbactive; then
     readp "按回车返回可选功能..."
     return 1
@@ -4773,8 +4791,11 @@ disable_ss_entry(){
   fi
   echo
   yellow "停用后使用这个入口的客户端会立即连不上，分享文件与客户端配置也会去掉它"
-  readp "确认停用 Shadowsocks-2022 入口？输入 YES 确认：" confirm || return 1
-  [[ $confirm == YES ]] || return 0
+  if ! confirm_yes "确认停用 Shadowsocks-2022 入口？输入 YES/y 确认（其他输入取消）："; then
+    yellow "已取消，未做任何修改"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
   if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
     red "创建候选配置失败，原配置未修改"
     readp "按回车返回可选功能..."
