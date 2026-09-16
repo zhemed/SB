@@ -41,7 +41,7 @@ Six consumers plus a test pin. A rename touches all of them.
 
 Same exercise for the UUID: `insport` → `$uuid` → server config (`hysteria2` **password**) →
 client output (`result()` reads it back from that same inbound) → `changeuuid` (which must **not**
-touch SOCKS5, asserted at `tests/verify.sh:113-118`).
+touch Shadowsocks-2022, asserted at `tests/verify.sh:153-158`).
 
 Note how the last step changed when VLESS Reality was removed: the UUID used to be read back from
 the `vless` inbound, so deleting that protocol silently broke every share-link generation until the
@@ -96,7 +96,7 @@ to catch — the producer and the consumer were in different modules.
 base="/etc/sb"          # correct: hardcode the literal
 ```
 
-The test suite rewrites `/etc/sb` with `sed` (`tests/unit.sh:885`), which only works because the hook
+The test suite rewrites `/etc/sb` with `sed` (`tests/unit.sh:1014`), which only works because the hook
 uses literals.
 
 ### Mistake 2: Changing a global without tracing consumers

@@ -39,8 +39,8 @@ behavioural test runs.
 |-------|------|----------|
 | 1 | `scripts/build.sh --check` — artifact in sync | `tests/verify.sh:20` |
 | 2 | `bash -n` on `sb.sh`, `build.sh`, all three test files | `tests/verify.sh:21-25` |
-| 3 | Pinned versions, digests, HTTPS policy, lifecycle strings, security settings | `tests/verify.sh:27-168` |
-| 4 | Pinned ACME reload hook structure | `tests/verify.sh:170-231` |
-| 5 | `shellcheck --severity=info` (skipped with a message if absent) | `tests/verify.sh:268-276` |
-| 6 | `bash tests/unit.sh` | `tests/verify.sh:243` |
-| 7 | `bash tests/repair.sh` | `tests/verify.sh:244` |
+| 3 | Pinned versions, digests, HTTPS policy, lifecycle strings, security settings | `tests/verify.sh:27-225` |
+| 4 | Pinned ACME reload hook structure | `tests/verify.sh:249-283` |
+| 5 | `shellcheck --severity=info` (skipped with a message if absent) | `tests/verify.sh:312-320` |
+| 6 | `bash tests/unit.sh` | `tests/verify.sh:322` |
+| 7 | `bash tests/repair.sh` | `tests/verify.sh:323` |

@@ -14,9 +14,9 @@ Run `bash tests/verify.sh` after any change in this document's scope.
 
 | Location | Value form | Asserted by |
 |----------|-----------|-------------|
-| `VERSION` | `2.0.1` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
-| `src/00-bootstrap.sh:95` | `sb_version="v2.0.1"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
-| `README.md` "当前项目版本" line | `` 当前项目版本：`2.0.1` `` | `tests/verify.sh:52-53` |
+| `VERSION` | `3.0.0` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
+| `src/00-bootstrap.sh:96` | `sb_version="v3.0.0"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
+| `README.md` "当前项目版本" line | `` 当前项目版本：`3.0.0` `` | `tests/verify.sh:52-53` |
 
 The build derives the required literal from `VERSION` itself:
 
@@ -33,7 +33,7 @@ version=$(<"$VERSION_FILE")
 ```
 
 `VERSION` must be a regular file, not a symlink, and must contain exactly one semver
-(`scripts/build.sh:64`).
+(`scripts/build.sh:64,68`).
 
 ### Version bump procedure
 
@@ -67,21 +67,26 @@ of them carried a Clash default-routing regression. That is the failure mode the
 ## 2. Pinned upstream components
 
 ```bash
-# src/00-bootstrap.sh:8-14
+# src/00-bootstrap.sh:8-15
 CORE_VERSION="1.10.7"
 ACME_VERSION="3.1.4"
 CORE_SHA256_AMD64="1951a078..."
 CORE_SHA256_ARM64="15b43a0a..."
 CORE_SHA256_ARMV7="691882d6..."
 ACME_ARCHIVE_SHA256="e5f8e187..."
-SOCKS_USERNAME="sb"
+SS_METHOD="2022-blake3-aes-256-gcm"
+IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"
 ```
 
-`tests/verify.sh:27-38` pins **all seven** as literal lines — the exact `grep -Fxc` count is 1 for
-each. Changing the sing-box version therefore means three digest updates, not one.
+`tests/verify.sh:27-38` pins the two versions and the four digests as literal lines — the exact
+`grep -Fxc` count is 1 for each. Changing the sing-box version therefore means three digest updates,
+not one.
 
-`SOCKS_USERNAME="sb"` is asserted at `tests/verify.sh:46-47`: the SOCKS5 username is intentionally
-fixed and is **not** randomized, unlike its password.
+`SS_METHOD="2022-blake3-aes-256-gcm"` is asserted at `tests/verify.sh:46-47`: the Shadowsocks-2022
+cipher is intentionally fixed, and only its key is randomized. `IPV6_SYSCTL_ROOT` is pinned inside
+the Shadowsocks-2022 integration list (`tests/verify.sh:95-129`, entries
+`IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"` and `server_listen_address()`), so the sysctl root the listen
+address is probed from is a gate-enforced literal too.
 
 ---
 
@@ -90,7 +95,7 @@ fixed and is **not** randomized, unlike its password.
 All upstream downloads must be HTTPS-only, digest-verified, and use the project's own archive URLs.
 
 ```bash
-# src/00-bootstrap.sh:211-213
+# src/00-bootstrap.sh:230-232
 if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 \
   --connect-timeout 10 --max-time 180 -o "$archive" \
   "https://github.com/SagerNet/sing-box/releases/download/v$sbcore/$sbname.tar.gz"; then
@@ -105,15 +110,15 @@ if ! curl --fail --location --proto '=https' --proto-redir '=https' --retry 2 \
   deliberately not used.
 
 The sing-box kernel is verified twice: the archive digest before extraction
-(`src/00-bootstrap.sh:217-222`) and the extracted binary's reported version before and after the
-atomic replacement (`src/00-bootstrap.sh:228-233`, `244-257`). Never relax these to "make install
+(`src/00-bootstrap.sh:237-242`) and the extracted binary's reported version before and after the
+atomic replacement (`src/00-bootstrap.sh:248-253`, `264-277`). Never relax these to "make install
 work" — a digest mismatch means the download is wrong or tampered with.
 
 ---
 
 ## 4. Client-facing security settings are pinned strings too
 
-`tests/verify.sh:136-150` pins secure-client defaults and **forbids** the insecure variants:
+`tests/verify.sh:211-225` pins secure-client defaults and **forbids** the insecure variants:
 
 ```
 allow-lan: false
@@ -130,16 +135,35 @@ formatting is fine; weakening these values is a gate failure by design.
 
 ## 5. Protocol credentials are pinned
 
-- Hysteria2 uses a UUID as its password; SOCKS5 has its own random password.
-- `tests/verify.sh:113-118` extracts the `changeuuid()` body and fails if it mentions `socks5-sb`,
-  i.e. changing the UUID must not touch SOCKS5 credentials.
-- SOCKS5 must not participate in automatic testing or load balancing. The generated client
-  configuration contains **no** automatic-selection groups at all, and `tests/verify.sh` asserts
-  their absence (`"type": "urltest"`, `"tag": "auto"`, `type: load-balance`, `type: url-test`,
-  `负载均衡`, `自动选择`) plus that the sing-box proxy selector does not default to a removed group.
-- SOCKS5 is TCP-only and plaintext; `tests/verify.sh:152-155` requires the UDP block route and the
-  `SOCKS5本身不加密` warning to remain.
-- `tests/verify.sh:72-80` pins `SHORTCUT="/usr/bin/sb"` and requires the Cloudflare API Token prompt
+- Hysteria2 uses a UUID as its password; Shadowsocks-2022 uses a 44-character padded base64 key
+  (32 raw bytes). The key is generated by `generate_ss_password` and accepted by `valid_ss_password`
+  (`src/20-ports.sh:17-27`); the cipher is the pinned `SS_METHOD` constant
+  (`src/00-bootstrap.sh:14`).
+- `tests/verify.sh:153-158` extracts the `changeuuid()` body, bracketed by the neighbouring
+  `change_ss_password()`, and fails if it mentions `ss-sb`, i.e. changing the UUID must not touch
+  Shadowsocks-2022 credentials.
+- The optional upstream credential lives in the state file `$SB_DIR/relay.conf` (mode 600, exactly
+  three `server=` / `port=` / `password=` lines), written only through `save_relay_settings` →
+  `atomic_write_private_text` (`src/40-service.sh:95-102`) and re-read by `render_server_config` on
+  every render. `tests/verify.sh:95-129` requires `relay_settings_present()`,
+  `load_relay_settings()`, `save_relay_settings()`, `"tag": "relay"`, `"final": "${route_final}"`
+  and `relay.conf`.
+- Neither Shadowsocks-2022 nor Hysteria2 may participate in automatic testing or load balancing. The
+  generated client configuration contains **no** automatic-selection groups at all, and
+  `tests/verify.sh` asserts their absence (`"type": "urltest"`, `"tag": "auto"`,
+  `type: load-balance`, `type: url-test`, `负载均衡`, `自动选择`) plus that the sing-box proxy selector
+  does not default to a removed group (`tests/verify.sh:160-173`), does not default to the
+  Shadowsocks-2022 proxy (`:196-198`), and that the Clash select group defaults to the encrypted
+  Hysteria2 proxy (`:199-209`).
+- The Shadowsocks-2022 inbound is TCP-only (`"network": "tcp"`, `src/30-server-config.sh:65`) because
+  the UDP half of the shared port belongs to Hysteria2; `tests/verify.sh:227-234` requires the UDP
+  block route (`"network": "udp"` from the `ss-sb` inbound) and the three installer warnings
+  (`Shadowsocks-2022 入站只承载 TCP`, `密钥不可推导`, `时间戳抗重放`).
+- `tests/verify.sh:132-145` fails if the retired plaintext SOCKS5 integration comes back
+  (`"tag": "socks5-sb"`, `"type": "socks"`, `type: socks5`, `SOCKS_USERNAME`,
+  `valid_socks_password`, `change_socks_password`, `ressocks5`, `socks5.txt`) or if the dead
+  comma-joined route rule `"network": "udp,tcp"` reappears.
+- `tests/verify.sh:73-81` pins `SHORTCUT="/usr/bin/sb"` and requires the Cloudflare API Token prompt
   to be **visible** (`readp`), not hidden with `read -s`.
 
 ---

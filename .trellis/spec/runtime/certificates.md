@@ -4,7 +4,7 @@ Certificate deployment is the most safety-critical subsystem: it mutates the liv
 running service, unattended, from cron. The design exists to make every step reversible.
 
 Primary sources: `src/10-acme.sh` (1494 lines), `src/60-cron.sh` (563), constants in
-`src/00-bootstrap.sh:24-40`.
+`src/00-bootstrap.sh:25-41`.
 
 ---
 
@@ -52,7 +52,7 @@ Rules:
 ## 2. acme.sh writes to staging, never to the live path
 
 ```bash
-# src/00-bootstrap.sh:32-34
+# src/00-bootstrap.sh:33-35
 ACME_STAGE="$ACME_HOME/sb-stage"
 ACME_STAGE_CERT="$ACME_STAGE/fullchain.pem"
 ACME_STAGE_KEY="$ACME_STAGE/private.key"
@@ -63,7 +63,7 @@ ACME_STAGE_KEY="$ACME_STAGE/private.key"
   --key-file "$ACME_STAGE_KEY" --fullchain-file "$ACME_STAGE_CERT" \
 ```
 
-Asserted by `tests/verify.sh:219-220` with the message
+Asserted by `tests/verify.sh:298-299` with the message
 `acme.sh still writes certificate files outside the staging directory`.
 
 Because the deployment target recorded in acme.sh's own domain conf is the staging path, the live
@@ -101,7 +101,7 @@ test suite can parameterise them by substitution:
   identity_file="/etc/sb/acme_server_name"
 ```
 
-(`tests/unit.sh:885` rewrites `/etc/sb` → its sandbox with `sed`, which only works because these are
+(`tests/unit.sh:1014` rewrites `/etc/sb` → its sandbox with `sed`, which only works because these are
 literals.)
 
 **(b) Extractable by a flat `awk`.** Exactly one line equal to `ACMERELOAD` must exist in the whole
@@ -116,11 +116,11 @@ awk '/<<'\''ACMERELOAD'\''/{inside=1; next} /^ACMERELOAD$/{inside=0} inside' \
   "$candidate" > "$hook_candidate"
 ```
 
-Repeated on the published artifact by `tests/verify.sh:170-175`. The extracted hook must also pass
+Repeated on the published artifact by `tests/verify.sh:249-254`. The extracted hook must also pass
 `bash -n` standalone.
 
 **(c) Versioned by identity.** `ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"`
-(`src/00-bootstrap.sh:38`) appears exactly once inside the hook. Any **semantic** change to the hook
+(`src/00-bootstrap.sh:39`) appears exactly once inside the hook. Any **semantic** change to the hook
 requires bumping this to `v3` and updating the anchor assertions — the identity is what marks an
 installed old hook as stale.
 
@@ -138,7 +138,7 @@ including their leading whitespace:
 triggers a silent rewrite.** That is intentional, not decorative.
 
 The missing-config bypass must stay provably limited to initial install (asserted by
-`tests/verify.sh:176-192`, the exact 7-line block at `src/10-acme.sh:767-783`).
+`tests/verify.sh:255-271`, the exact 7-line block at `src/10-acme.sh:767-783`).
 
 ---
 
@@ -161,7 +161,7 @@ key:
   [[ -n "$cert_public" && "$cert_public" == "$key_public" ]] || exit 1
 ```
 
-(`tests/unit.sh:909-913` asserts an invalid staged cert leaves the active generation unchanged.)
+(`tests/unit.sh:1038-1042` asserts an invalid staged cert leaves the active generation unchanged.)
 
 Then it copies into a **new generation** and flips the pointer atomically, and only after a
 **verified restart** does it prune superseded generations:
@@ -224,7 +224,7 @@ Release is the reverse order: `ACME_COMPAT_LOCK_FD` first, then `ACME_LOCK_FD`
 
 - `ACME_LOCK="/run/sb-acme.lock"` lives **outside** the removable managed directory, so it survives
   uninstall and repair; `ACME_COMPAT_LOCK="$SB_DIR/acme.lock"` preserves v1.8.0 interop. Both facts
-  are pinned by `tests/verify.sh:221-226`.
+  are pinned by `tests/verify.sh:300-305`.
 - Acquisition refuses symlink/non-regular lock files, forces 600, and requires `SB_DIR` to be a real
   directory (`src/60-cron.sh:58-63`).
 - Timeout differs by caller class: `flock -w 30` for the interactive script
@@ -272,7 +272,7 @@ Additional guards:
 - **If the certificate mode cannot be determined, keep the existing cron and fail loudly**
   (`src/60-cron.sh:559-561`), rather than guessing and interrupting renewals.
 - Idempotency is **byte-level**: a current artifact is never rewritten
-  (`src/60-cron.sh:286-287`; `tests/unit.sh:1023-1027`).
+  (`src/60-cron.sh:286-287`; `tests/unit.sh:1152-1156`).
 
 The generated renewal runner (`ACMERENEW`, `src/60-cron.sh:300-425`) reproduces the lock protocol
 with hardcoded descriptors — 9 for the global lock, 8 for the compat lock — and those lines are
@@ -284,7 +284,7 @@ pinned byte-exactly by an identity check (`src/60-cron.sh:265-267`). It must nev
 ## 7. Secrets
 
 - The Cloudflare API Token is read through the ordinary **visible** `readp`
-  (`src/10-acme.sh:1270`); `tests/verify.sh:74-80` fails the build if a hidden read or a
+  (`src/10-acme.sh:1270`); `tests/verify.sh:75-81` fails the build if a hidden read or a
   "hidden input" message is introduced.
 - It is passed **only** via the environment and cleared on every exit path — failure first, then
   success (`src/10-acme.sh:1315-1318`, `1324`).
@@ -363,7 +363,7 @@ Regression coverage: `tests/repair.sh` → `interrupt_handler_restores_only_infl
 ## 9. Change checklist
 
 1. Editing the hook body → **bump `ACME_RELOAD_IDENTITY`** and update every anchor grep in
-   `acme_reload_hook_is_current` (`src/10-acme.sh:762-796`) plus `tests/verify.sh:192-204`.
+   `acme_reload_hook_is_current` (`src/10-acme.sh:762-796`) plus `tests/verify.sh:272-283`.
 2. Keep the heredoc quoted, the terminator at column 0, exactly one `ACMERELOAD` line, and the hook
    `bash -n`-clean standalone.
 3. Never reuse a heredoc helper's name for a top-level function — the build rejects duplicates.

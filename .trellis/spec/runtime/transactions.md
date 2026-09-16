@@ -12,9 +12,9 @@ They use different transaction models on purpose, and they must never be conflat
 | Flag | `INSTALL_TRANSACTION_ACTIVE` | `REPAIR_TRANSACTION_ACTIVE` (+ per-artifact flags) |
 | On abort | Full cleanup — removes everything this install created | **Restore** the pre-repair stack |
 | Touches `/etc/sb` on failure | Yes — removes it if this run created it | **Never deletes `/etc/sb`** |
-| Terminators | `cleanup_install_transaction` (`src/80-lifecycle.sh:91`) | `abort_repair_transaction` (`src/85-repair.sh:650`), `commit_repair_transaction` (`:678`) |
+| Terminators | `cleanup_install_transaction` (`src/80-lifecycle.sh:91`) | `abort_repair_transaction` (`src/85-repair.sh:613`), `commit_repair_transaction` (`:641`) |
 
-Flags are declared as globals in `src/00-bootstrap.sh:41-50`; all reads use the `${VAR:-0}` form
+Flags are declared as globals in `src/00-bootstrap.sh:42-52`; all reads use the `${VAR:-0}` form
 because the module may run before the variable is set in a test harness.
 
 ---
@@ -46,7 +46,7 @@ Rules:
   # src/90-main.sh:46
     save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   ```
-- **Success clears the flag without cleaning** (`src/90-main.sh:105`).
+- **Success clears the flag without cleaning** (`src/90-main.sh:81`).
 - `cleanup_install_transaction` clears the flag **before** doing the work, which is what makes it
   idempotent and safe under re-entry:
   ```bash
@@ -79,7 +79,7 @@ Rules:
 Repair opens with a rollback point and records **per-artifact** change flags:
 
 ```bash
-# src/85-repair.sh:452-456 (abridged)
+# src/85-repair.sh:417-421 (abridged)
 begin_repair_transaction(){
   local backup service_path service_mode
   REPAIR_TRANSACTION_ACTIVE=1
@@ -87,17 +87,17 @@ begin_repair_transaction(){
 ```
 
 - `REPAIR_CORE_REPLACED`, `REPAIR_CONFIG_CHANGED`, `REPAIR_SERVICE_CHANGED` are set **before** the
-  corresponding mutation, with an explicit comment at `src/85-repair.sh:186-188` explaining why: an
+  corresponding mutation, with an explicit comment at `src/85-repair.sh:183-185` explaining why: an
   interrupt must not be able to land between `mv(1)` and the rollback-state update.
 - `REPAIR_ORIGINAL_STACK_VALID` records whether the saved state is actually usable: all backups
   present **and** the service active **and** the backed-up core able to validate the backed-up
   config. If not, rollback is marked `not_available` rather than attempted
-  (`src/85-repair.sh:654-663`).
+  (`src/85-repair.sh:617-626`).
 
 Both terminators raise `REPAIR_TRANSACTION_FINALIZING=1` first, then clear both flags:
 
 ```bash
-# src/85-repair.sh:650-676 (abridged)
+# src/85-repair.sh:613-639 (abridged)
 abort_repair_transaction(){
   local status=0
   [[ ${REPAIR_TRANSACTION_ACTIVE:-0} -eq 1 ]] || return 0
@@ -120,7 +120,7 @@ abort_repair_transaction(){
 ```
 
 `commit_repair_transaction` deletes the recovery points, cleans temporaries, **still disarms the
-transaction** if cleanup fails, and returns non-zero to report it (`src/85-repair.sh:678-692`).
+transaction** if cleanup fails, and returns non-zero to report it (`src/85-repair.sh:641-655`).
 
 Repair never lets a cosmetic failure abort a healthy core: maintenance failures set
 `maintenance_failed=1`, the report is printed before every early return, and the function returns 0
@@ -133,14 +133,14 @@ only when nothing failed.
 One trap, installed once, in the entrypoint module:
 
 ```bash
-# src/90-main.sh:202
+# src/90-main.sh:205
 trap handle_install_interrupt INT TERM HUP
 ```
 
 The handler's order is fixed and load-bearing:
 
 ```bash
-# src/90-main.sh:171-200 (structure)
+# src/90-main.sh:174-204 (structure)
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
     return 0                      # (a) finalization in progress → swallow
@@ -166,7 +166,7 @@ Requirements:
 - **(a) before (b)** — the finalizing check must precede disabling the trap, or a signal arriving
   during commit would trigger a second rollback.
 - **(b) `trap ''` is the re-entrancy guard.** After it, a second signal cannot re-enter the handler.
-- **Exit status is 130** for interrupt-initiated exits. `tests/repair.sh:410` asserts this.
+- **Exit status is 130** for interrupt-initiated exits. `tests/repair.sh:390` asserts this.
 - Cleanup of transient download state happens last and is best-effort.
 - **There is no EXIT trap in the main script.** Only the generated ACME deploy child has one
   (`src/10-acme.sh:481-482`).
@@ -213,7 +213,7 @@ Before touching live paths, the restored pair is re-validated in a scratch copy,
 ## 6. Last-good config
 
 ```bash
-# src/00-bootstrap.sh:17
+# src/00-bootstrap.sh:18
 SB_LAST_GOOD="$SB_DIR/sb.json.last-good"
 ```
 
@@ -221,7 +221,7 @@ Written **only** from a config that passes the full gate (non-empty, trusted fil
 `check` passes), atomically, and only after the service is confirmed running on it:
 
 ```bash
-# src/40-service.sh:458-460
+# src/40-service.sh:518-520
   if restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
     save_last_good_config "$SB_CONFIG" || yellow "配置已生效，但最后可用配置快照更新失败"
@@ -229,7 +229,7 @@ Written **only** from a config that passes the full gate (non-empty, trusted fil
 
 A failure to refresh it is a warning, never a rollback trigger. Repair's restore priority is:
 live config → last-good (skipped when it equals the live config) → reserved backups newest-first.
-The file counts as install data (`managed_install_data_present`, `src/40-service.sh:341-345`), and is
+The file counts as install data (`managed_install_data_present`, `src/40-service.sh:418-422`), and is
 exempt from the temporary-file sweep.
 
 ---
@@ -240,7 +240,7 @@ Repair reaches the rebuild path only after the live config, last-good, and every
 all failed to yield a usable parameter set. It requires the user to type the literal word `REBUILD`:
 
 ```bash
-# src/85-repair.sh:296-299 (structure)
+# src/85-repair.sh:271-274 (structure)
   ... announce the consequence BEFORE prompting ...
   [[ $confirmation == REBUILD ]] || return 1
 ```
@@ -267,7 +267,7 @@ crontab lines (only marker-matching lines are filtered).
 
 - Aborting an install step without calling `abort_install_transaction` — leaves a half-installed
   system behind.
-- Making repair delete `/etc/sb`; that is install-transaction behaviour, and `tests/repair.sh:681-684`
+- Making repair delete `/etc/sb`; that is install-transaction behaviour, and `tests/repair.sh:773-776`
   fails the build if it reappears.
 - Setting a `REPAIR_*_CHANGED` flag *after* the mutation — an interrupt in between leaves the
   transaction believing nothing needs rolling back.

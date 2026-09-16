@@ -10,7 +10,7 @@ function contains both branches, adjacent, and they must stay semantically ident
 Alpine implies OpenRC. The check is used consistently for the branch, never `systemctl --version`:
 
 ```bash
-# src/40-service.sh:181-185
+# src/40-service.sh:241-245
   if command -v apk >/dev/null 2>&1; then
     openrc_service_definition_is_repairable
   else
@@ -18,7 +18,7 @@ Alpine implies OpenRC. The check is used consistently for the branch, never `sys
   fi
 ```
 
-Also at `src/40-service.sh:173`, `237`, `278`, `296`, `304`, `312`, `388` and
+Also at `src/40-service.sh:250`, `314`, `355`, `373`, `381`, `389`, `465` and
 `src/80-lifecycle.sh:313`.
 
 The one systemd-specific *probe* is a capability check for the core's dependencies, not a branch
@@ -28,7 +28,7 @@ selector (`systemd` + `/run/systemd/system`).
 conflict, not as "both installed":
 
 ```bash
-# src/40-service.sh:330-334 (abridged)
+# src/40-service.sh:390-393 (abridged)
     systemd_service_definition_present "$SB_SERVICE" && return 1
     openrc_unit_is_owned "$OPENRC_UNIT" ...
   else
@@ -43,7 +43,7 @@ Both generators write a **dot-prefixed temporary inside the unit directory** so 
 never observes a half-written unit, then rename:
 
 ```bash
-# src/40-service.sh:191 / 210
+# src/40-service.sh:251 / 270
     unit_tmp=$(mktemp "/etc/init.d/.${SB_SERVICE}.XXXXXX") || return 1
     unit_tmp=$(mktemp "/etc/systemd/system/.${SB_SERVICE}.service.XXXXXX") || return 1
 ```
@@ -51,7 +51,7 @@ never observes a half-written unit, then rename:
 Modes differ deliberately: OpenRC units are executables (700), systemd units are not (600).
 
 ```bash
-# src/40-service.sh:205 / 233
+# src/40-service.sh:265 / 293
     if ! chmod 700 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$OPENRC_UNIT"; then
     if ! chmod 600 "$unit_tmp" || ! mv -fT -- "$unit_tmp" "$SYSTEMD_UNIT"; then
 ```
@@ -64,7 +64,7 @@ ExecStart=$SB_BIN run -c $SB_CONFIG
 command="$SB_BIN"  +  command_args="run -c $SB_CONFIG"
 ```
 
-Changing either string breaks the ownership check at `src/40-service.sh:96-98` / `143-145`, which
+Changing either string breaks the ownership check at `src/40-service.sh:173-175` / `220-222`, which
 matches them with `grep -Fqx`.
 
 ---
@@ -75,13 +75,13 @@ Both init systems return success in situations that do not mean "done". The code
 instead:
 
 ```bash
-# src/40-service.sh:296-297
+# src/40-service.sh:356-357
     rc-update add "$SB_SERVICE" default >/dev/null 2>&1 ||
       rc-update show default 2>/dev/null | grep -qE "(^|[[:space:]])${SB_SERVICE}([[:space:]]|$)" || return 1
 ```
 
 ```bash
-# src/40-service.sh:415-416
+# src/40-service.sh:475-476
     systemctl disable "$SB_SERVICE" >/dev/null 2>&1 || true
     systemctl is-enabled "$SB_SERVICE" >/dev/null 2>&1 && failed=1
 ```
@@ -89,7 +89,7 @@ instead:
 And always **sleep before judging liveness**:
 
 ```bash
-# src/40-service.sh:308-309
+# src/40-service.sh:368-369
   sleep 1
   service_is_active
 ```
@@ -97,7 +97,7 @@ And always **sleep before judging liveness**:
 Equivalent helper for plain restart, used by `commit_config`:
 
 ```bash
-# src/40-service.sh:312-318
+# src/40-service.sh:372-378
 restartsb(){
   if command -v apk >/dev/null 2>&1; then
     rc-service "$SB_SERVICE" restart
@@ -115,7 +115,7 @@ restartsb(){
 cleanup with **two distinct messages** depending on whether cleanup itself succeeded:
 
 ```bash
-# src/40-service.sh:264-280 (abridged)
+# src/40-service.sh:324-340 (abridged)
     if ! systemctl daemon-reload || ! systemctl enable --now "$SB_SERVICE"; then
       if cleanup_service; then
         red "创建或启动 $SB_SERVICE 服务失败，已清理服务文件"
@@ -139,7 +139,7 @@ Never report a bare "failed" when a cleanup ran — the user needs to know wheth
 error:
 
 ```bash
-# src/40-service.sh:402-422 (abridged)
+# src/40-service.sh:462-482 (abridged)
 cleanup_service(){
   local failed=0
   service_name_conflict && return 1
@@ -170,7 +170,7 @@ Ownership (`systemd_unit_is_owned`, `openrc_unit_is_owned`) means "this is our u
 user intent:
 
 ```bash
-# src/40-service.sh:165-172 (abridged)
+# src/40-service.sh:225-232 (abridged)
 systemd_service_definition_is_repairable(){
   grep -Fqx '# Managed by sb.sh' "$unit" 2>/dev/null || return 1
   systemd_service_has_other_units "$SB_SERVICE" "$unit" && return 1
@@ -181,7 +181,7 @@ systemd_service_definition_is_repairable(){
 
 **A systemd drop-in (`systemctl edit sb`) makes the unit owned but not repairable** — rebuilding the
 unit would silently discard the operator's override. This distinction is why
-`service_name_conflict` (`src/40-service.sh:326-331`) has three branches: a foreign unit is a
+`service_name_conflict` (`src/40-service.sh:403-408`) has three branches: a foreign unit is a
 conflict, but an owned-or-repairable one is not.
 
 The same rule applies inside the ACME reload hook, which refuses to restart a service it cannot
@@ -192,7 +192,7 @@ prove is ours (`src/10-acme.sh:686-703`, with an explicit comment about drop-ins
 ## 7. Reading state
 
 ```bash
-# src/40-service.sh:320-326
+# src/40-service.sh:380-386
 service_is_active(){
   if command -v apk >/dev/null 2>&1; then
     rc-service "$SB_SERVICE" status >/dev/null 2>&1
@@ -202,7 +202,7 @@ service_is_active(){
 }
 ```
 
-`is_installed` (`src/40-service.sh:337-339`) is the conjunction that gates the whole management menu:
+`is_installed` (`src/40-service.sh:414-416`) is the conjunction that gates the whole management menu:
 `managed_directory_is_owned && service_exists && [[ -x $SB_BIN && -s $SB_CONFIG ]]`.
 
 ---

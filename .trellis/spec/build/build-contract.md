@@ -93,7 +93,7 @@ Rules enforced by `scripts/build.sh:94-110`:
 The last module must contain `# sb-entrypoint` exactly once; no other module may contain it.
 
 ```bash
-# src/90-main.sh:170
+# src/90-main.sh:173
 # sb-entrypoint
 ```
 
@@ -101,7 +101,7 @@ Enforcement: `scripts/build.sh:111-116`, and again on the assembled candidate at
 `scripts/build.sh:138-139`. Everything after the marker is the script body that actually runs:
 
 ```bash
-# src/90-main.sh:206
+# src/90-main.sh:209
 prepare_runtime_state || exit 1
 ```
 
@@ -174,7 +174,7 @@ appears exactly once and that the extracted body parses:
 ```
 
 If you edit anything inside that heredoc, both the terminator count and the extraction assertions in
-`tests/verify.sh:170-204` must keep passing. See `spec/runtime/certificates.md`.
+`tests/verify.sh:249-283` must keep passing. See `spec/runtime/certificates.md`.
 
 ---
 

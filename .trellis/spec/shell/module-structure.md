@@ -7,16 +7,16 @@ the one that is "closest" to the call site.
 
 | Module | Owns |
 |--------|------|
-| `src/00-bootstrap.sh` | Constants and global declarations, `LANG`/`umask` preamble, root + OS + architecture guards, color helpers, `readp`, IP validation & detection, sing-box core download (`inssb`) |
+| `src/00-bootstrap.sh` | Constants and global declarations, `LANG`/`umask` preamble, root + OS + architecture guards, color helpers, `readp`, IP validation & detection, the IPv6 listen-address probe (`server_listen_address`), sing-box core download (`inssb`) |
 | `src/10-acme.sh` | Certificate metadata/validation, acme.sh install + Cloudflare DNS API, managed link installation, certificate deployment generations, the `ACMERELOAD` hook, self-signed fallback (`SELFSIGN`) |
-| `src/20-ports.sh` | All `valid_*` validators, port conflict detection and selection, credential generation |
-| `src/30-server-config.sh` | Server-side `sb.json` rendering and its install-time candidate validation |
-| `src/40-service.sh` | Managed-path trust checks, atomic private writers, systemd/OpenRC unit rendering + ownership, `commit_config`, last-good config, service start/stop/state |
-| `src/50-client-output.sh` | Share links (Hysteria2 / SOCKS5) and generated client files `sbox.json` / `clash.yaml` |
+| `src/20-ports.sh` | All `valid_*` validators, port conflict detection and selection, credential generation and validation (Hysteria2 UUID, Shadowsocks-2022 key) |
+| `src/30-server-config.sh` | Server-side `sb.json` rendering (inbounds, the optional `relay` outbound, `route.final`) and its install-time candidate validation |
+| `src/40-service.sh` | Managed-path trust checks, atomic private writers, the optional-upstream state file (`relay.conf` load/save/clear), systemd/OpenRC unit rendering + ownership, `commit_config`, last-good config, service start/stop/state |
+| `src/50-client-output.sh` | Share links (Hysteria2 / Shadowsocks-2022) and generated client files `sbox.json` / `clash.yaml` |
 | `src/60-cron.sh` | Crontab marker management, the `ACMERENEW` renewal runner, daily restart task, `with_acme_lock` |
-| `src/70-management.sh` | Management menus 4–7: certificate mode, ports, credentials, IP priority |
+| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, upstream/relay |
 | `src/80-lifecycle.sh` | Dependency installation, `/usr/bin/sb` shortcut, `prepare_runtime_state`, uninstall |
-| `src/85-repair.sh` | Diagnosis and the repair transaction |
+| `src/85-repair.sh` | Diagnosis and the repair transaction (including the pre-3.0.0 SOCKS5 → Shadowsocks-2022 config migration) |
 | `src/90-main.sh` | Install flow, main menu, interrupt trap, the entrypoint |
 
 Practical consequences:
@@ -47,7 +47,7 @@ umask 077
 ```
 
 ```bash
-# src/00-bootstrap.sh:71-74
+# src/00-bootstrap.sh:72-75
 if [[ $EUID -ne 0 ]]; then
   yellow "请以root模式运行脚本"
   exit 1
@@ -58,10 +58,10 @@ fi
 fixed: define the handler, install the trap, then do any pre-flight work.
 
 ```bash
-# src/90-main.sh:171
+# src/90-main.sh:174
 handle_install_interrupt(){
 ...
-# src/90-main.sh:202
+# src/90-main.sh:205
 trap handle_install_interrupt INT TERM HUP
 
 # Install the trap first: prepare_runtime_state can create the managed
@@ -69,17 +69,17 @@ trap handle_install_interrupt INT TERM HUP
 prepare_runtime_state || exit 1
 ```
 
-The final `menu` call is the last statement in the file (`src/90-main.sh:214`). See
+The final `menu` call is the last statement in the file (`src/90-main.sh:217`). See
 `spec/runtime/transactions.md` §4 for why the trap must precede the pre-flight work.
 
 **Every other module contains function definitions only.** No stray `echo`, no module-level
 variable assignments, no `if` blocks at column 0. This is what makes concatenation order safe: by
-the time `menu` runs, all 229 functions exist.
+the time `menu` runs, all 243 functions exist.
 
 Global variables that persist across calls are therefore declared **only** in `00-bootstrap.sh`:
 
 ```bash
-# src/00-bootstrap.sh:41-50
+# src/00-bootstrap.sh:42-52
 INSTALL_TRANSACTION_ACTIVE=0
 ...
 REPAIR_TRANSACTION_ACTIVE=0

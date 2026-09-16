@@ -20,12 +20,21 @@ overwriting or deleting anything, and it must never touch a file it does not own
 | `ACME_LOCK` | `/run/sb-acme.lock` | Global lock, 600 |
 | `ACME_COMPAT_LOCK` | `/etc/sb/acme.lock` | v1.8.0 interop lock, 600 |
 
-Defined once in `src/00-bootstrap.sh:15-31`. Use the constants; do not re-type paths.
+Defined once in `src/00-bootstrap.sh:16-32`. Use the constants; do not re-type paths.
 
 ### Non-secret artefacts inside `SB_DIR`
 
-`SHA256.txt`, `server_ip.log`, `server_ipcl.log`, `hy2.txt`, `socks5.txt`, `jhdy.txt`,
+`SHA256.txt`, `server_ip.log`, `server_ipcl.log`, `hy2.txt`, `ss.txt`, `jhdy.txt`,
 `jhsub.txt`, `sbox.json`, `clash.yaml`, `cert.pem`, `private.key`, `.ip_cache`, `.deps_ok`.
+
+`relay.conf` is the optional upstream ("线路机 → 落地机") state file, mode 600. Exactly three
+`key=value` lines — `server=`, `port=`, `password=` — with no shell evaluation and no unknown-key
+tolerance: `load_relay_settings` (`src/40-service.sh:70-93`) rejects anything else, and
+`render_server_config` re-reads it on every render so a rewritten config cannot silently drop the
+relay. It is written only by `save_relay_settings` (`src/40-service.sh:95-102`) through
+`atomic_write_private_text`, and removed by `clear_relay_settings`. A host whose config carries an
+upstream outbound but no `relay.conf` gets an explicit warning during the next render instead of a
+silent switch back to a direct exit.
 
 `public.key` no longer has a producer — it is still named in `managed_install_data_present` only so
 a pre-removal Reality installation is still recognised as existing install data.
@@ -49,11 +58,11 @@ that the final `mv` is a same-filesystem atomic rename. Prefixes are `<subsystem
 | Prefix | Produced by |
 |--------|-------------|
 | `.sb.json.XXXXXX` | Config candidates for management flows (`src/70-management.sh`) |
-| `.sb.json.install.XXXXXX` | Install-time config candidate (`src/30-server-config.sh:90`) |
-| `.sb.json.last-good.XXXXXX` | Last-good snapshot (`src/40-service.sh:372`) |
-| `.sb.json.backup.XXXXXX` | Pre-commit config backup (`src/40-service.sh:431`) |
+| `.sb.json.install.XXXXXX` | Install-time config candidate (`src/30-server-config.sh:106`) |
+| `.sb.json.last-good.XXXXXX` | Last-good snapshot (`src/40-service.sh:449`) |
+| `.sb.json.backup.XXXXXX` | Pre-commit config backup (`src/40-service.sh:508`) |
 | `.managed-write.XXXXXX` / `.managed-copy.XXXXXX` | Generic private writers (`src/40-service.sh:30,44`) |
-| `.core.XXXXXX` (dir), `.sing-box.XXXXXX` | Core download & install (`src/00-bootstrap.sh:207,234`) |
+| `.core.XXXXXX` (dir), `.sing-box.XXXXXX` | Core download & install (`src/00-bootstrap.sh:227,254`) |
 | `.repair-*` | Repair transaction artefacts (`src/85-repair.sh`) |
 | `.acme-backup.XXXXXX` | ACME recovery point, mode 700 (`src/10-acme.sh:1081`) |
 | `.acme-restore.XXXXXX` | Staged restore tree (`src/10-acme.sh:1142`) |
@@ -67,7 +76,7 @@ The repository-root counterparts (`.sb.sh.*`, `.acme-reload.*`, `.verify-hook.*`
 
 ### Repair's temp sweep has explicit carve-outs
 
-`src/85-repair.sh:438-446` sweeps leftover candidates by glob. New recovery-point prefixes that must
+`src/85-repair.sh:403-411` sweeps leftover candidates by glob. New recovery-point prefixes that must
 survive a repair have to be added to the carve-out list, or repair will delete them.
 
 ---
@@ -80,7 +89,7 @@ any doubt.
 ### (a) Directory marker
 
 ```bash
-# src/40-service.sh:70-74
+# src/40-service.sh:130-134
   [[ -d $SB_DIR && ! -L $SB_DIR && -f $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
   managed_path_is_trusted "$SB_DIR" && managed_regular_file_is_trusted "$SB_MANAGED_MARKER" || return 1
   grep -Fqx 'managed_by=sb.sh' "$SB_MANAGED_MARKER" 2>/dev/null &&
@@ -88,28 +97,28 @@ any doubt.
     grep -Fqx 'directory=/etc/sb' "$SB_MANAGED_MARKER" 2>/dev/null
 ```
 
-The marker content is produced by `write_managed_marker_at` (`src/40-service.sh:52-63`). Note that
+The marker content is produced by `write_managed_marker_at` (`src/40-service.sh:112-123`). Note that
 `directory=/etc/sb` is **hardcoded in both producer and consumer** — moving `SB_DIR` requires editing
-both (`src/40-service.sh:58` and `:74`).
+both (`src/40-service.sh:118` and `:134`).
 
 ### (b) Service unit marker + exact exec lines
 
 ```bash
-# src/40-service.sh:113-115
+# src/40-service.sh:173-175
   grep -Eq "$marker_pattern" "$unit" 2>/dev/null &&
     grep -Fqx "WorkingDirectory=$directory" "$unit" 2>/dev/null &&
     grep -Fqx "ExecStart=$binary run -c $config" "$unit" 2>/dev/null
 ```
 
-The marker pattern is `'^# Managed by sb\.sh$'` (`src/40-service.sh:314,317`), emitted by both unit
-generators (`src/40-service.sh:177,196`). Ownership is not enough to *modify*: drop-ins present means
-owned-but-not-repairable (`src/40-service.sh:148-155`).
+The marker pattern is `'^# Managed by sb\.sh$'` (`src/40-service.sh:391,394`), emitted by both unit
+generators (`src/40-service.sh:254,273`). Ownership is not enough to *modify*: drop-ins present means
+owned-but-not-repairable (`src/40-service.sh:225-232`).
 
 ### (c) Shortcut identity
 
 `/usr/bin/sb` is ours only if the copied script carries the project identity
 (`script_copy_has_identity`, `shortcut_is_owned` at `src/80-lifecycle.sh:200-202`). This is what makes
-the fallback download at `src/90-main.sh:81` safe — the downloaded file is verified before it is
+the fallback download at `src/90-main.sh:57` safe — the downloaded file is verified before it is
 accepted.
 
 ### The trust predicate underneath all three
@@ -129,7 +138,7 @@ Requires: exists, not a symlink, owned by the effective uid, and **not group- or
 `managed_symlink_is_trusted` (`:17-23`).
 
 Trust is re-derived per path and never inherited into a subtree — see
-`src/85-repair.sh:67-77`.
+`src/85-repair.sh:64-74`.
 
 A fourth predicate decides whether an **unowned** managed directory is our own torn creation rather
 than a foreign one — see §4.
@@ -139,7 +148,7 @@ than a foreign one — see §4.
 ## 4. Foreign assets are refused, never overwritten
 
 ```bash
-# src/40-service.sh:91-100
+# src/40-service.sh:151-163
 prepare_managed_directory(){
   if [[ ! -e $SB_DIR && ! -L $SB_DIR ]]; then
     write_managed_marker
@@ -152,7 +161,7 @@ prepare_managed_directory(){
 }
 ```
 
-The same shape appears for the service unit (`src/40-service.sh:224-227`, `269-271`), for the reload
+The same shape appears for the service unit (`src/40-service.sh:301-304`, `346-348`), for the reload
 hook target (`src/10-acme.sh:354-358`) and for the shortcut. Every refusal names the path and says
 what was not done.
 
@@ -224,7 +233,7 @@ instead. **Never rely on umask** — every created file gets an explicit mode, a
      ! mv -fT -- "$candidate" "$destination"; then
 ```
 
-Directories: `mkdir -p` then `chmod`, never umask-dependent (`src/40-service.sh:55-56`).
+Directories: `mkdir -p` then `chmod`, never umask-dependent (`src/40-service.sh:115-116`).
 
 ### Windows filesystem exception
 

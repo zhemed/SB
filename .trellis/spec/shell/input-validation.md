@@ -26,10 +26,14 @@ The full family (all in `src/20-ports.sh` unless noted):
 |-----------|------|
 | `valid_port` | 1–65535, optional minimum via `$2` (`src/20-ports.sh:2-6`) |
 | `valid_uuid` | canonical 8-4-4-4-12 hex UUID |
-| `valid_socks_password` | length 16–128, charset `[A-Za-z0-9._~-]` |
+| `valid_ss_password` | exactly 44 characters: `^[A-Za-z0-9+/]{43}=$`, i.e. 32 raw bytes of padded base64 (`src/20-ports.sh:17-19`) |
 | `valid_hostname` | ≤253 chars, ≥2 labels, per-label 1–63, no leading/trailing hyphen |
-| `valid_ipv4` | `src/00-bootstrap.sh:96-103`, octets ≤255 via `10#` |
-| `valid_ipv6` | `src/00-bootstrap.sh:105-125`, rejects `::1`, `FE80::/10`, `FC00::/7`, double `::` |
+| `valid_ipv4` | `src/00-bootstrap.sh:98-105`, octets ≤255 via `10#` |
+| `valid_ipv6` | `src/00-bootstrap.sh:107-127`, rejects `::1`, `FE80::/10`, `FC00::/7`, double `::` |
+
+`generate_ss_password` (`src/20-ports.sh:21-27`) is the producer for `valid_ss_password`: it asks
+`openssl rand -base64 32`, strips the wrapping newline, and re-validates its own output before
+printing it, so an unusable key can never leave this function.
 
 Notes that matter:
 
@@ -45,7 +49,7 @@ Occasionally a non-boolean is genuinely useful — a caller can distinguish "arg
 "resource is taken":
 
 ```bash
-# src/20-ports.sh:30-37
+# src/20-ports.sh:43-47
   case "$network" in
     tcp) ss_args=(-H -lnt) ;;
     udp) ss_args=(-H -lnu) ;;
@@ -65,7 +69,7 @@ Any input that must be validated gets a **retry loop**: prompt → default → v
 unconditionally.
 
 ```bash
-# src/20-ports.sh:50-66 (abridged)
+# src/20-ports.sh:52-69 (abridged)
   while true; do
     [[ -z $port ]] && port=$(shuf -i 10000-65535 -n 1)
     if ! valid_port "$port" 1; then
@@ -73,10 +77,7 @@ unconditionally.
     else
       port=$((10#$port))
     fi
-    if valid_port "$port" 1 && [[ -n $reserved && $port == "$reserved" ]]; then
-      red "端口 $port/$network 与已选择的TCP端口冲突"
-      port=
-    elif valid_port "$port" 1 && port_conflict "$port" "$network"; then
+    if valid_port "$port" 1 && port_conflict "$port" "$network"; then
       red "端口 $port/$network 已被占用"
     elif valid_port "$port" 1; then
       break
@@ -87,30 +88,30 @@ unconditionally.
 
 Conventions shown here, all of them expected in new input code:
 
-- **Empty input means "choose for me"**, never an error — here it produces a random, conflict-free
-  port via `random_available_port`.
-- The failure message names the **specific** problem (`已被占用` vs `与已选择的TCP端口冲突`), not
-  "input invalid".
+- **Empty input means "choose for me"**, never an error — here the loop substitutes a random
+  `shuf -i 10000-65535 -n 1` port and then re-checks it for conflicts.
+- The failure message names the **specific** problem (`已被占用`), not "input invalid".
 - The retry prompt restates the accepted range and the empty-input behaviour.
 - There are currently **no cross-field port constraints** left: Hysteria2 listens on UDP and
-  SOCKS5 on TCP, so they cannot collide. `chooseport` therefore takes only the network family; the
-  `$reserved` parameter and its retry branch were removed together with the protocol that needed
-  them. Do not reintroduce a reserved argument without a real caller.
+  Shadowsocks-2022 on TCP (which is also why the SS-2022 inbound pins `"network": "tcp"`), so they
+  cannot collide. `chooseport` therefore takes only the network family; the `$reserved` parameter and
+  its retry branch were removed together with the protocol that needed them. Do not reintroduce a
+  reserved argument without a real caller.
 
 ```bash
-socksport(){
-  readp "\n设置SOCKS5端口 (可输入1-65535，留空随机10000-65535)：" port
+ssport(){
+  readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port
   chooseport tcp
-  port_socks5=$port
+  port_ss=$port
 }
 ```
 
 - The loop writes into a **global** (`port`), which the caller then assigns to a domain global
-  (`port_socks5`, `port_hy2`). Reset `port=` before each selection so a stale value cannot be reused:
+  (`port_ss`, `port_hy2`). Reset `port=` before each selection so a stale value cannot be reused:
 
 ```bash
         port=
-        socksport
+        ssport
         port=
         hy2port
 ```
@@ -123,17 +124,18 @@ Top-level menu dispatch is a `case` on a validated string, with a catch-all that
 than aborting:
 
 ```bash
-# src/90-main.sh:116-117
-    readp "请输入数字 [0-8]: " Input || exit 0
+# src/90-main.sh:118-119
+    readp "请输入数字 [0-9]: " Input || exit 0
     case "$Input" in
 ```
 
 - `readp … || exit 0` treats EOF (Ctrl-D) as "quit", which is the only input path allowed to exit.
-- `0|"") exit 0` — Enter also quits the main menu (`src/90-main.sh:164`).
-- The catch-all is `*) red "请输入正确数字"; sleep 1 ;;` (`src/90-main.sh:165`).
+- `0|"") exit 0` — Enter also quits the main menu (`src/90-main.sh:166`).
+- The catch-all is `*) red "请输入正确数字"; sleep 1 ;;` (`src/90-main.sh:167`).
 - Sub-menus use explicit range prompts such as `请选择【0-2】` and
-  `请输入【1-2】` (`src/20-ports.sh:106`); `tests/verify.sh:108-109` asserts one of these strings
-  still exists, so keep the prompt text when adding options.
+  `请输入【1-2】` (`src/20-ports.sh:102`, `src/70-management.sh:961`);
+  `tests/verify.sh:146-149` asserts two of these strings still exist, so keep the prompt text when
+  adding options.
 
 ---
 
@@ -142,13 +144,13 @@ than aborting:
 The Cloudflare API Token is read through the ordinary visible `readp` helper:
 
 ```bash
-# asserted by tests/verify.sh:74-75
+# asserted by tests/verify.sh:75-76
   readp "请输入 Cloudflare API Token：" cf_token || return 1
 ```
 
-This is deliberate (the user must be able to verify what they pasted), and `tests/verify.sh:76-80`
+This is deliberate (the user must be able to verify what they pasted), and `tests/verify.sh:77-81`
 fails the build if a hidden read (`read -s`) or a masked-input message returns. What must never
-happen is echoing the token afterwards during status display — `README.md:75` states that no status
+happen is echoing the token afterwards during status display — `README.md:78` states that no status
 page may print the API Token. Read it, use it, store it with `chmod 600`, never print it.
 
 ---

@@ -1,6 +1,6 @@
 # Test Harness
 
-Sources: `tests/verify.sh` (246 lines), `tests/unit.sh` (1623), `tests/repair.sh` (747).
+Sources: `tests/verify.sh` (326 lines), `tests/unit.sh` (1740), `tests/repair.sh` (784).
 
 ---
 
@@ -36,7 +36,7 @@ fail(){
   test. This off-by-one is deliberate.
 - **Never hardcode the plan.** `1..N` is emitted as the last line, derived from the counter:
   ```bash
-  # tests/unit.sh:1623
+  # tests/unit.sh:1740
   printf '1..%d\n' "$passed"
   ```
   Adding a test requires no count edit.
@@ -56,7 +56,7 @@ fail(){
   }
   ```
   Extra arguments are forwarded, which is how parameterised cases work — e.g. the three signal tests
-  pass `INT` / `TERM` / `HUP` (`tests/repair.sh:670-675`).
+  pass `INT` / `TERM` / `HUP` (`tests/repair.sh:762-767`).
 
 ### Always test the negative half too
 
@@ -64,32 +64,32 @@ An `expect_failure` proves only that the operation refused. Give the accompanyin
 damaged" claim its own named assertion:
 
 ```bash
-# tests/unit.sh:525-528
+# tests/unit.sh:654-657
 expect_failure "ACME cron setup rejects an inactive daemon" setup_acme_renew_cron
 [[ $(sha256sum "$CRONTAB_FILE" | awk '{print $1}') == "$cron_hash" ]] ||
   fail "inactive daemon changed existing cron"
 pass "inactive daemon preserves existing cron"
 ```
 
-The standard tools for this are a sha256 before/after (`tests/unit.sh:523`), `cmp -s --` for byte
-identity (`tests/repair.sh:411-412`), and a `compgen -G` sweep for leftover temp files
-(`tests/unit.sh:229-232`).
+The standard tools for this are a sha256 before/after (`tests/unit.sh:652`), `cmp -s --` for byte
+identity (`tests/repair.sh:391-392`), and a `compgen -G` sweep for leftover temp files
+(`tests/unit.sh:358-361`).
 
 ### Platform-gated cases must still emit a line
 
 `repair.sh` has `skip` (`tests/repair.sh:15`). `unit.sh` keeps the plan platform-invariant by
-emitting paired placeholder passes inside the `else` branch (`tests/unit.sh:827-831`). Either way,
+emitting paired placeholder passes inside the `else` branch (`tests/unit.sh:956-960`). Either way,
 the plan line's count never depends on the platform.
 
 ### Keep product output out of the TAP stream
 
 ```bash
-# tests/unit.sh:219-221
+# tests/unit.sh:348-350
 write_acme_identity_quiet(){
   write_acme_identity "$@" 2>/dev/null
 ```
 
-Also `tests/repair.sh:221` (`repair_singbox >/dev/null 2>&1`) and `tests/unit.sh:1589`
+Also `tests/repair.sh:199` (`repair_singbox >/dev/null 2>&1`) and `tests/unit.sh:1706`
 (`( uninstall >/dev/null )`).
 
 ---
@@ -110,28 +110,28 @@ Then **every production absolute path is re-pointed under `$TEMP_DIR`** before t
 test:
 
 ```bash
-# tests/unit.sh:185-190
+# tests/unit.sh:310-316
 STATE_DIR="$TEMP_DIR/state"
 export SB_DIR="$STATE_DIR/sb"
 export SB_CONFIG="$SB_DIR/sb.json"
 ```
 
 covered set: `SB_DIR`, `SB_CONFIG`, `SB_LAST_GOOD`, `SB_BIN`, `SB_MANAGED_MARKER`, `SHORTCUT`,
-`SYSTEMD_UNIT`, `OPENRC_UNIT`, all `ACME_*`, `ACME_LOCK`. See `tests/unit.sh:66-76`, `185-190`,
-`1324-1326`, `1433-1438`; `tests/repair.sh:448-471`.
+`SYSTEMD_UNIT`, `OPENRC_UNIT`, all `ACME_*`, `ACME_LOCK`. See `tests/unit.sh:73-82`, `310-316`,
+`1443-1445`, `1550-1555`; `tests/repair.sh:574-597`.
 
 There is **no `sudo` anywhere in `tests/`**. The only literal real-world paths are fixture *text*
-(the marker file content at `tests/repair.sh:262`) and the deliberate `/etc/sb` → sandbox rewrite at
-`tests/unit.sh:885`.
+(the marker file content at `tests/repair.sh:240`) and the deliberate `/etc/sb` → sandbox rewrite at
+`tests/unit.sh:1014`.
 
 Complex cases get their own sub-directory and re-declare paths inside a subshell
-(`tests/repair.sh:37-41`, `353-370`; `tests/unit.sh:1599-1602`).
+(`tests/repair.sh:37-41`, `331-348`; `tests/unit.sh:1716-1719`).
 
 Fixtures are built locally with `openssl` / `jq` into `$TEMP_DIR` — the suite never reaches the
-network (`tests/unit.sh:347-351`, `430-433`; `tests/repair.sh:567-572`).
+network (`tests/unit.sh:476-480`, `559-562`; `tests/repair.sh:601-606`).
 
 Case functions must leave shared fixtures usable: restore or remove what they perturb
-(`tests/repair.sh:70-71`; `tests/unit.sh:233-234`).
+(`tests/repair.sh:76-77`; `tests/unit.sh:362-363`).
 
 ---
 
@@ -154,7 +154,7 @@ Order is arbitrary precisely because those modules contain function definitions 
 one function you need and source the extraction inside a subshell:
 
 ```bash
-# tests/repair.sh:322-325 (abridged)
+# tests/repair.sh:319-323 (abridged)
 awk '
   /^handle_install_interrupt\(\)\{/ { inside=1 }
   ...
@@ -163,13 +163,13 @@ awk '
 
 **Guard every extraction:**
 ```bash
-# tests/verify.sh:115
+# tests/verify.sh:155
 [[ -n $uuid_function ]] || fail "cannot extract UUID management function"
 ```
 Without the guard, a failed extraction makes later negative greps pass **vacuously**.
 
 Hand-write bootstrap-only collaborators with a comment explaining why the test supplies them
-(`tests/unit.sh:56-62`).
+(`tests/unit.sh:60-66`).
 
 `sb.sh` itself is **never executed** — only `bash -n`, `grep`, and `awk` (`tests/verify.sh:21`).
 
@@ -180,20 +180,20 @@ Hand-write bootstrap-only collaborators with a comment explaining why the test s
 **Function shadowing is the primary mechanism**, not `PATH`:
 
 ```bash
-# tests/unit.sh:487-489
+# tests/unit.sh:616-618
 crontab(){
   case ${1-} in
     -l)
 ```
 
-Examples: `ss` (`tests/unit.sh:166`), `readp` (`:1247`), `jq` (`:1274`), `commit_config` (`:1316`),
+Examples: `ss` (`tests/unit.sh:291`), `readp` (`:1375`), `jq` (`:1402`), `commit_config` (`:1435`),
 `stat` (`tests/repair.sh:24`). Behaviour is driven by `MOCK_*` knobs.
 
 Hostile conditions are **fabricated**, not created with privileges — e.g. a foreign owner is faked by
 a `stat` mock returning `$(id -u) + 1` (`tests/repair.sh:25-27`), and a missing `flock` is simulated by
-mocking `command` (`tests/unit.sh:1540-1545`).
+mocking `command` (`tests/unit.sh:1657-1662`).
 
-**`unset -f` every mock immediately after the case** (`tests/unit.sh:631`, `1119`, `1199`, `1579`).
+**`unset -f` every mock immediately after the case** (`tests/unit.sh:760`, `1248`, `1328`, `1696`).
 
 `PATH` shims are used only for a genuinely absent binary, in a private `test-bin`, with capability
 recorded in `TEST_HAS_*`:
@@ -224,15 +224,15 @@ subshell:
 ```
 
 - Parameterise over `INT` / `TERM` / `HUP` as three separately named tests
-  (`tests/repair.sh:670-675`).
+  (`tests/repair.sh:762-767`).
 - Assert the exact exit status **130**, and make control unable to continue past the kill
-  (`exit 92` at `tests/repair.sh:404`, asserted at `:410`).
+  (`exit 92` at `tests/repair.sh:384`, asserted at `:390`).
 - Drive the interrupt point deterministically by patching the extracted copy behind a sentinel file
-  — never by racing (`tests/unit.sh:934-938`, `960-964`; sentinels cleaned at `949`, `975`).
+  — never by racing (`tests/unit.sh:1063-1067`, `1089-1093`; sentinels cleaned at `1078`, `1104`).
 - Assert finalization swallows the interrupt, proving no double rollback
-  (`tests/repair.sh:327-331`).
+  (`tests/repair.sh:305-309`).
 - After an interrupt, assert full restoration (`cmp -s --`) and enumerate the temp patterns that must
-  not survive (`tests/repair.sh:411-418`).
+  not survive (`tests/repair.sh:391-398`).
 
 ---
 
@@ -245,12 +245,12 @@ subshell:
 - `local` in every helper; shared state as documented `UPPER_CASE` globals; `TEST_HAS_*` capability
   flags; `MOCK_*` scenario knobs; verb-phrase `snake_case` case functions.
 - Write files with `printf '%s\n'`, never `echo`; fixed-length fixtures via
-  `printf 'a%.0s' {1..64}` (`tests/unit.sh:687`).
+  `printf 'a%.0s' {1..64}` (`tests/unit.sh:816`).
 - `[[ ]]` over `[ ]`; `--` after `grep -F`, `rm`, `cp`, `ln`; `$(...)` over backticks.
 - `|| true` inside `$( ... )` when a non-zero `grep` is legitimate under `set -e`
   (`tests/verify.sh:27`).
 - Reason-bearing shellcheck pragmas when shadowing a product function or quoting literal `$VAR`
-  fixture text (`tests/unit.sh:60-61`, `145-146`).
+  fixture text (`tests/unit.sh:64-65`, `270-271`).
 
 ---
 

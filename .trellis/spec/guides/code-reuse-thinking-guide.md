@@ -53,7 +53,8 @@ Everything else hand-rolls `mktemp` → `chmod` → `mv -fT`. The protocol is in
 
 ### Validation (`src/20-ports.sh`, `src/00-bootstrap.sh`)
 
-`valid_port`, `valid_uuid`, `valid_socks_password`, `valid_hostname`, `valid_ipv4`, `valid_ipv6`.
+`valid_port`, `valid_uuid`, `valid_ss_password`, `valid_hostname`, `valid_ipv4`, `valid_ipv6`,
+plus the `generate_ss_password` producer that re-validates its own output.
 
 ### Locking (`src/60-cron.sh`)
 
@@ -88,7 +89,7 @@ drifts silently:
 
 - **Service-unit ownership** is checked in `src/40-service.sh` *and* independently inside the ACME
   hook (`src/10-acme.sh:686-720`). Both must agree on `# Managed by sb.sh` and the exact exec line.
-- **Domain validation** exists as `valid_hostname` (`src/20-ports.sh:24-33`) and again inline in the
+- **Domain validation** exists as `valid_hostname` (`src/20-ports.sh:29-38`) and again inline in the
   cron runner (`src/60-cron.sh:310-319`), because the runner cannot call the main script.
 - **The ACME lock protocol** is implemented in `with_acme_lock` and re-implemented with hardcoded
   descriptors 9 and 8 in the runner (`src/60-cron.sh:343-370`), pinned byte-exactly by an identity

@@ -51,11 +51,11 @@ Three details are load-bearing:
 |--------|----------|-----------------------|
 | `atomic_write_private_text` | `src/40-service.sh:25` | `printf` → chmod 600 → `mv -fT` |
 | `atomic_copy_private_file` | `src/40-service.sh:38` | `cp` → chmod 600 → `mv -fT` |
-| `write_managed_marker_at` | `src/40-service.sh:52` | `mkdir`+chmod 700, then marker via `mv -fT` |
-| `save_last_good_config` | `src/40-service.sh:362` | validate → skip-if-identical → `cp -p` → chmod → `mv -fT` |
-| `write_service_definition` | `src/40-service.sh:171` | heredoc → chmod → `mv -fT` (temp inside the unit dir) |
-| `inssbjson` | `src/30-server-config.sh:88` | render → chmod 600 → `$SB_BIN check` → `mv -fT` |
-| `commit_config` | `src/40-service.sh:435` | validate → backup → `mv -fT` → restart → verify/rollback |
+| `write_managed_marker_at` | `src/40-service.sh:112` | `mkdir`+chmod 700, then marker via `mv -fT` |
+| `save_last_good_config` | `src/40-service.sh:439` | validate → skip-if-identical → `cp -p` → chmod → `mv -fT` |
+| `write_service_definition` | `src/40-service.sh:248` | heredoc → chmod → `mv -fT` (temp inside the unit dir) |
+| `inssbjson` | `src/30-server-config.sh:104` | render → chmod 600 → `$SB_BIN check` → `mv -fT` |
+| `commit_config` | `src/40-service.sh:495` | validate → backup → `mv -fT` → restart → verify/rollback |
 | `install_managed_link` | `src/10-acme.sh:398` | `mktemp` → `rm -f` → `ln -s` → `mv -Tf` |
 | `switch_current` | `src/10-acme.sh:388` | same symlink protocol for `acme-live/current` |
 | `atomic_install_shortcut` | `src/80-lifecycle.sh:209` | `install -m` → `mv -fT` |
@@ -86,7 +86,7 @@ The link target is always **relative** (`acme-live/current/fullchain.pem`), and 
 is validated by comparing `readlink` output as a literal relative string
 (`src/10-acme.sh:137-138`). Never `ln -sfn` onto the live name, and never `rm` the destination first
 — both create a window where the live path does not exist, and both are explicitly asserted against
-(`tests/unit.sh:934-948`, `1002-1006`).
+(`tests/unit.sh:1063-1077`, `1131-1135`).
 
 ---
 
@@ -95,7 +95,7 @@ is validated by comparing `readlink` output as a literal relative string
 For configuration, the candidate is checked by the core before it becomes live:
 
 ```bash
-# src/30-server-config.sh:97-103
+# src/30-server-config.sh:113-119
   if ! "$SB_BIN" check -c "$candidate" >/dev/null 2>&1; then
     red "初始配置未通过Sing-box v${CORE_VERSION}检查"
     "$SB_BIN" check -c "$candidate"
@@ -119,7 +119,7 @@ A config that parses is not a config that *runs*. `commit_config` is the only su
 changing a live node configuration:
 
 ```bash
-# src/40-service.sh:435-472 (structure)
+# src/40-service.sh:495-532 (structure)
 commit_config(){
   local candidate=$1 backup
   ... validate candidate ...
@@ -161,7 +161,7 @@ Contract:
 Idempotent publication preserves mtimes and avoids needless service churn. Compare before writing:
 
 ```bash
-# src/40-service.sh:382-388
+# src/40-service.sh:442-448
   if [[ -e $destination || -L $destination ]]; then
     [[ -f $destination && ! -L $destination ]] || return 1
     if cmp -s -- "$source" "$destination"; then
@@ -175,7 +175,7 @@ Note the defensive re-`chmod`: the early return still enforces the mode contract
 
 The same rule applies to generated cron entries and the ACME reload hook, where rewriting a
 byte-identical file would change its hash and trip the test suite
-(`tests/unit.sh:1023-1027`).
+(`tests/unit.sh:1152-1156`).
 
 ---
 
@@ -193,7 +193,7 @@ than clobbering it:
     return 1
 ```
 
-Tested at `tests/unit.sh:1192-1209`: an injected `mv` failure must leave the previous content
+Tested at `tests/unit.sh:1321-1338`: an injected `mv` failure must leave the previous content
 intact, and a directory at the destination must be rejected.
 
 ---

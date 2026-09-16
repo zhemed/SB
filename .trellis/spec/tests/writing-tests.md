@@ -16,7 +16,7 @@ They partition the domain deliberately — do not duplicate coverage:
   backup/restore, credential flows, install-transaction cleanup and uninstall.
 - `repair.sh`: ownership, core quarantine, last-good restore, atomic writers versus
   symlinks/directories, ACME fallback, service-unit repairability, report defaults, transaction
-  abort, legacy-protocol migration, and INT/TERM/HUP.
+  abort, legacy-protocol migration (including `pre_v3_socks_config_is_migrated`), and INT/TERM/HUP.
 
 There is **no shared `tests/lib.sh`** — each file redefines `pass` / `fail` / `expect_*` and its own
 collaborator stubs. Follow that; do not add a library.
@@ -26,15 +26,15 @@ collaborator stubs. Follow that; do not add a library.
 `unit.sh` is linear and inline:
 
 ```bash
-# tests/unit.sh:1347-1348
-[[ $FLOW_MESSAGES == *'UUID格式错误'* ]] || fail "UUID format failure was not shown"
+# tests/unit.sh:1466
+[[ $FLOW_MESSAGES == *'UUID格式错误'* ]] || fail "UUID format failure is shown"
 pass "UUID format failure was shown"
 ```
 
 `repair.sh` uses self-contained case functions wrapped in a subshell, one `|| return 1` per step:
 
 ```bash
-# tests/repair.sh:336-339 (structure)
+# tests/repair.sh:314-318 (structure)
 repair_signal_restores_stack_and_cleans_temporary_files(){
   local signal=$1 ...
   ...
@@ -55,7 +55,7 @@ repair_signal_restores_stack_and_cleans_temporary_files(){
    do it inside the case's own subshell with a per-case directory.
 5. **Declare the case.** Single assertion → `expect_success "description" fn args`. Multiple → a
    verb-phrase `snake_case` function, then register it with `expect_success` / `expect_failure`.
-6. **Never edit a count.** The plan line is derived at `tests/unit.sh:1623` / `tests/repair.sh:692`.
+6. **Never edit a count.** The plan line is derived at `tests/unit.sh:1740` / `tests/repair.sh:784`.
    Inside a platform/conditional branch, add the mirrored placeholder `pass`/`skip` in the other
    branch.
 7. **Clean up inside the case**: `unset -f` mocks, restore fixtures you perturbed. Everything else in
@@ -78,14 +78,16 @@ The hardest coupling. A test extracts a function body by matching `/^name\(\)\{/
 a **neighbouring function's name** for the end:
 
 ```bash
-# tests/verify.sh:113-114
-uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_socks_password\(\)\{/{inside=0} inside' \
+# tests/verify.sh:153-154
+uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_ss_password\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 ```
 
-Other sites: `tests/verify.sh:120` (`sb_client` … `sbshare`), `:206` (`issue_cloudflare_certificate`
-… `inscertificate`), `:211` (`register_acme_certificate_deployment` …
-`config_uses_acme_certificate`); `tests/repair.sh:314`, `677-678`.
+Other sites: `tests/verify.sh:160` (`sb_client` … `sbshare`), `:176` (`sbshare`, no end anchor),
+`:285` (`issue_cloudflare_certificate` … `inscertificate`), `:290`
+(`register_acme_certificate_deployment` … `config_uses_acme_certificate`); `tests/repair.sh:292`
+(`core_dependencies_ready` … `dependencies_ready`), `:769` (`repair_singbox_locked` …
+`repair_singbox`).
 
 Breaks on: renaming either bracketing function, changing the definition style away from `name(){`
 (no space, brace on the same line, column 0), or **reordering** the two functions — the range is
@@ -95,51 +97,54 @@ positional, so reordering silently changes what text is inspected. Always keep t
 ### (b) Exact source lines, including indentation
 
 ```bash
-# tests/unit.sh:147-148 (asserted against src/10-acme.sh at :154)
+# tests/unit.sh:272-273 (asserted against src/10-acme.sh:247)
 for fixed_move in \
   '     ! chmod 600 "$identity_tmp" || ! mv -fT -- "$identity_tmp" "$ACME_IDENTITY"; then' \
 ```
 
-Also `tests/repair.sh:617-618`. Re-indenting these lines, or rewriting `mv -fT` as `mv -Tf`, fails
-the suite.
+Also `tests/repair.sh:703-704`, which pins a generated-output line byte-exactly
+(`atomic_write_private_text "$SB_DIR/SHA256.txt" "$SHA256"` in `src/50-client-output.sh`).
+Re-indenting these lines, or rewriting `mv -fT` as `mv -Tf`, fails the suite.
 
 ### (c) Pinned versions, digests, and policy strings
 
 `tests/verify.sh:27-45` pins `CORE_VERSION`, `ACME_VERSION`, four SHA-256 digests (each required
 exactly once), the HTTPS-only policy string, the verified acme.sh archive URL, and the **absence** of
-`--install-online`. `tests/verify.sh:46-53` pins `SOCKS_USERNAME="sb"`, `sb_version`, `VERSION`, and
-the README version line. See `spec/build/version-pins.md`.
+`--install-online`. `tests/verify.sh:46-53` pins `SS_METHOD="2022-blake3-aes-256-gcm"`, `sb_version`,
+`VERSION`, and the README version line. See `spec/build/version-pins.md`.
 
 ### (d) User-visible messages
 
-Six modification success messages are required (`tests/verify.sh:82-92`), as are lifecycle strings
-(`:54-68`), SOCKS5 integration strings (`:94-107`), client security settings (`:136-150`), and the
-`SOCKS5本身不加密` warning (`:154-155`). `tests/unit.sh:1347-1348` pins `UUID格式错误`.
+Six modification success messages are required (`tests/verify.sh:83-93`), as are lifecycle strings
+(`:54-69`), Shadowsocks-2022 integration strings (`:95-129`), client security settings (`:211-225`),
+and the three Shadowsocks-2022 warnings — TCP-only inbound, unrecoverable key loss, clock-based
+replay protection (`:229-234`). `tests/unit.sh` pins `UUID格式错误` in the `changeuuid` flow.
 
 Rewording a user message is therefore a two-file change.
 
 ### (e) Internal paths, markers, and env-var names
 
-`tests/verify.sh:221-226` pins `ACME_LOCK="/run/sb-acme.lock"` and
+`tests/verify.sh:300-305` pins `ACME_LOCK="/run/sb-acme.lock"` and
 `ACME_COMPAT_LOCK="$SB_DIR/acme.lock"` — including the literal variable name `$SB_DIR`. Also
-`:141`, `:216`, `:72-73` (`SHORTCUT`), `:74-75` (the visible Cloudflare token prompt).
-`tests/repair.sh:262` writes the managed marker content verbatim.
+`:215-216` (the generated client config's literal `$SB_DIR/cert.pem` text), `:73-74` (`SHORTCUT`),
+`:75-76` (the visible Cloudflare token prompt). `tests/repair.sh:240` writes the managed marker
+content verbatim.
 
 ### (f) Negative guards — do not delete these
 
 ```bash
-# tests/unit.sh:158-161 (abridged)
+# tests/unit.sh:283-286 (abridged)
 if grep -Eq '(^|[[:space:];|&!])mv[[:space:]]+-f([[:space:]]|$)' "$ROOT_DIR/src/10-acme.sh"; then
   fail "ACME source still contains an unsafe fixed-target mv -f"
 fi
 ```
 
-`tests/repair.sh:681-684` fails if repair orchestration re-introduces
+`tests/repair.sh:773-776` fails if repair orchestration re-introduces
 `cleanup_incomplete_install` or `rm -rf "$SB_DIR"`. These encode design decisions.
 
 ### (g) The ACME reload hook
 
-`tests/verify.sh:170-204` re-extracts the hook from `sb.sh` and pins its structure. Any hook edit
+`tests/verify.sh:249-283` re-extracts the hook from `sb.sh` and pins its structure. Any hook edit
 must keep those lines byte-stable, or must update them deliberately together with
 `ACME_RELOAD_IDENTITY`. See `spec/runtime/certificates.md` §3.
 
@@ -149,29 +154,31 @@ must keep those lines byte-stable, or must update them deliberately together wit
 
 Documented as-is; do not assume coverage that does not exist.
 
-- `tests/verify.sh:243-244` invokes `unit.sh` / `repair.sh` as bare commands under `set -e`, so the
+- `tests/verify.sh:322-323` invokes `unit.sh` / `repair.sh` as bare commands under `set -e`, so the
   gate checks **only the exit status**. Nothing asserts the trailing `1..N` plan line exists, or that
   `N` meets a floor.
 - **No test asserts the product's environment-variable names.** `SB_DIR`, `SB_CONFIG`, `SB_LAST_GOOD`,
   `SB_BIN`, `SB_MANAGED_MARKER`, and the `ACME_*` names are used by tests but never asserted to exist
-  in the product; only incidental textual pins exist (`tests/verify.sh:225`). Renaming one surfaces
+  in the product; only incidental textual pins exist (`tests/verify.sh:304`). Renaming one surfaces
   late and unhelpfully.
 - `tests/repair.sh:4` carries a file-level `shellcheck disable=SC2016,SC2030,SC2031,SC2034,SC2317`
   without per-line justification.
 - `shellcheck` is optional locally and self-skips with `verify: shellcheck not found; static lint
-  skipped` (`tests/verify.sh:275`), so lint is only enforced where it is installed (including CI).
+  skipped` (`tests/verify.sh:319`), so lint is only enforced where it is installed (including CI).
   **Because of this, a lint failure can reach `main` and only surface in CI.** Install shellcheck
   locally before trusting a green local gate — a SC2016 in newly added assertions did exactly this
   and turned CI red for two consecutive pushed commits.
 - **Nothing in the suite validates the generated sing-box configuration semantically.** `MOCKCORE`
-  implements `check` as `jq -e .` (`tests/repair.sh`), i.e. JSON well-formedness only, and no
+  implements `check` as `jq -e .` (`tests/repair.sh:599-606`), i.e. JSON well-formedness only, and no
   `sing-box` binary exists in the test environment. The product's own `"$SB_BIN" check -c` path is
   exercised, but against that stub. Consequences:
   - A change to the **shape** of `sb.json` (adding/removing an inbound, renaming a field) cannot be
     proven valid here. The gate will pass on a config real sing-box would reject.
   - Treat any such change as requiring one real-host install before it is trusted. The VLESS Reality
     removal (2.0.0) was verified that way; until then the config's validity was an assumption, not a
-    tested fact.
+    tested fact. The Shadowsocks-2022 inbound swap (3.0.0) replaces the same surface — `"type"`,
+    `"tag"`, `"network"`, `"method"`, `"password"` — and the explicit `"route": {"final": ...}` is
+    equally invisible to the gate.
   - Prefer keeping the untouched remainder of the config byte-identical when editing it, so the
     unverifiable surface stays as small as possible.
 
