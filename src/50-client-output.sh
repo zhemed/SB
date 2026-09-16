@@ -83,14 +83,12 @@ result(){
     return 1
   fi
   uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
-  socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  socks_username=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].username' "$SB_CONFIG" 2>/dev/null) || return 1
-  socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
+  ss_port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
+  ss_password=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
-  if ! valid_uuid "$uuid" || ! valid_port "$socks_port" ||
-     ! valid_port "$hy2_port" || [[ $socks_username != "$SOCKS_USERNAME" ]] ||
-     ! valid_socks_password "$socks_password"; then
+  if ! valid_uuid "$uuid" || ! valid_port "$ss_port" ||
+     ! valid_port "$hy2_port" || ! valid_ss_password "$ss_password"; then
     red "服务端配置中的节点参数不完整或格式无效"
     return 1
   fi
@@ -143,19 +141,22 @@ reshy2(){
   echo
 }
 
-ressocks5(){
-  local output=${1:-$SB_DIR/socks5.txt}
+resss(){
+  local output=${1:-$SB_DIR/ss.txt}
   echo
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  socks5_link="socks5://$socks_username:$socks_password@$server_ip:$socks_port#socks5-$hostname"
-  printf '%s\n' "$socks5_link" > "$output" || return 1
-  red "🚀【 SOCKS5 】节点信息如下：" && sleep 2
+  # SIP002 puts base64("method:password") in the userinfo. The raw SS-2022 key
+  # contains + / and =, which clients percent-decode inconsistently, so the
+  # plain "ss://method:password@host" form must never be emitted.
+  ss_link="ss://$(printf '%s:%s' "$SS_METHOD" "$ss_password" | base64 | tr -d '\r\n')@$server_ip:$ss_port#ss-$hostname"
+  printf '%s\n' "$ss_link" > "$output" || return 1
+  red "🚀【 Shadowsocks-2022 】节点信息如下：" && sleep 2
   echo
-  echo "分享链接【sing-box、Clash、Shadowrocket、Nekobox】"
-  echo -e "${yellow}$socks5_link${plain}"
+  echo "分享链接【sing-box、mihomo(Clash)、Shadowrocket、Nekobox】"
+  echo -e "${yellow}$ss_link${plain}"
   echo
   echo "二维码"
-  qrencode -o - -t ANSIUTF8 "$socks5_link" || return 1
+  qrencode -o - -t ANSIUTF8 "$ss_link" || return 1
   white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   echo
 }
@@ -296,13 +297,12 @@ sb_client(){
   },
   "outbounds": [
     {
-      "type": "socks",
-      "tag": "socks5-$hostname",
+      "type": "shadowsocks",
+      "tag": "ss-$hostname",
       "server": "$server_ipcl",
-      "server_port": $socks_port,
-      "version": "5",
-      "username": "$socks_username",
-      "password": "$socks_password",
+      "server_port": $ss_port,
+      "method": "$SS_METHOD",
+      "password": "$ss_password",
       "network": "tcp"
     },
     {
@@ -327,7 +327,7 @@ sb_client(){
       "type": "selector",
       "default": "hy2-$hostname",
       "outbounds": [
-        "socks5-$hostname",
+        "ss-$hostname",
         "hy2-$hostname"
       ]
     },
@@ -387,12 +387,12 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-- name: socks5-$hostname
-  type: socks5
+- name: ss-$hostname
+  type: ss
   server: $server_ipcl
-  port: $socks_port
-  username: $socks_username
-  password: $socks_password
+  port: $ss_port
+  cipher: $SS_METHOD
+  password: $ss_password
   udp: false
 
 - name: hysteria2-$hostname
@@ -412,7 +412,7 @@ proxy-groups:
   type: select
   proxies:
     - hysteria2-$hostname
-    - socks5-$hostname
+    - ss-$hostname
     - DIRECT
 
 rules:
@@ -431,30 +431,30 @@ EOF
 }
 
 sbshare(){
-  local aggregate_tmp hy2_tmp socks_tmp
-  socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f "$socks_tmp"; return 1; }
-  if ! result || ! ressocks5 "$socks_tmp" || ! reshy2 "$hy2_tmp"; then
-    rm -f "$socks_tmp" "$hy2_tmp"
+  local aggregate_tmp hy2_tmp ss_tmp
+  ss_tmp=$(mktemp "$SB_DIR/.ss.XXXXXX") || return 1
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f "$ss_tmp"; return 1; }
+  if ! result || ! resss "$ss_tmp" || ! reshy2 "$hy2_tmp"; then
+    rm -f "$ss_tmp" "$hy2_tmp"
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
-    rm -f "$hy2_tmp" "$socks_tmp"
+    rm -f "$hy2_tmp" "$ss_tmp"
     return 1
   }
-  if ! { cat "$socks_tmp" && cat "$hy2_tmp"; } > "$aggregate_tmp"; then
-    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+  if ! { cat "$ss_tmp" && cat "$hy2_tmp"; } > "$aggregate_tmp"; then
+    rm -f "$hy2_tmp" "$ss_tmp" "$aggregate_tmp"
     return 1
   fi
-  chmod 600 "$hy2_tmp" "$socks_tmp" "$aggregate_tmp" || {
-    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+  chmod 600 "$hy2_tmp" "$ss_tmp" "$aggregate_tmp" || {
+    rm -f "$hy2_tmp" "$ss_tmp" "$aggregate_tmp"
     return 1
   }
   if ! sb_client; then
-    rm -f "$hy2_tmp" "$socks_tmp" "$aggregate_tmp"
+    rm -f "$hy2_tmp" "$ss_tmp" "$aggregate_tmp"
     return 1
   fi
-  mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || { rm -f "$socks_tmp" "$hy2_tmp" "$aggregate_tmp"; return 1; }
+  mv -fT -- "$ss_tmp" "$SB_DIR/ss.txt" || { rm -f "$ss_tmp" "$hy2_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
   atomic_copy_private_file "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1

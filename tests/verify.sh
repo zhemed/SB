@@ -43,14 +43,14 @@ grep -Fq -- 'https://codeload.github.com/acmesh-official/acme.sh/tar.gz/refs/tag
 if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
   fail "unverified acme.sh online installer remains"
 fi
-[[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v2.0.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 2.0.1"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '2.0.1' ]] ||
-  fail "VERSION file is not 2.0.1"
-grep -Fq -- "当前项目版本：\`2.0.1\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 2.0.1"
+[[ $(grep -Fxc 'SS_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
+[[ $(grep -Fxc 'sb_version="v3.0.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 3.0.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.0.0' ]] ||
+  fail "VERSION file is not 3.0.0"
+grep -Fq -- "当前项目版本：\`3.0.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 3.0.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -61,8 +61,9 @@ for lifecycle_pattern in \
   'trap handle_install_interrupt INT TERM HUP' \
   'green " 1. 安装"' \
   'green " 2. 修复"' \
-  'green " 8. 卸载"' \
-  'readp "请输入数字 [0-8]: " Input'; do
+  'green " 8. 上游/中转"' \
+  'green " 9. 卸载"' \
+  'readp "请输入数字 [0-9]: " Input'; do
   grep -Fq -- "$lifecycle_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing installation lifecycle behavior: $lifecycle_pattern"
 done
@@ -82,39 +83,78 @@ fi
 for success_message in \
   '证书模式切换成功' \
   'Hysteria2主端口修改成功' \
-  'SOCKS5端口修改成功' \
+  'Shadowsocks-2022端口修改成功' \
   'IP优先级修改成功' \
   'Hysteria2 UUID（密码）修改成功' \
-  'SOCKS5独立密码修改成功'; do
+  'Shadowsocks-2022密钥修改成功'; do
   grep -Fq -- "$success_message" "$ROOT_DIR/sb.sh" ||
     fail "missing modification success message: $success_message"
 done
-for socks_pattern in \
+# The dollar-prefixed strings below are literal generated-configuration text.
+# shellcheck disable=SC2016
+for ss_pattern in \
+  'SS_METHOD="2022-blake3-aes-256-gcm"' \
+  '"type": "shadowsocks"' \
+  '"tag": "ss-sb"' \
+  '"listen": "${listen_addr}"' \
+  '"network": "tcp"' \
+  '"method": "${SS_METHOD}"' \
+  '"password": "${ss_password}"' \
+  'server_listen_address()' \
+  'IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"' \
+  'local root=$1 disabled=' \
+  "printf '%s\\n' 0.0.0.0" \
+  'relay_settings_present()' \
+  'load_relay_settings()' \
+  'save_relay_settings()' \
+  '"tag": "relay"' \
+  '"final": "${route_final}"' \
+  'relay.conf' \
+  'resss()' \
+  'change_ss_password()' \
+  'valid_ss_password()' \
+  'generate_ss_password()' \
+  'ss://$(printf' \
+  "base64 | tr -d '\\r\\n')@" \
+  'ss.txt' \
+  "ss-\$hostname" \
+  'type: ss' \
+  "cipher: \$SS_METHOD" \
+  'udp: false' \
+  'manage_relay()' \
+  '当前配置里有一条上游出站，但' \
+  'set_relay_upstream()' \
+  'clear_relay_upstream()'; do
+  grep -Fq -- "$ss_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "missing Shadowsocks-2022 integration: $ss_pattern"
+done
+# The plaintext SOCKS5 inbound and the dead comma-joined route rule are gone.
+for removed_pattern in \
   '"tag": "socks5-sb"' \
-  'ressocks5()' \
-  'change_socks_password()' \
-  "\"password\": \"\${socks_password}\"" \
-  "socks5://\$socks_username:\$socks_password@\$server_ip:\$socks_port" \
   '"type": "socks"' \
   'type: socks5' \
-  '"network": "tcp"' \
-  'udp: false' \
-  "socks5-\$hostname"; do
-  grep -Fq -- "$socks_pattern" "$ROOT_DIR/sb.sh" ||
-    fail "missing SOCKS5 integration: $socks_pattern"
+  'SOCKS_USERNAME' \
+  'valid_socks_password' \
+  'change_socks_password' \
+  'ressocks5' \
+  'socks5.txt' \
+  '"network": "udp,tcp"'; do
+  if grep -Fq -- "$removed_pattern" "$ROOT_DIR/sb.sh"; then
+    fail "retired SOCKS5 integration remains: $removed_pattern"
+  fi
 done
 grep -Fq -- '请选择【0-2】' "$ROOT_DIR/sb.sh" ||
-  fail "SOCKS5 port is missing from management menu"
-grep -Fq -- 'green "2：SOCKS5端口' "$ROOT_DIR/sb.sh" ||
-  fail "SOCKS5 port option is missing from the ports submenu"
+  fail "port management menu is missing"
+grep -Fq -- 'green "2：Shadowsocks-2022端口' "$ROOT_DIR/sb.sh" ||
+  fail "Shadowsocks-2022 port option is missing from the ports submenu"
 [[ $(grep -Fc -- '按回车返回主菜单...' "$ROOT_DIR/sb.sh" || true) -ge 5 ]] ||
   fail "modification flows do not consistently wait before returning"
 
-uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_socks_password\(\)\{/{inside=0} inside' \
+uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_ss_password\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $uuid_function ]] || fail "cannot extract UUID management function"
-if printf '%s\n' "$uuid_function" | grep -Fq -- 'socks5-sb'; then
-  fail "UUID management still modifies SOCKS5 credentials"
+if printf '%s\n' "$uuid_function" | grep -Fq -- 'ss-sb'; then
+  fail "UUID management still touches the Shadowsocks-2022 inbound"
 fi
 
 client_function=$(awk '/^sb_client\(\)\{/{inside=1} /^sbshare\(\)\{/{inside=0} inside' \
@@ -132,29 +172,29 @@ if printf '%s\n' "$client_function" | grep -Fq -- '"default": "auto"'; then
   fail "Sing-box proxy selector still defaults to the removed automatic group"
 fi
 
-# Node presentation order is uniform: SOCKS5 is listed before Hysteria2.
+# Node presentation order is uniform: Shadowsocks-2022 is listed before Hysteria2.
 share_function=$(awk '/^sbshare\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
 [[ -n $share_function ]] || fail "cannot extract share generator"
 # Compare byte offsets: the two generators sit on the same source line, so
 # line numbers would compare equal and silently pass.
-socks_share_off=$(printf '%s\n' "$share_function" | grep -bo 'ressocks5' | head -1 | cut -d: -f1)
+ss_share_off=$(printf '%s\n' "$share_function" | grep -bo 'resss ' | head -1 | cut -d: -f1)
 hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | cut -d: -f1)
-[[ -n $socks_share_off && -n $hy2_share_off ]] ||
+[[ -n $ss_share_off && -n $hy2_share_off ]] ||
   fail "cannot locate share generators in sbshare"
-[[ $socks_share_off -lt $hy2_share_off ]] ||
-  fail "share output lists Hysteria2 before SOCKS5"
+[[ $ss_share_off -lt $hy2_share_off ]] ||
+  fail "share output lists Hysteria2 before Shadowsocks-2022"
 # Dollar-prefixed names below are literal generated-configuration text.
 # shellcheck disable=SC2016
-socks_out_off=$(printf '%s\n' "$client_function" | grep -bo 'socks5-\$hostname' | head -1 | cut -d: -f1)
+ss_out_off=$(printf '%s\n' "$client_function" | grep -bo 'ss-\$hostname' | head -1 | cut -d: -f1)
 # shellcheck disable=SC2016
 hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1)
-[[ -n $socks_out_off && -n $hy2_out_off && $socks_out_off -lt $hy2_out_off ]] ||
-  fail "client configuration lists Hysteria2 before SOCKS5"
+[[ -n $ss_out_off && -n $hy2_out_off && $ss_out_off -lt $hy2_out_off ]] ||
+  fail "client configuration lists Hysteria2 before Shadowsocks-2022"
 
-# Ordering must never be bought by making the plaintext proxy the default.
+# Ordering must never be bought by making the TCP fallback entry the default.
 # shellcheck disable=SC2016
-if printf '%s\n' "$client_function" | grep -Fq -- '"default": "socks5-$hostname"'; then
-  fail "Sing-box proxy selector defaults to the plaintext SOCKS5 proxy"
+if printf '%s\n' "$client_function" | grep -Fq -- '"default": "ss-$hostname"'; then
+  fail "Sing-box proxy selector defaults to the Shadowsocks-2022 proxy"
 fi
 clash_group=$(printf '%s\n' "$client_function" |
   awk '/^- name: 🌍选择代理节点/{inside=1} inside{print} inside && /^rules:/{exit}')
@@ -185,9 +225,13 @@ if grep -Fq -- '"insecure": true' "$ROOT_DIR/sb.sh" ||
 fi
 
 grep -Fq -- '"network": "udp"' "$ROOT_DIR/sb.sh" ||
-  fail "SOCKS5 UDP blocking route is missing"
-grep -Fq -- 'SOCKS5本身不加密' "$ROOT_DIR/sb.sh" ||
-  fail "SOCKS5 plaintext warning is missing"
+  fail "Shadowsocks-2022 UDP blocking route is missing"
+grep -Fq -- 'Shadowsocks-2022 入站只承载 TCP' "$ROOT_DIR/sb.sh" ||
+  fail "Shadowsocks-2022 TCP-only warning is missing"
+grep -Fq -- '密钥不可推导' "$ROOT_DIR/sb.sh" ||
+  fail "Shadowsocks-2022 key-loss warning is missing"
+grep -Fq -- '时间戳抗重放' "$ROOT_DIR/sb.sh" ||
+  fail "Shadowsocks-2022 clock-synchronisation warning is missing"
 
 retired_name="sb$(printf '%s' 2)"
 retired_patterns=(

@@ -340,7 +340,7 @@ enable_cron_daemon(){
 core_dependencies_ready(){
   local cmd
   for cmd in awk base64 bash cmp cp curl cut date flock grep install ip jq mktemp mv \
-    openssl rm sed sha256sum shuf ss stat tail tar tr; do
+    openssl rm sed sha256sum shuf ss stat tail tar timeout tr; do
     command -v "$cmd" >/dev/null 2>&1 || return 1
   done
   if command -v apk >/dev/null 2>&1; then

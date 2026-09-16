@@ -11,7 +11,8 @@ CORE_SHA256_AMD64="1951a0785c8b4e1e21e0640227a49528ca772aec3d680061652e3d6b687e0
 CORE_SHA256_ARM64="15b43a0a50b4e6962aca819d4f3055aaac75ca7481350d4aaebe93ed06b7af49"
 CORE_SHA256_ARMV7="691882d609c877f97bc8d6f8645b97d12de81b6f7b89651df66489ef11b4c5d0"
 ACME_ARCHIVE_SHA256="e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
-SOCKS_USERNAME="sb"
+SS_METHOD="2022-blake3-aes-256-gcm"
+IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"
 SB_DIR="/etc/sb"
 SB_CONFIG="$SB_DIR/sb.json"
 SB_LAST_GOOD="$SB_DIR/sb.json.last-good"
@@ -92,7 +93,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v2.0.1"
+sb_version="v3.0.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -176,6 +177,24 @@ v6only(){
     ipv=prefer_ipv4
   else
     ipv=prefer_ipv6
+  fi
+}
+
+# Inbound listen address for this host.
+# "::" is a dual-stack listener (it accepts IPv4 connections too), but it is only
+# usable while the kernel still provides AF_INET6. A host that switched IPv6 off
+# -- sysctl net.ipv6.conf.all.disable_ipv6=1, or the boot parameter ipv6.disable=1
+# -- gets 0.0.0.0 instead. The answer is deterministic per host, so rewriting a
+# config never flips the listen address behind the operator's back.
+# The caller passes $IPV6_SYSCTL_ROOT; tests pass a fixture tree instead.
+server_listen_address(){
+  local root=$1 disabled=
+  [[ -d $root ]] || { printf '%s\n' 0.0.0.0; return 0; }
+  disabled=$(cat "$root/conf/all/disable_ipv6" 2>/dev/null) || disabled=
+  if [[ $disabled == 1 ]]; then
+    printf '%s\n' 0.0.0.0
+  else
+    printf '%s\n' '::'
   fi
 }
 

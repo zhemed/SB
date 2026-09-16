@@ -1,8 +1,30 @@
 # sb-module: 30-server-config
 # Generate server config JSON
 render_server_config(){
-  local output=$1
+  local output=$1 listen_addr relay_outbound_suffix route_final
   [[ -n $output ]] || return 1
+  relay_outbound_suffix=
+  route_final=direct
+  listen_addr=$(server_listen_address "$IPV6_SYSCTL_ROOT") || return 1
+  [[ -n $listen_addr ]] || return 1
+  # The optional upstream is re-read from relay.conf on every render, so a
+  # rewritten config keeps the relay instead of silently falling back to a
+  # direct exit. An unreadable state file is reported, not guessed at.
+  if relay_settings_present; then
+    if load_relay_settings; then
+      route_final=relay
+      relay_outbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s"\n    }' \
+        "$relay_server" "$relay_port" "$SS_METHOD" "$relay_password") || return 1
+    else
+      red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
+    fi
+  elif [[ -s $SB_CONFIG ]] &&
+       jq -e '[.outbounds[]? | select(.type == "shadowsocks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
+    # A hand-edited upstream outbound is not a state file we know about; say so
+    # rather than letting the rewrite silently send traffic out directly again.
+    yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"
+    yellow "如需继续中转，请在菜单[8]上游/中转里重新设置一次"
+  fi
   cat > "$output" <<EOF
 {
   "log": {
@@ -16,7 +38,7 @@ render_server_config(){
       "sniff": true,
       "sniff_override_destination": true,
       "tag": "hy2-sb",
-      "listen": "::",
+      "listen": "${listen_addr}",
       "listen_port": ${port_hy2},
       "users": [
         {
@@ -34,18 +56,15 @@ render_server_config(){
       }
     },
     {
-      "type": "socks",
+      "type": "shadowsocks",
       "sniff": true,
       "sniff_override_destination": true,
-      "tag": "socks5-sb",
-      "listen": "::",
-      "listen_port": ${port_socks5},
-      "users": [
-        {
-          "username": "${SOCKS_USERNAME}",
-          "password": "${socks_password}"
-        }
-      ]
+      "tag": "ss-sb",
+      "listen": "${listen_addr}",
+      "listen_port": ${port_ss},
+      "network": "tcp",
+      "method": "${SS_METHOD}",
+      "password": "${ss_password}"
     }
   ],
   "outbounds": [
@@ -57,13 +76,14 @@ render_server_config(){
     {
       "type": "block",
       "tag": "block"
-    }
+    }${relay_outbound_suffix}
   ],
   "route": {
+    "final": "${route_final}",
     "rules": [
       {
         "inbound": [
-          "socks5-sb"
+          "ss-sb"
         ],
         "network": "udp",
         "outbound": "block"
@@ -74,10 +94,6 @@ render_server_config(){
           "stun"
         ],
         "outbound": "block"
-      },
-      {
-        "outbound": "direct",
-        "network": "udp,tcp"
       }
     ]
   }

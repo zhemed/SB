@@ -51,6 +51,10 @@ source "$ROOT_DIR/src/60-cron.sh"
 # shellcheck source=/dev/null
 source "$ROOT_DIR/src/80-lifecycle.sh"
 # shellcheck source=/dev/null
+source "$ROOT_DIR/src/40-service.sh"
+# shellcheck source=/dev/null
+source "$ROOT_DIR/src/50-client-output.sh"
+# shellcheck source=/dev/null
 source "$ROOT_DIR/src/70-management.sh"
 
 # The production bootstrap provides this dependency to certificate metadata helpers.
@@ -63,10 +67,12 @@ valid_ipv4(){ return 1; }
 # shellcheck disable=SC2317
 valid_ipv6(){ return 1; }
 
+# Constants normally provided by src/00-bootstrap.sh, which this file does not source.
+export SS_METHOD="2022-blake3-aes-256-gcm"
+export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
 export SB_DIR=/etc/sb
 export SB_CONFIG="$SB_DIR/sb.json"
 export SB_SERVICE=sb
-export SOCKS_USERNAME=sb
 export SHORTCUT=/usr/bin/sb
 export ACME_HOME="$SB_DIR/acme"
 export ACME_BIN="$ACME_HOME/acme.sh"
@@ -74,6 +80,19 @@ export ACME_RELOAD="$SB_DIR/acme_reload.sh"
 export ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"
 export ACME_CRON_MARKER="# sb-managed-acme"
 export RESTART_CRON_MARKER="# sb-managed-restart"
+
+generated_ss_key_is_valid(){
+  local key
+  key=$(generate_ss_password) || return 1
+  valid_ss_password "$key"
+}
+
+generated_ss_keys_differ(){
+  local first second
+  first=$(generate_ss_password) || return 1
+  second=$(generate_ss_password) || return 1
+  [[ $first != "$second" ]]
+}
 
 expect_success "port 443 is valid" valid_port 443
 expect_success "port 1 is valid" valid_port 1
@@ -86,15 +105,121 @@ expect_success "hostname is valid" valid_hostname sub.example.com
 expect_failure "single-label hostname is invalid" valid_hostname localhost
 expect_success "UUID is valid" valid_uuid 123e4567-e89b-12d3-a456-426614174000
 expect_failure "malformed UUID is invalid" valid_uuid 123e4567
-expect_success "16-character SOCKS password is valid" valid_socks_password 0123456789abcdef
-expect_success "safe SOCKS password punctuation is valid" valid_socks_password 'abcDEF0123._~-xyz'
-expect_failure "15-character SOCKS password is invalid" valid_socks_password 0123456789abcde
-expect_failure "SOCKS password with a space is invalid" valid_socks_password 'bad password value'
-expect_failure "SOCKS password with a colon is invalid" valid_socks_password 'bad:password:value'
-socks_password_128=$(printf 'a%.0s' {1..128})
-socks_password_129="${socks_password_128}a"
-expect_success "128-character SOCKS password is valid" valid_socks_password "$socks_password_128"
-expect_failure "129-character SOCKS password is invalid" valid_socks_password "$socks_password_129"
+# A Shadowsocks-2022 psk is exactly 32 raw bytes: 44 base64 characters, padded.
+ss_key_valid="$(printf 'A%.0s' {1..43})="
+ss_key_valid_symbols="$(printf 'A%.0s' {1..20})+/$(printf 'A%.0s' {1..21})="
+expect_success "44-character padded base64 SS-2022 key is valid" valid_ss_password "$ss_key_valid"
+expect_success "base64 key with + and / is valid" valid_ss_password "$ss_key_valid_symbols"
+expect_failure "unpadded 43-character base64 key is invalid" valid_ss_password "${ss_key_valid%=}"
+expect_failure "16-byte (24-character) base64 key is invalid" valid_ss_password "$(printf 'A%.0s' {1..23})="
+expect_failure "48-character hex key is invalid" valid_ss_password "$(printf 'a%.0s' {1..48})"
+expect_failure "44 key characters without padding are invalid" valid_ss_password "$(printf 'A%.0s' {1..44})"
+expect_failure "45-character base64 key is invalid" valid_ss_password "$(printf 'A%.0s' {1..44})="
+expect_failure "SS-2022 key with a space is invalid" valid_ss_password 'bad password value'
+expect_failure "SS-2022 key with a colon is invalid" valid_ss_password 'bad:password:value'
+expect_success "generated SS-2022 key is valid" generated_ss_key_is_valid
+expect_success "generated SS-2022 keys differ" generated_ss_keys_differ
+
+# server_listen_address lives in src/00-bootstrap.sh, which this file does not
+# source: extract the single function and drive it with a fixture sysctl tree.
+listen_source="$TEMP_DIR/server-listen.sh"
+awk '
+  !inside && $0 == "server_listen_address(){" {inside=1; print; next}
+  inside && /^[A-Za-z_][A-Za-z0-9_]*\(\)\{/ {exit}
+  inside {print}
+' "$ROOT_DIR/sb.sh" > "$listen_source"
+[[ -s $listen_source ]] || fail "cannot extract server_listen_address"
+
+listen_address_is(){
+  local expected=$1 root=$2 actual
+  actual=$(bash -c 'source "$1" || exit 1; server_listen_address "$2"' _     "$listen_source" "$root") || return 1
+  [[ $actual == "$expected" ]]
+}
+
+listen_fixture="$TEMP_DIR/ipv6-sysctl"
+mkdir -p "$listen_fixture/conf/all"
+printf '0\n' > "$listen_fixture/conf/all/disable_ipv6"
+expect_success "listen address stays dual-stack while IPv6 is enabled" \
+  listen_address_is "::" "$listen_fixture"
+printf '1\n' > "$listen_fixture/conf/all/disable_ipv6"
+expect_success "listen address falls back to IPv4 when IPv6 is disabled" \
+  listen_address_is 0.0.0.0 "$listen_fixture"
+expect_success "listen address falls back to IPv4 without a sysctl tree" \
+  listen_address_is 0.0.0.0 "$TEMP_DIR/absent-ipv6-sysctl"
+
+# --- upstream / relay state file -------------------------------------------
+# These run before the jq mock below, so they exercise the real jq.
+relay_roundtrip="$TEMP_DIR/relay-roundtrip"
+mkdir -p "$relay_roundtrip"
+chmod 700 "$relay_roundtrip"
+
+relay_settings_roundtrip(){
+  (
+    local config="$relay_roundtrip/relay.conf" key="$ss_key_valid"
+    # shellcheck disable=SC2030  # the subshell is the point: it owns SB_DIR
+    SB_DIR="$relay_roundtrip"
+    load_relay_settings && return 1
+    save_relay_settings 76.9.111.90 443 "$key" || return 1
+    [[ $(stat -c '%a' "$config") == 600 ]] || return 1
+    [[ $(wc -l < "$config") -eq 3 ]] || return 1
+    load_relay_settings || return 1
+    # relay_server/relay_port/relay_password are assigned by load_relay_settings.
+    # shellcheck disable=SC2154
+    [[ $relay_server == 76.9.111.90 && $relay_port == 443 && $relay_password == "$key" ]] || return 1
+    # writing the same values again is byte-identical (idempotent)
+    save_relay_settings 76.9.111.90 443 "$key" || return 1
+    [[ $(cat "$config") == "$(printf 'server=%s\nport=%s\npassword=%s' 76.9.111.90 443 "$key")" ]] || return 1
+    # unusable input is refused before anything is written
+    save_relay_settings 76.9.111.90 443 bad-key && return 1
+    save_relay_settings not_a_host 443 "$key" && return 1
+    save_relay_settings 76.9.111.90 0 "$key" && return 1
+    # an unknown key or a missing line makes the file unreadable on purpose
+    printf 'server=76.9.111.90\nport=443\npassword=%s\nmethod=x\n' "$key" > "$config"
+    chmod 600 "$config"
+    load_relay_settings && return 1
+    printf 'server=76.9.111.90\nport=443\n' > "$config"
+    chmod 600 "$config"
+    load_relay_settings && return 1
+    # clearing is idempotent
+    save_relay_settings 76.9.111.90 443 "$key" || return 1
+    clear_relay_settings || return 1
+    [[ ! -e $config ]] || return 1
+    clear_relay_settings || return 1
+    return 0
+  )
+}
+expect_success "relay state file round-trips, validates and clears" relay_settings_roundtrip
+
+relay_candidate_builders(){
+  (
+    local dir="$relay_roundtrip/candidate" key="$ss_key_valid"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"},{"type":"block","tag":"block"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
+    relay_candidate_with_upstream "$dir/with.json" 76.9.111.90 443 "$key" || return 1
+    jq -e --arg key "$key" '
+      ([.outbounds[] | select(.tag == "relay" and .type == "shadowsocks" and
+        .server == "76.9.111.90" and .server_port == 443 and
+        .method == "2022-blake3-aes-256-gcm" and .password == $key)] | length) == 1 and
+      .route.final == "relay"
+    ' "$dir/with.json" >/dev/null || return 1
+    # applying it again must not duplicate the outbound
+    cp -- "$dir/with.json" "$SB_CONFIG"
+    relay_candidate_with_upstream "$dir/with-again.json" 76.9.111.90 443 "$key" || return 1
+    jq -e '[.outbounds[] | select(.tag == "relay")] | length == 1' "$dir/with-again.json" >/dev/null || return 1
+    # removing it restores a plain direct config
+    cp -- "$dir/with.json" "$SB_CONFIG"
+    relay_candidate_without_upstream "$dir/without.json" || return 1
+    jq -e '([.outbounds[] | select(.tag == "relay")] | length) == 0 and .route.final == "direct"' \
+      "$dir/without.json" >/dev/null || return 1
+    # a duplicated relay outbound is rejected instead of silently collapsed
+    jq '.outbounds += [.outbounds[] | select(.tag == "relay")]' "$dir/with.json" > "$SB_CONFIG"
+    relay_candidate_with_upstream "$dir/dup.json" 76.9.111.90 443 "$key" 2>/dev/null && return 1
+    return 0
+  )
+}
+expect_success "relay candidates add, repeat and remove the upstream idempotently" relay_candidate_builders
 expect_success "Cloudflare Account ID is valid" \
   valid_cloudflare_account_id 0123456789ABCDEF0123456789abcdef
 expect_failure "short Cloudflare Account ID is invalid" valid_cloudflare_account_id 01234567
@@ -183,7 +308,11 @@ expect_success "UDP 443 conflict is detected" port_conflict 443 udp
 expect_failure "UDP 443 does not block TCP 443" port_conflict 443 tcp
 
 STATE_DIR="$TEMP_DIR/state"
+# The relay cases above rebind SB_DIR/SB_CONFIG inside their own subshells on
+# purpose; everything from here on uses this exported pair instead.
+# shellcheck disable=SC2031
 export SB_DIR="$STATE_DIR/sb"
+# shellcheck disable=SC2031
 export SB_CONFIG="$SB_DIR/sb.json"
 export ACME_HOME="$SB_DIR/acme"
 export ACME_BIN="$ACME_HOME/acme.sh"
@@ -1226,9 +1355,9 @@ pass "daily restart setup preserves ACME cron"
 UUID_ONE=11111111-1111-4111-8111-111111111111
 UUID_TWO=22222222-2222-4222-8222-222222222222
 UUID_ORIGINAL=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
-SOCKS_PASSWORD_ORIGINAL='Socks.Original_123'
-SOCKS_PASSWORD_ONE='Socks.Pass_One-1234'
-SOCKS_PASSWORD_TWO='Socks.Pass_Two-5678'
+SS_KEY_ORIGINAL='AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA='
+SS_KEY_ONE='KCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkc='
+SS_KEY_TWO='UFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm8='
 FLOW_RESPONSES=()
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
@@ -1237,9 +1366,8 @@ COMMIT_RESULTS=()
 COMMIT_INDEX=0
 LAST_GENERATED_UUID=
 LAST_UUID_FILTER=
-LAST_GENERATED_SOCKS_PASSWORD=
-LAST_GENERATED_SOCKS_USERNAME=
-LAST_SOCKS_FILTER=
+LAST_SS_KEY=
+LAST_SS_FILTER=
 LAST_COMMITTED_CANDIDATE=
 
 # Called indirectly by the sourced management functions.
@@ -1272,12 +1400,12 @@ sbactive(){ return 0; }
 sbshare(){ return 0; }
 # shellcheck disable=SC2317
 jq(){
-  local filter candidate_socks candidate_uuid
+  local filter
   case ${1-} in
     -er)
       filter=${2-}
-      if [[ $filter == *'socks5-sb'* ]]; then
-        printf '%s\n' "$SOCKS_PASSWORD_ORIGINAL"
+      if [[ $filter == *'shadowsocks'* ]]; then
+        printf '%s\n' "$SS_KEY_ORIGINAL"
       else
         printf '%s\n' "$UUID_ORIGINAL"
       fi
@@ -1287,23 +1415,14 @@ jq(){
         uuid)
           LAST_GENERATED_UUID=${3-}
           LAST_UUID_FILTER=${4-}
-          candidate_socks=$SOCKS_PASSWORD_ORIGINAL
-          if [[ $LAST_UUID_FILTER == *'socks5-sb'* || $LAST_UUID_FILTER == *'type == "socks"'* ]]; then
-            candidate_socks=$LAST_GENERATED_UUID
-          fi
-          printf '{"candidate":true,"uuid":"%s","socks_password":"%s"}\n' \
-            "$LAST_GENERATED_UUID" "$candidate_socks"
+          printf '{"candidate":true,"uuid":"%s","ss_password":"%s"}\n' \
+            "$LAST_GENERATED_UUID" "$SS_KEY_ORIGINAL"
           ;;
         password)
-          LAST_GENERATED_SOCKS_PASSWORD=${3-}
-          LAST_GENERATED_SOCKS_USERNAME=${6-}
-          LAST_SOCKS_FILTER=${7-}
-          candidate_uuid=$UUID_ORIGINAL
-          if [[ $LAST_SOCKS_FILTER == *'hy2-sb'* ]]; then
-            candidate_uuid=$LAST_GENERATED_SOCKS_PASSWORD
-          fi
-          printf '{"candidate":true,"uuid":"%s","socks_password":"%s","socks_username":"%s"}\n' \
-            "$candidate_uuid" "$LAST_GENERATED_SOCKS_PASSWORD" "$LAST_GENERATED_SOCKS_USERNAME"
+          LAST_SS_KEY=${3-}
+          LAST_SS_FILTER=${4-}
+          printf '{"candidate":true,"uuid":"%s","ss_password":"%s"}\n' \
+            "$UUID_ORIGINAL" "$LAST_SS_KEY"
           ;;
         *) return 2 ;;
       esac
@@ -1338,12 +1457,12 @@ expect_success "UUID flow retries failures and then succeeds" changeuuid
 pass "UUID flow retries the failed commit"
 [[ $LAST_GENERATED_UUID == "$UUID_TWO" ]] || fail "UUID flow did not commit the final value"
 pass "UUID flow commits the final value"
-[[ $LAST_UUID_FILTER != *'socks5-sb'* && $LAST_UUID_FILTER != *'type == "socks"'* ]] ||
-  fail "UUID flow unexpectedly targets SOCKS5"
-pass "UUID flow does not target SOCKS5"
-[[ $LAST_COMMITTED_CANDIDATE == *"\"socks_password\":\"$SOCKS_PASSWORD_ORIGINAL\""* ]] ||
-  fail "UUID flow changed the SOCKS5 password"
-pass "UUID flow preserves the SOCKS5 password"
+[[ $LAST_UUID_FILTER != *'shadowsocks'* ]] ||
+  fail "UUID flow unexpectedly targets the Shadowsocks-2022 inbound"
+pass "UUID flow does not target the Shadowsocks-2022 inbound"
+[[ $LAST_COMMITTED_CANDIDATE == *"\"ss_password\":\"$SS_KEY_ORIGINAL\""* ]] ||
+  fail "UUID flow changed the Shadowsocks-2022 key"
+pass "UUID flow preserves the Shadowsocks-2022 key"
 [[ $FLOW_MESSAGES == *'UUID格式错误'* ]] || fail "UUID format failure was not shown"
 pass "UUID format failure is shown"
 [[ $FLOW_MESSAGES == *'UUID修改失败，原配置未修改或已恢复'* ]] ||
@@ -1367,63 +1486,61 @@ pass "UUID rollback failure is shown"
 [[ $FLOW_RESPONSE_INDEX -eq 2 ]] || fail "UUID rollback failure did not wait before returning"
 pass "UUID rollback failure waits before returning"
 
-FLOW_RESPONSES=('bad password value' "$SOCKS_PASSWORD_ONE" '' "$SOCKS_PASSWORD_TWO" '')
+FLOW_RESPONSES=('bad password value' "$SS_KEY_ONE" '' "$SS_KEY_TWO" '')
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 COMMIT_RESULTS=(1 0)
 COMMIT_INDEX=0
-expect_success "SOCKS password flow retries failures and then succeeds" change_socks_password
-[[ $COMMIT_INDEX -eq 2 ]] || fail "SOCKS password flow did not retry the failed commit"
-pass "SOCKS password flow retries the failed commit"
-[[ $LAST_GENERATED_SOCKS_PASSWORD == "$SOCKS_PASSWORD_TWO" ]] ||
-  fail "SOCKS password flow did not commit the final value"
-pass "SOCKS password flow commits the final value"
-[[ $LAST_GENERATED_SOCKS_USERNAME == sb ]] || fail "SOCKS password flow changed the username"
-pass "SOCKS password flow preserves the fixed username"
-[[ $LAST_SOCKS_FILTER != *'hy2-sb'* ]] ||
-  fail "SOCKS password flow unexpectedly targets UUID protocols"
-pass "SOCKS password flow does not target UUID protocols"
+expect_success "SS-2022 key flow retries failures and then succeeds" change_ss_password
+[[ $COMMIT_INDEX -eq 2 ]] || fail "SS-2022 key flow did not retry the failed commit"
+pass "SS-2022 key flow retries the failed commit"
+[[ $LAST_SS_KEY == "$SS_KEY_TWO" ]] ||
+  fail "SS-2022 key flow did not commit the final value"
+pass "SS-2022 key flow commits the final value"
+[[ $LAST_SS_FILTER != *'hy2-sb'* ]] ||
+  fail "SS-2022 key flow unexpectedly targets UUID protocols"
+pass "SS-2022 key flow does not target UUID protocols"
 [[ $LAST_COMMITTED_CANDIDATE == *"\"uuid\":\"$UUID_ORIGINAL\""* ]] ||
-  fail "SOCKS password flow changed the Hysteria2 UUID"
-pass "SOCKS password flow preserves the Hysteria2 UUID"
-[[ $FLOW_MESSAGES == *'SOCKS5密码必须为16-128位'* ]] ||
-  fail "SOCKS password format failure was not shown"
-pass "SOCKS password format failure is shown"
-[[ $FLOW_MESSAGES == *'SOCKS5密码修改失败，原配置未修改或已恢复'* ]] ||
-  fail "SOCKS password commit failure was not shown"
-pass "SOCKS password commit failure is shown"
-[[ $FLOW_MESSAGES == *"SOCKS5独立密码修改成功：$SOCKS_PASSWORD_TWO"* ]] ||
-  fail "SOCKS password success was not shown"
-pass "SOCKS password success is shown"
+  fail "SS-2022 key flow changed the Hysteria2 UUID"
+pass "SS-2022 key flow preserves the Hysteria2 UUID"
+[[ $FLOW_MESSAGES == *'Shadowsocks-2022密钥必须是44位标准base64'* ]] ||
+  fail "SS-2022 key format failure was not shown"
+pass "SS-2022 key format failure is shown"
+[[ $FLOW_MESSAGES == *'Shadowsocks-2022密钥修改失败，原配置未修改或已恢复'* ]] ||
+  fail "SS-2022 key commit failure was not shown"
+pass "SS-2022 key commit failure is shown"
+[[ $FLOW_MESSAGES == *"Shadowsocks-2022密钥修改成功：$SS_KEY_TWO"* ]] ||
+  fail "SS-2022 key success was not shown"
+pass "SS-2022 key success is shown"
 [[ $FLOW_PROMPTS == *'按回车返回凭据菜单...'* ]] ||
-  fail "SOCKS password success did not wait for return"
-pass "SOCKS password success waits before returning"
+  fail "SS-2022 key success did not wait for return"
+pass "SS-2022 key success waits before returning"
 
-FLOW_RESPONSES=("$SOCKS_PASSWORD_ONE" '')
+FLOW_RESPONSES=("$SS_KEY_ONE" '')
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 COMMIT_RESULTS=(2)
 COMMIT_INDEX=0
-expect_failure "SOCKS password flow stops when automatic rollback fails" change_socks_password
+expect_failure "SS-2022 key flow stops when automatic rollback fails" change_ss_password
 [[ $FLOW_MESSAGES == *'自动回滚失败'* ]] ||
-  fail "SOCKS password rollback failure was not shown"
-pass "SOCKS password rollback failure is shown"
+  fail "SS-2022 key rollback failure was not shown"
+pass "SS-2022 key rollback failure is shown"
 [[ $FLOW_RESPONSE_INDEX -eq 2 ]] ||
-  fail "SOCKS password rollback failure did not wait before returning"
-pass "SOCKS password rollback failure waits before returning"
+  fail "SS-2022 key rollback failure did not wait before returning"
+pass "SS-2022 key rollback failure waits before returning"
 
 CREDENTIAL_UUID_CALLS=0
-CREDENTIAL_SOCKS_CALLS=0
+CREDENTIAL_SS_CALLS=0
 changeuuid(){ CREDENTIAL_UUID_CALLS=$((CREDENTIAL_UUID_CALLS + 1)); }
-change_socks_password(){ CREDENTIAL_SOCKS_CALLS=$((CREDENTIAL_SOCKS_CALLS + 1)); }
+change_ss_password(){ CREDENTIAL_SS_CALLS=$((CREDENTIAL_SS_CALLS + 1)); }
 FLOW_RESPONSES=(1 2 9 0)
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 expect_success "credential menu dispatches both credential flows" change_credentials
-[[ $CREDENTIAL_UUID_CALLS -eq 1 && $CREDENTIAL_SOCKS_CALLS -eq 1 ]] ||
+[[ $CREDENTIAL_UUID_CALLS -eq 1 && $CREDENTIAL_SS_CALLS -eq 1 ]] ||
   fail "credential menu did not dispatch both flows exactly once"
 pass "credential menu dispatches both flows exactly once"
 [[ $FLOW_MESSAGES == *'请输入0、1或2'* ]] || fail "credential menu invalid choice was not shown"

@@ -9,8 +9,21 @@ valid_uuid(){
   [[ $1 =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-valid_socks_password(){
-  [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
+# Shadowsocks-2022 pre-shared key: exactly 44 base64 characters = 32 raw bytes
+# with padding. sing-box 1.10.7 rejects every other shape at load time
+# ("bad key" for a wrong length, "decode psk: illegal base64 data" for unpadded
+# base64), and clients are stricter still, so only the canonical form is
+# generated and accepted.
+valid_ss_password(){
+  [[ $1 =~ ^[A-Za-z0-9+/]{43}=$ ]]
+}
+
+generate_ss_password(){
+  local key
+  key=$(openssl rand -base64 32 2>/dev/null) || return 1
+  key=${key//$'\n'/}
+  valid_ss_password "$key" || return 1
+  printf '%s\n' "$key"
 }
 
 valid_hostname(){
@@ -68,10 +81,10 @@ random_available_port(){
   done
 }
 
-socksport(){
-  readp "\n设置SOCKS5端口 (可输入1-65535，留空随机10000-65535)：" port
+ssport(){
+  readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port
   chooseport tcp
-  port_socks5=$port
+  port_ss=$port
 }
 
 hy2port(){
@@ -89,13 +102,13 @@ insport(){
     readp "请输入【1-2】：" port
     case "$port" in
       ""|1)
-        port_socks5=$(random_available_port tcp) || return 1
+        port_ss=$(random_available_port tcp) || return 1
         port_hy2=$(random_available_port udp) || return 1
         break
         ;;
       2)
         port=
-        socksport
+        ssport
         port=
         hy2port
         break
@@ -105,7 +118,7 @@ insport(){
   done
   echo
   blue "各协议端口确认如下"
-  blue "SOCKS5端口：$port_socks5"
+  blue "Shadowsocks-2022端口：$port_ss"
   blue "Hysteria-2端口：$port_hy2"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "四、自动生成协议凭据"
@@ -114,11 +127,11 @@ insport(){
     red "生成UUID失败"
     return 1
   fi
-  socks_password=$(openssl rand -hex 24 2>/dev/null || true)
-  if ! valid_socks_password "$socks_password"; then
-    red "生成SOCKS5独立密码失败"
+  ss_password=$(generate_ss_password) || ss_password=
+  if ! valid_ss_password "$ss_password"; then
+    red "生成Shadowsocks-2022密钥失败"
     return 1
   fi
-  blue "SOCKS5独立密码：${socks_password}"
+  blue "Shadowsocks-2022密钥：${ss_password}"
   blue "Hysteria2 UUID（密码）：${uuid}"
 }

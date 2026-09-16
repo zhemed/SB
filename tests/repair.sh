@@ -511,6 +511,37 @@ legacy_vless_config_is_migrated(){
   )
 }
 
+pre_v3_socks_config_is_migrated(){
+  (
+    local case_dir="$TEMP_DIR/pre-v3-socks" action key
+    mkdir -p "$case_dir"
+    # Rebuild the pre-3.0.0 shape: a plaintext socks inbound where the
+    # Shadowsocks-2022 inbound now lives.
+    jq '
+      .inbounds = [.inbounds[] | if .tag == "ss-sb" then
+        {type: "socks", sniff: true, sniff_override_destination: true, tag: "socks5-sb",
+         listen: .listen, listen_port: .listen_port,
+         users: [{username: "sb", password: "Socks.Pass_Two-7890"}]}
+      else . end]
+    ' "$SB_CONFIG" > "$case_dir/pre-v3.json" || return 1
+    SB_CONFIG="$case_dir/pre-v3.json"
+    REPAIR_CERT_FELL_BACK=0
+    load_repair_config_values "$SB_CONFIG" || return 1
+    # the old shape carries no reusable key
+    [[ $REPAIR_SOCKS_INBOUND -eq 1 && -z $REPAIR_SS_PASSWORD ]] || return 1
+    config_contains_removed_protocol "$SB_CONFIG" || return 1
+    try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置" || return 1
+    action=$REPAIR_CONFIG_ACTION
+    jq -e '[.inbounds[] | select(.type == "socks")] | length == 0' "$SB_CONFIG" >/dev/null || return 1
+    jq -e --arg uuid "$uuid" \
+      'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' "$SB_CONFIG" >/dev/null || return 1
+    # the replacement inbound carries a freshly minted, valid SS-2022 key
+    key=$(jq -er '.inbounds[] | select(.tag == "ss-sb") | .password | select(type == "string")' "$SB_CONFIG") || return 1
+    valid_ss_password "$key" || return 1
+    [[ $action == *SOCKS5* && $action == *Shadowsocks-2022* ]]
+  )
+}
+
 red(){ :; }
 green(){ :; }
 yellow(){ :; }
@@ -518,6 +549,8 @@ blue(){ :; }
 white(){ :; }
 valid_ipv4(){ [[ ${1-} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 valid_ipv6(){ return 1; }
+# Defined in src/00-bootstrap.sh, which this harness does not source.
+server_listen_address(){ printf '%s\n' '::'; }
 sanitize_location(){
   tr '\r\n\t' '   ' | sed 's/[[:cntrl:]]//g; s/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' | cut -c1-160
 }
@@ -536,7 +569,8 @@ source "$ROOT_DIR/src/50-client-output.sh"
 source "$ROOT_DIR/src/85-repair.sh"
 
 export CORE_VERSION=1.10.7
-export SOCKS_USERNAME=sb
+export SS_METHOD="2022-blake3-aes-256-gcm"
+export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
 export SB_DIR="$TEMP_DIR/sb"
 export SB_CONFIG="$SB_DIR/sb.json"
 export SB_LAST_GOOD="$SB_DIR/sb.json.last-good"
@@ -575,10 +609,10 @@ chmod 755 "$SB_BIN"
 uuid=123e4567-e89b-42d3-a456-426614174000
 # Values below are consumed through Bash dynamic scope by render_server_config.
 # shellcheck disable=SC2034
-port_socks5=1080
+port_ss=1080
 # shellcheck disable=SC2034
 port_hy2=8443
-socks_password=0123456789abcdef0123456789abcdef
+ss_password=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
 # shellcheck disable=SC2034
 ipv=prefer_ipv4
 # shellcheck disable=SC2034
@@ -603,15 +637,16 @@ expect_success "an incomplete managed directory is adopted while foreign ones st
 
 expect_success "managed server values are extracted" load_repair_config_values "$SB_CONFIG"
 [[ $REPAIR_UUID == "$uuid" &&
-   $REPAIR_SOCKS_PORT == 1080 && $REPAIR_HY2_PORT == 8443 &&
-   $REPAIR_CERT_MODE == self_signed ]] || fail "extracted repair values are incorrect"
+   $REPAIR_SS_PORT == 1080 && $REPAIR_HY2_PORT == 8443 &&
+   $REPAIR_CERT_MODE == self_signed &&
+   $REPAIR_SOCKS_INBOUND == 0 ]] || fail "extracted repair values are incorrect"
 pass "managed server extraction preserves node values"
 
 canonical="$TEMP_DIR/canonical.json"
 expect_success "canonical repair config is rendered" render_repair_config "$canonical"
-jq -e --arg uuid "$uuid" --arg password "$socks_password" '
+jq -e --arg uuid "$uuid" --arg password "$ss_password" '
   any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid) and
-  any(.inbounds[]; .tag == "socks5-sb" and .users[0].password == $password)
+  any(.inbounds[]; .tag == "ss-sb" and .method == "2022-blake3-aes-256-gcm" and .password == $password)
 ' "$canonical" >/dev/null || fail "canonical repair changed node credentials"
 pass "canonical repair keeps protocol credentials"
 
@@ -720,6 +755,8 @@ expect_success "repair finalization consumes interrupts without starting a secon
   repair_finalization_consumes_interrupt
 expect_success "a legacy VLESS config is migrated and keeps its node values" \
   legacy_vless_config_is_migrated
+expect_success "a pre-3.0.0 SOCKS5 config is migrated to Shadowsocks-2022" \
+  pre_v3_socks_config_is_migrated
 expect_success "interrupt restores only the in-flight ACME recovery point" \
   interrupt_handler_restores_only_inflight_acme_state
 expect_success "INT restores the original stack and cleans repair temporaries" \

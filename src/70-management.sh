@@ -533,24 +533,24 @@ change_cert_mode(){
 
 # Change ports
 change_ports(){
-  local nport port candidate menu retry commit_status socks_port hy2_port port_socks5 port_hy2
+  local nport port candidate menu retry commit_status ss_port hy2_port port_ss port_hy2
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
+  if ! ss_port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
      ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前端口失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
-  port_socks5=$socks_port
+  port_ss=$ss_port
   port_hy2=$hy2_port
   echo
   while true; do
     green "更改端口"
     green "1：Hysteria2主端口 ${yellow}当前: $hy2_port${plain}"
-    green "2：SOCKS5端口 ${yellow}当前: $socks_port${plain}"
+    green "2：Shadowsocks-2022端口 ${yellow}当前: $ss_port${plain}"
     green "0：返回主菜单"
     readp "请选择【0-2】：" menu || return 1
     case "$menu" in
@@ -596,7 +596,7 @@ change_ports(){
         [[ $retry == 0 ]] && return 1
         ;;
       2)
-        readp "请输入新SOCKS5端口 (1-65535，留空随机10000-65535): " nport || return 1
+        readp "请输入新Shadowsocks-2022端口 (1-65535，留空随机10000-65535): " nport || return 1
         port="$nport"
         chooseport tcp || continue
         if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
@@ -606,11 +606,11 @@ change_ports(){
           continue
         fi
         if ! jq --argjson p "$port" '
-          if ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) != 1
-          then error("socks5 inbound missing or duplicated")
-          else (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port) = $p end
+          if ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) != 1
+          then error("ss inbound missing or duplicated")
+          else (.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port) = $p end
         ' "$SB_CONFIG" > "$candidate" || \
-          ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
+          ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
           rm -f "$candidate"
           red "生成端口候选配置失败，原配置未修改"
           readp "按回车重新输入，输入0返回主菜单：" retry || return 1
@@ -619,7 +619,7 @@ change_ports(){
         fi
         if commit_config "$candidate"; then
           refresh_share_files_after_change || true
-          green "SOCKS5端口修改成功：$port"
+          green "Shadowsocks-2022端口修改成功：$port"
           yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
           readp "按回车返回主菜单..."
           return 0
@@ -713,83 +713,255 @@ changeuuid(){
   done
 }
 
-change_socks_password(){
+change_ss_password(){
   local current_password new_password candidate choice retry commit_status
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前SOCKS5密码失败，配置未修改"
+  if ! current_password=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' "$SB_CONFIG" 2>/dev/null); then
+    red "读取当前Shadowsocks-2022密钥失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
   echo
-  green "当前SOCKS5用户名：$SOCKS_USERNAME"
-  green "当前SOCKS5独立密码：$current_password"
+  green "当前Shadowsocks-2022密钥：$current_password"
+  yellow "密钥不可推导：改完必须同步更新所有客户端，否则会全部连不上"
   while true; do
-    readp "输入新密码（16-128位安全字符，回车随机生成，输入0返回凭据菜单）：" choice || return 1
+    readp "输入新密钥（44位标准base64，回车随机生成，输入0返回凭据菜单）：" choice || return 1
     [[ $choice == 0 ]] && return 0
     if [[ -z $choice ]]; then
-      new_password=$(openssl rand -hex 24 2>/dev/null || true)
+      new_password=$(generate_ss_password) || new_password=
     else
       new_password=$choice
     fi
-    if ! valid_socks_password "$new_password"; then
-      red "SOCKS5密码必须为16-128位，仅可使用字母、数字、点、下划线、波浪号和连字符"
+    if ! valid_ss_password "$new_password"; then
+      red "Shadowsocks-2022密钥必须是44位标准base64（32字节密钥，末尾一个=号）"
       continue
     fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建SOCKS5密码候选配置失败，原配置未修改"
+      red "创建Shadowsocks-2022密钥候选配置失败，原配置未修改"
       readp "按回车重试，输入0返回凭据菜单：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
-    if ! jq --arg password "$new_password" --arg username "$SOCKS_USERNAME" '
-      if ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) != 1
-      then error("socks5 inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].username) = $username |
-           (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password) = $password
+    if ! jq --arg password "$new_password" '
+      if ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) != 1
+      then error("ss inbound missing or duplicated")
+      else (.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password) = $password
       end
     ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg password "$new_password" --arg username "$SOCKS_USERNAME" '([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .users[0].username == $username and .users[0].password == $password)] | length) == 1' "$candidate" >/dev/null; then
+      ! jq -e --arg password "$new_password" '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .password == $password)] | length) == 1' "$candidate" >/dev/null; then
       rm -f "$candidate"
-      red "生成SOCKS5密码候选配置失败，原配置未修改"
+      red "生成Shadowsocks-2022密钥候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
-      green "SOCKS5独立密码修改成功：${new_password}"
+      green "Shadowsocks-2022密钥修改成功：${new_password}"
       readp "按回车返回凭据菜单..."
       return 0
     else
       commit_status=$?
     fi
     if [[ $commit_status -eq 2 ]]; then
-      red "SOCKS5密码修改失败且自动回滚失败，请先检查服务和备份配置"
+      red "Shadowsocks-2022密钥修改失败且自动回滚失败，请先检查服务和备份配置"
       readp "按回车返回凭据菜单..."
       return 2
     fi
-    red "SOCKS5密码修改失败，原配置未修改或已恢复"
+    red "Shadowsocks-2022密钥修改失败，原配置未修改或已恢复"
     readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
     [[ $retry == 0 ]] && return 1
   done
 }
-
 change_credentials(){
   local choice
   while true; do
     echo
     green "凭据管理"
     green "1：更改Hysteria2 UUID（密码）"
-    green "2：更改SOCKS5独立密码"
+    green "2：更改Shadowsocks-2022密钥"
     green "0：返回主菜单"
     readp "请选择【0-2】：" choice || return 1
     case "$choice" in
       1) changeuuid ;;
-      2) change_socks_password ;;
+      2) change_ss_password ;;
+      ""|0) return 0 ;;
+      *) red "请输入0、1或2" ;;
+    esac
+  done
+}
+
+# Upstream / relay ("线路机 -> 落地机")
+relay_upstream_reachable(){
+  local server=$1 port=$2 target=$server
+  valid_ipv6 "$server" && target="[$server]"
+  timeout 3 bash -c "exec 3<>/dev/tcp/$target/$port" >/dev/null 2>&1
+}
+
+relay_candidate_with_upstream(){
+  local output=$1 server=$2 port=$3 password=$4
+  jq --arg server "$server" --argjson port "$port" --arg password "$password" --arg method "$SS_METHOD" '
+    if ([.outbounds[] | select(.tag == "relay")] | length) > 1 then
+      error("duplicated relay outbound")
+    else
+      .outbounds = ([.outbounds[] | select(.tag != "relay")] +
+        [{type: "shadowsocks", tag: "relay", server: $server, server_port: $port,
+          method: $method, password: $password}]) |
+      .route.final = "relay"
+    end
+  ' "$SB_CONFIG" > "$output" || return 1
+  jq -e --arg server "$server" --argjson port "$port" --arg password "$password" '
+    ([.outbounds[] | select(.tag == "relay" and .server == $server and .server_port == $port and .password == $password)] | length) == 1 and
+    .route.final == "relay"
+  ' "$output" >/dev/null
+}
+
+relay_candidate_without_upstream(){
+  local output=$1
+  jq '
+    .outbounds = [.outbounds[] | select(.tag != "relay")] |
+    .route.final = "direct"
+  ' "$SB_CONFIG" > "$output" || return 1
+  jq -e '([.outbounds[] | select(.tag == "relay")] | length) == 0 and .route.final == "direct"' "$output" >/dev/null
+}
+
+set_relay_upstream(){
+  local server port password candidate confirm commit_status retry
+  if ! sbactive; then
+    readp "按回车返回主菜单..."
+    return 1
+  fi
+  echo
+  while true; do
+    readp "请输入落地机地址（IPv4/IPv6/域名，输入0返回主菜单）：" server || return 1
+    [[ $server == 0 ]] && return 0
+    if ! relay_server_is_valid "$server"; then
+      red "地址格式无效"
+      continue
+    fi
+    readp "请输入落地机端口（1-65535，输入0返回主菜单）：" port || return 1
+    [[ $port == 0 ]] && return 0
+    if ! valid_port "$port"; then
+      red "端口必须是1-65535之间的整数"
+      continue
+    fi
+    readp "请输入落地机的Shadowsocks-2022密钥（44位base64，输入0返回主菜单）：" password || return 1
+    [[ $password == 0 ]] && return 0
+    if ! valid_ss_password "$password"; then
+      red "密钥必须是44位标准base64（32字节密钥，末尾一个=号）"
+      continue
+    fi
+    if ! relay_upstream_reachable "$server" "$port"; then
+      yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动或地址填错）"
+      yellow "启用后所有出网流量都会走它，上游不通等于断网；清除上游可立即恢复直连"
+      readp "确认仍要保存？输入 YES 继续，其他输入重新填写：" confirm || return 1
+      [[ $confirm == YES ]] || continue
+    fi
+    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
+      red "创建上游候选配置失败，原配置未修改"
+      readp "按回车返回主菜单..."
+      return 1
+    fi
+    if ! relay_candidate_with_upstream "$candidate" "$server" "$port" "$password" || ! chmod 600 "$candidate"; then
+      rm -f "$candidate"
+      red "生成上游候选配置失败，原配置未修改"
+      readp "按回车重新输入，输入0返回主菜单：" retry || return 1
+      [[ $retry == 0 ]] && return 1
+      continue
+    fi
+    if commit_config "$candidate"; then
+      if save_relay_settings "$server" "$port" "$password"; then
+        green "上游已启用：${server}:${port}"
+        yellow "出网流量已交给落地机；清除上游可恢复直连"
+      else
+        red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
+      fi
+      readp "按回车返回主菜单..."
+      return 0
+    else
+      commit_status=$?
+    fi
+    if [[ $commit_status -eq 2 ]]; then
+      red "上游设置失败且自动回滚失败，请先检查服务和备份配置"
+      readp "按回车返回主菜单..."
+      return 2
+    fi
+    red "上游设置失败，原配置未修改或已恢复"
+    readp "按回车重新输入，输入0返回主菜单：" retry || return 1
+    [[ $retry == 0 ]] && return 1
+  done
+}
+
+clear_relay_upstream(){
+  local candidate confirm commit_status
+  if ! sbactive; then
+    readp "按回车返回主菜单..."
+    return 1
+  fi
+  if ! relay_settings_present &&
+     ! jq -e '[.outbounds[]? | select(.tag == "relay")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
+    yellow "当前没有配置上游，无需清除"
+    readp "按回车返回主菜单..."
+    return 0
+  fi
+  echo
+  readp "确认清除上游并恢复直连出网？输入 YES 确认：" confirm || return 1
+  [[ $confirm == YES ]] || return 0
+  if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
+    red "创建上游候选配置失败，原配置未修改"
+    readp "按回车返回主菜单..."
+    return 1
+  fi
+  if ! relay_candidate_without_upstream "$candidate" || ! chmod 600 "$candidate"; then
+    rm -f "$candidate"
+    red "生成上游候选配置失败，原配置未修改"
+    readp "按回车返回主菜单..."
+    return 1
+  fi
+  if commit_config "$candidate"; then
+    if clear_relay_settings; then
+      green "上游已清除，出网恢复直连"
+    else
+      red "服务端已恢复直连，但上游状态文件删除失败，请手动检查 $(relay_config_path)"
+    fi
+    readp "按回车返回主菜单..."
+    return 0
+  else
+    commit_status=$?
+  fi
+  if [[ $commit_status -eq 2 ]]; then
+    red "清除上游失败且自动回滚失败，请先检查服务和备份配置"
+    readp "按回车返回主菜单..."
+    return 2
+  fi
+  red "清除上游失败，原配置未修改或已恢复"
+  readp "按回车返回主菜单..."
+  return 1
+}
+
+manage_relay(){
+  local choice
+  while true; do
+    echo
+    green "上游/中转管理"
+    if ! relay_settings_present; then
+      green "当前上游：${yellow}未配置${green}（全部直连出网）"
+    elif load_relay_settings; then
+      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（$SS_METHOD）"
+    else
+      red "上游状态文件存在但无法解析：$(relay_config_path)"
+    fi
+    yellow "启用上游后本机所有出网流量都交给落地机，上游不可达等于断网"
+    green "1：设置/更换上游（落地机）"
+    green "2：清除上游（恢复直连）"
+    green "0：返回主菜单"
+    readp "请选择【0-2】：" choice || return 1
+    case "$choice" in
+      1) set_relay_upstream ;;
+      2) clear_relay_upstream ;;
       ""|0) return 0 ;;
       *) red "请输入0、1或2" ;;
     esac

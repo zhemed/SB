@@ -49,6 +49,66 @@ atomic_copy_private_file(){
   fi
 }
 
+# --- Optional upstream ("线路机 -> 落地机") -------------------------------------
+# relay.conf lives in the managed directory and is the single source of truth
+# for the upstream: the config renderer re-reads it on every render, so no
+# management flow (port change, credential change, repair) can drop the relay.
+# Format is a three-line key=value file; there is deliberately no shell
+# evaluation and no unknown-key tolerance.
+relay_config_path(){
+  printf '%s\n' "$SB_DIR/relay.conf"
+}
+
+relay_settings_present(){
+  managed_regular_file_is_trusted "$(relay_config_path)"
+}
+
+relay_server_is_valid(){
+  valid_ipv4 "$1" || valid_ipv6 "$1" || valid_hostname "$1"
+}
+
+load_relay_settings(){
+  local config line key value count=0
+  relay_server=
+  relay_port=
+  relay_password=
+  config=$(relay_config_path) || return 1
+  relay_settings_present || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -n $line && $line == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    case "$key" in
+      server) relay_server=$value ;;
+      port) relay_port=$value ;;
+      password) relay_password=$value ;;
+      *) return 1 ;;
+    esac
+    count=$((count + 1))
+  done < "$config"
+  [[ $count -eq 3 ]] || return 1
+  relay_server_is_valid "$relay_server" || return 1
+  valid_port "$relay_port" || return 1
+  valid_ss_password "$relay_password" || return 1
+}
+
+save_relay_settings(){
+  local server=$1 port=$2 password=$3 payload
+  relay_server_is_valid "$server" || return 1
+  valid_port "$port" || return 1
+  valid_ss_password "$password" || return 1
+  payload=$(printf 'server=%s\nport=%s\npassword=%s' "$server" "$port" "$password") || return 1
+  atomic_write_private_text "$(relay_config_path)" "$payload"
+}
+
+clear_relay_settings(){
+  local config
+  config=$(relay_config_path) || return 1
+  [[ ! -e $config && ! -L $config ]] && return 0
+  managed_regular_file_is_trusted "$config" || return 1
+  rm -f -- "$config"
+}
+
 write_managed_marker_at(){
   local directory=$1 marker_tmp marker="$1/.sb-managed"
   [[ ! -e $directory || -d $directory && ! -L $directory ]] || return 1

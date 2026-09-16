@@ -3,9 +3,10 @@
 load_repair_config_values(){
   local source=$1
   REPAIR_UUID=
-  REPAIR_SOCKS_PORT=
+  REPAIR_SS_PORT=
   REPAIR_HY2_PORT=
-  REPAIR_SOCKS_PASSWORD=
+  REPAIR_SS_PASSWORD=
+  REPAIR_SOCKS_INBOUND=0
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
   REPAIR_KEY_PATH=
@@ -14,19 +15,30 @@ load_repair_config_values(){
   jq -e '
     type == "object" and (.inbounds | type == "array") and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
-    ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1 and
+    ([.inbounds[] | select((.type == "shadowsocks" and .tag == "ss-sb") or
+                           (.type == "socks" and .tag == "socks5-sb"))] | length) == 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
-  REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
+  REPAIR_SS_PORT=$(jq -er '.inbounds[] | select((.type == "shadowsocks" and .tag == "ss-sb") or (.type == "socks" and .tag == "socks5-sb")) | .listen_port | select(type == "number")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | select(.users[0].username == "sb") | .users[0].password | select(type == "string")' "$source") || return 1
+  # The pre-3.0.0 shape (a plaintext socks inbound) has no key that can be
+  # reused: a rewrite has to mint a new one, which is what
+  # try_repair_config_source does when it sees REPAIR_SOCKS_INBOUND=1.
+  if jq -e '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length == 1' "$source" >/dev/null 2>&1; then
+    REPAIR_SS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
+  else
+    REPAIR_SS_PASSWORD=
+    REPAIR_SOCKS_INBOUND=1
+  fi
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
   REPAIR_KEY_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path | select(type == "string")' "$source") || return 1
   valid_uuid "$REPAIR_UUID" || return 1
-  valid_port "$REPAIR_SOCKS_PORT" && valid_port "$REPAIR_HY2_PORT" || return 1
-  valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
+  valid_port "$REPAIR_SS_PORT" && valid_port "$REPAIR_HY2_PORT" || return 1
+  if [[ $REPAIR_SOCKS_INBOUND -eq 0 ]]; then
+    valid_ss_password "$REPAIR_SS_PASSWORD" || return 1
+  fi
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
     REPAIR_CERT_MODE=self_signed
@@ -39,11 +51,11 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  local uuid=$REPAIR_UUID port_socks5=$REPAIR_SOCKS_PORT
+  local uuid=$REPAIR_UUID port_ss=$REPAIR_SS_PORT
   # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
   local port_hy2=$REPAIR_HY2_PORT
-  local socks_password=$REPAIR_SOCKS_PASSWORD ipv=$REPAIR_STRATEGY
+  local ss_password=$REPAIR_SS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
   render_server_config "$output"
@@ -181,9 +193,13 @@ install_repair_config(){
   fi
 }
 
+# True when the config still carries a protocol this version no longer ships:
+# the VLESS inbound removed in 2.0.0, or the plaintext SOCKS5 inbound that
+# 3.0.0 replaced with Shadowsocks-2022. Such a config is technically valid, so
+# repair must rewrite it instead of reporting it as healthy.
 config_contains_removed_protocol(){
   local source=$1
-  jq -e '[.inbounds[]? | select(.type == "vless")] | length > 0' "$source" >/dev/null 2>&1
+  jq -e '[.inbounds[]? | select(.type == "vless" or (.type == "socks" and .tag == "socks5-sb"))] | length > 0' "$source" >/dev/null 2>&1
 }
 
 try_repair_config_source(){
@@ -196,11 +212,16 @@ try_repair_config_source(){
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
   fi
-  # A config that still carries the removed VLESS inbound must be rewritten
-  # rather than left untouched: sing-box still accepts it, so the version
-  # check alone would classify it as healthy and keep the protocol alive.
+  # A config that still carries the removed VLESS inbound, or the SOCKS5 inbound
+  # that 3.0.0 replaced, must be rewritten rather than left untouched: sing-box
+  # still accepts both, so the version check alone would classify them as
+  # healthy and keep the old protocol alive.
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 VLESS inbound"
+  fi
+  if [[ $REPAIR_SOCKS_INBOUND -eq 1 ]]; then
+    REPAIR_SS_PASSWORD=$(generate_ss_password) || return 1
+    label+="，并把 SOCKS5 入站升级为 Shadowsocks-2022（密钥已重新生成，需更新客户端）"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
@@ -269,9 +290,10 @@ rebuild_config_in_place(){
   insport || return 1
   v6only
   REPAIR_UUID=$uuid
-  REPAIR_SOCKS_PORT=$port_socks5
+  REPAIR_SS_PORT=$port_ss
   REPAIR_HY2_PORT=$port_hy2
-  REPAIR_SOCKS_PASSWORD=$socks_password
+  REPAIR_SS_PASSWORD=$ss_password
+  REPAIR_SOCKS_INBOUND=0
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
   candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1

@@ -44,8 +44,9 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
-  yellow "安全提示：SOCKS5本身不加密，仅适合可信链路；脚本已使用独立密码并禁止SOCKS5 UDP"
-  yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_socks5}/tcp 与 ${port_hy2}/udp"
+  yellow "安全提示：Shadowsocks-2022 入站只承载 TCP，UDP 由 Hysteria2 承担；密钥不可推导，丢失只能重签"
+  yellow "Shadowsocks-2022 依赖时间戳抗重放，请确保本机 NTP 时间同步正常"
+  yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_ss}/tcp 与 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
   fi
@@ -110,10 +111,11 @@ menu(){
     green " 5. 更改端口"
     green " 6. 更改协议凭据"
     green " 7. 切换IP优先级"
-    green " 8. 卸载"
+    green " 8. 上游/中转"
+    green " 9. 卸载"
     green " 0. 退出脚本"
     echo
-    readp "请输入数字 [0-8]: " Input || exit 0
+    readp "请输入数字 [0-9]: " Input || exit 0
     case "$Input" in
       1)
         if is_installed; then
@@ -139,7 +141,7 @@ menu(){
           sleep 1
         fi
         ;;
-      4|5|6|7)
+      4|5|6|7|8)
         if ! is_installed; then
           red "请先安装或修复 Sing-box"
           sleep 1
@@ -149,10 +151,11 @@ menu(){
             5) change_ports ;;
             6) change_credentials ;;
             7) switch_ip_priority ;;
+            8) manage_relay ;;
           esac
         fi
         ;;
-      8)
+      9)
         if is_installed || service_exists || managed_directory_is_owned || [[ -x $SB_BIN || -s $SB_CONFIG ]]; then
           uninstall
         else

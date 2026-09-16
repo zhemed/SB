@@ -27,12 +27,12 @@ bash <(curl -Ls https://raw.githubusercontent.com/zhemed/SB/main/sb.sh)
 | --- | --- |
 | `src/00-bootstrap.sh` | 常量、环境检查、网络信息与内核下载 |
 | `src/10-acme.sh` | 证书校验、官方 acme.sh 与 Cloudflare DNS API |
-| `src/20-ports.sh` | 输入校验、SOCKS5 TCP 与 Hysteria2 UDP 端口选择 |
+| `src/20-ports.sh` | 输入校验、Shadowsocks-2022 TCP 与 Hysteria2 UDP 端口选择 |
 | `src/30-server-config.sh` | Sing-box 服务端配置模板 |
 | `src/40-service.sh` | 托管目录、systemd/OpenRC 与配置提交 |
-| `src/50-client-output.sh` | Hysteria2 与 SOCKS5 分享链接及 Sing-box/Clash 客户端配置 |
+| `src/50-client-output.sh` | Hysteria2 与 Shadowsocks-2022 分享链接及 Sing-box/Clash 客户端配置 |
 | `src/60-cron.sh` | ACME 续期与定时任务管理 |
-| `src/70-management.sh` | 证书、端口与协议凭据修改 |
+| `src/70-management.sh` | 证书、端口、协议凭据与上游/中转修改 |
 | `src/80-lifecycle.sh` | 卸载、快捷命令、依赖与运行态准备 |
 | `src/85-repair.sh` | 内核、配置、证书、服务与维护任务的诊断恢复 |
 | `src/90-main.sh` | 安装流程、菜单和唯一入口 |
@@ -68,7 +68,7 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`2.0.1`。
+- 当前项目版本：`3.0.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
@@ -83,9 +83,14 @@ bash scripts/check-version-bump.sh
   服务重启失败会恢复旧 generation。旧版普通证书文件会在续期自检时原地迁移。
 - 证书更新后，运行中的 sb 服务会通过 reload hook 重启并加载新证书；服务未运行时不会被续期任务强制启动。
 - 修复、卸载、残缺安装清理、证书操作和自动续期共用 `/run/sb-acme.lock`，避免并发修改出半套状态。
-- 服务端提供 Hysteria2 与 SOCKS5 两种协议。
-- Hysteria2 使用 UUID 作为密码；SOCKS5 使用固定用户名 `sb` 和独立随机密码。
-- SOCKS5 仅允许 TCP；它本身不加密，只应在可信链路中使用。客户端配置不再生成负载均衡或自动测速分组。
+- 服务端提供 Hysteria2 与 Shadowsocks-2022 两种协议：Hysteria2 使用 UUID 作为密码，
+  Shadowsocks-2022 固定使用 `2022-blake3-aes-256-gcm` 与 32 字节密钥（44 位标准 base64）。
+- Shadowsocks-2022 入站只承载 TCP（UDP 由 Hysteria2 承担），协议用时间戳抗重放，需要服务器 NTP 正常；
+  密钥不可推导，丢失只能重签，请随配置一起备份。
+- 客户端配置不再生成负载均衡或自动测速分组；节点顺序固定为 Shadowsocks-2022 在前、Hysteria2 在后。
+- 菜单 [8] 上游/中转可把本机出网交给一台落地机（同样是 Shadowsocks-2022）：参数保存在
+  `/etc/sb/relay.conf`（600，受管文件），每次重写配置都会重新注入，改端口、改凭据、修复都不会丢。
+  **上游不可达等于断网**，清除上游即可立即恢复直连。
 - 安装与修复已拆分为独立菜单。修复会补齐依赖与固定内核、恢复最后一次可用配置或从现有节点参数重建标准配置、修复证书与服务定义，并检查快捷命令和定时任务；只有关键节点参数完全无法恢复时，才会要求输入 `REBUILD` 原地生成新节点，不会默认删除 `/etc/sb`。
 - 核心修复以事务执行并备份原内核、配置和服务定义；启动失败或收到中断信号时优先恢复原可用服务，无法恢复时会保留修复后的节点配置副本并在报告中给出路径。
 - 首次安装中断或关键步骤失败时，会自动清理本次安装创建的服务、定时任务、目录和快捷命令。
