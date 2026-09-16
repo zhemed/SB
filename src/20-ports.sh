@@ -81,10 +81,28 @@ random_available_port(){
   done
 }
 
-ssport(){
-  readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp
-  port_ss=$port
+# Port selection for the optional Shadowsocks-2022 entry (menu [8]).
+# Empty/1 = random, 2 = custom — the same shape the installer uses for its own
+# port question. The result is returned in the global `port`.
+choose_ss_port(){
+  local choice
+  while true; do
+    yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认"
+    yellow "2：自定义端口"
+    readp "请输入【1-2】：" choice || return 1
+    case "$choice" in
+      ""|1)
+        port=$(random_available_port tcp) || return 1
+        return 0
+        ;;
+      2)
+        readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port || return 1
+        chooseport tcp
+        return $?
+        ;;
+      *) red "请输入1或2" ;;
+    esac
+  done
 }
 
 hy2port(){
@@ -95,20 +113,17 @@ hy2port(){
 
 insport(){
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  green "三、设置各协议端口"
+  green "三、设置Hysteria2端口"
   yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认。请确保VPS后台已开放所有端口"
-  yellow "2：自定义每个协议端口。请确保VPS后台已开放指定的端口"
+  yellow "2：自定义端口。请确保VPS后台已开放指定的端口"
   while true; do
     readp "请输入【1-2】：" port
     case "$port" in
       ""|1)
-        port_ss=$(random_available_port tcp) || return 1
         port_hy2=$(random_available_port udp) || return 1
         break
         ;;
       2)
-        port=
-        ssport
         port=
         hy2port
         break
@@ -117,8 +132,7 @@ insport(){
     esac
   done
   echo
-  blue "各协议端口确认如下"
-  blue "Shadowsocks-2022端口：$port_ss"
+  blue "端口确认如下"
   blue "Hysteria-2端口：$port_hy2"
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "四、自动生成协议凭据"
@@ -127,11 +141,6 @@ insport(){
     red "生成UUID失败"
     return 1
   fi
-  ss_password=$(generate_ss_password) || ss_password=
-  if ! valid_ss_password "$ss_password"; then
-    red "生成Shadowsocks-2022密钥失败"
-    return 1
-  fi
-  blue "Shadowsocks-2022密钥：${ss_password}"
   blue "Hysteria2 UUID（密码）：${uuid}"
+  yellow "Shadowsocks-2022 入口默认不安装，需要时在菜单[8]可选功能里启用"
 }

@@ -45,12 +45,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SS_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
-[[ $(grep -Fxc 'sb_version="v3.0.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 3.0.1"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.0.1' ]] ||
-  fail "VERSION file is not 3.0.1"
-grep -Fq -- "当前项目版本：\`3.0.1\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 3.0.1"
+[[ $(grep -Fxc 'sb_version="v3.1.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 3.1.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.1.0' ]] ||
+  fail "VERSION file is not 3.1.0"
+grep -Fq -- "当前项目版本：\`3.1.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 3.1.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -61,9 +61,15 @@ for lifecycle_pattern in \
   'trap handle_install_interrupt INT TERM HUP' \
   'green " 1. 安装"' \
   'green " 2. 修复"' \
-  'green " 8. 上游/中转"' \
+  'green " 8. 可选功能"' \
   'green " 9. 卸载"' \
-  'readp "请输入数字 [0-9]: " Input'; do
+  'readp "请输入数字 [0-9]: " Input' \
+  'manage_optional_features()' \
+  'manage_ss_entry()' \
+  'enable_ss_entry()' \
+  'disable_ss_entry()' \
+  'change_ss_port()' \
+  '请选择【0-4】'; do
   grep -Fq -- "$lifecycle_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing installation lifecycle behavior: $lifecycle_pattern"
 done
@@ -98,8 +104,11 @@ for ss_pattern in \
   '"tag": "ss-sb"' \
   '"listen": "${listen_addr}"' \
   '"network": "tcp"' \
-  '"method": "${SS_METHOD}"' \
-  '"password": "${ss_password}"' \
+  '"method": "%s"' \
+  'ss_entry_is_enabled()' \
+  'ss_entry_candidate_with_inbound()' \
+  'ss_entry_candidate_without_inbound()' \
+  'ss_entry_enabled' \
   'server_listen_address()' \
   'IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"' \
   'local root=$1 disabled=' \
@@ -117,14 +126,17 @@ for ss_pattern in \
   'ss://$(printf' \
   "base64 | tr -d '\\r\\n')@" \
   'ss.txt' \
-  "ss-\$hostname" \
+  '"tag": "ss-%s"' \
   'type: ss' \
-  "cipher: \$SS_METHOD" \
+  'cipher: %s' \
   'udp: false' \
   'manage_relay()' \
   '当前配置里有一条上游出站，但' \
   'set_relay_upstream()' \
-  'clear_relay_upstream()'; do
+  'clear_relay_upstream()' \
+  'Shadowsocks-2022 入口默认不安装' \
+  '本次只安装 Hysteria2' \
+  'remove_saved_ss_link()'; do
   grep -Fq -- "$ss_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing Shadowsocks-2022 integration: $ss_pattern"
 done
@@ -143,10 +155,19 @@ for removed_pattern in \
     fail "retired SOCKS5 integration remains: $removed_pattern"
   fi
 done
-grep -Fq -- '请选择【0-2】' "$ROOT_DIR/sb.sh" ||
+grep -Fq -- '请选择【0-1】' "$ROOT_DIR/sb.sh" ||
   fail "port management menu is missing"
-grep -Fq -- 'green "2：Shadowsocks-2022端口' "$ROOT_DIR/sb.sh" ||
-  fail "Shadowsocks-2022 port option is missing from the ports submenu"
+# The install path must not create the optional inbound: only hysteria2.
+install_function=$(awk '/^insport\(\)\{/{inside=1} /^render_server_config\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+[[ -n $install_function ]] || fail "cannot extract insport"
+for optional_pattern in 'ss_password' 'port_ss' 'ss-sb' 'generate_ss_password'; do
+  if printf '%s\n' "$install_function" | grep -Fq -- "$optional_pattern"; then
+    fail "install flow still creates the optional Shadowsocks-2022 entry: $optional_pattern"
+  fi
+done
+grep -Fq -- 'choose_ss_port()' "$ROOT_DIR/sb.sh" ||
+  fail "optional entry port selection is missing"
 [[ $(grep -Fc -- '按回车返回主菜单...' "$ROOT_DIR/sb.sh" || true) -ge 5 ]] ||
   fail "modification flows do not consistently wait before returning"
 
@@ -177,25 +198,26 @@ share_function=$(awk '/^sbshare\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
 [[ -n $share_function ]] || fail "cannot extract share generator"
 # Compare byte offsets: the two generators sit on the same source line, so
 # line numbers would compare equal and silently pass.
-ss_share_off=$(printf '%s\n' "$share_function" | grep -bo 'resss ' | head -1 | cut -d: -f1)
-hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | cut -d: -f1)
+# `|| true` keeps `set -o pipefail` from aborting before the guard can report.
+ss_share_off=$(printf '%s\n' "$share_function" | grep -bo 'resss ' | head -1 | cut -d: -f1 || true)
+hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | cut -d: -f1 || true)
 [[ -n $ss_share_off && -n $hy2_share_off ]] ||
   fail "cannot locate share generators in sbshare"
 [[ $ss_share_off -lt $hy2_share_off ]] ||
   fail "share output lists Hysteria2 before Shadowsocks-2022"
-# Dollar-prefixed names below are literal generated-configuration text.
+# The optional entry is emitted through a printf fragment, so the SS-2022 tag is
+# the literal `ss-%s` here while Hysteria2 keeps its inline `hy2-$hostname`.
 # shellcheck disable=SC2016
-ss_out_off=$(printf '%s\n' "$client_function" | grep -bo 'ss-\$hostname' | head -1 | cut -d: -f1)
+ss_out_off=$(printf '%s\n' "$client_function" | grep -bo 'ss-%s' | head -1 | cut -d: -f1 || true)
 # shellcheck disable=SC2016
-hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1)
+hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1 || true)
 [[ -n $ss_out_off && -n $hy2_out_off && $ss_out_off -lt $hy2_out_off ]] ||
   fail "client configuration lists Hysteria2 before Shadowsocks-2022"
 
 # Ordering must never be bought by making the TCP fallback entry the default.
 # shellcheck disable=SC2016
-if printf '%s\n' "$client_function" | grep -Fq -- '"default": "ss-$hostname"'; then
-  fail "Sing-box proxy selector defaults to the Shadowsocks-2022 proxy"
-fi
+grep -Fq -- '"default": "hy2-$hostname"' <<< "$client_function" ||
+  fail "Sing-box proxy selector does not default to Hysteria2"
 clash_group=$(printf '%s\n' "$client_function" |
   awk '/^- name: 🌍选择代理节点/{inside=1} inside{print} inside && /^rules:/{exit}')
 [[ -n $clash_group ]] || fail "cannot extract Clash proxy group"
@@ -226,8 +248,8 @@ fi
 
 grep -Fq -- '"network": "udp"' "$ROOT_DIR/sb.sh" ||
   fail "Shadowsocks-2022 UDP blocking route is missing"
-grep -Fq -- 'Shadowsocks-2022 入站只承载 TCP' "$ROOT_DIR/sb.sh" ||
-  fail "Shadowsocks-2022 TCP-only warning is missing"
+grep -Fq -- 'Shadowsocks-2022 入口默认不安装' "$ROOT_DIR/sb.sh" ||
+  fail "install does not state that the Shadowsocks-2022 entry is optional"
 grep -Fq -- '密钥不可推导' "$ROOT_DIR/sb.sh" ||
   fail "Shadowsocks-2022 key-loss warning is missing"
 grep -Fq -- '时间戳抗重放' "$ROOT_DIR/sb.sh" ||

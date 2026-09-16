@@ -68,6 +68,9 @@ valid_ipv4(){ return 1; }
 valid_ipv6(){ return 1; }
 
 # Constants normally provided by src/00-bootstrap.sh, which this file does not source.
+# The colour variables are read by interpolated menu text (the matching colour
+# *functions* are replaced per test); without them `set -u` trips on ${yellow}.
+export red='' green='' yellow='' blue='' bblue='' plain=''
 export SS_METHOD="2022-blake3-aes-256-gcm"
 export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
 export SB_DIR=/etc/sb
@@ -220,6 +223,103 @@ relay_candidate_builders(){
   )
 }
 expect_success "relay candidates add, repeat and remove the upstream idempotently" relay_candidate_builders
+
+ss_entry_candidate_builders(){
+  (
+    local dir="$relay_roundtrip/ss-entry" key="$ss_key_valid"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
+    ss_entry_candidate_with_inbound "$dir/with.json" 443 "$key" "::" || return 1
+    jq -e --arg key "$key" '
+      ([.inbounds[] | select(.tag == "ss-sb" and .type == "shadowsocks" and .network == "tcp" and
+                             .listen == "::" and .listen_port == 443 and .password == $key)] | length) == 1 and
+      ([.route.rules[] | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 1 and
+      .route.final == "direct"
+    ' "$dir/with.json" >/dev/null || return 1
+    # the UDP block rule must come first, like the renderer emits it
+    [[ $(jq -r '.route.rules[0].inbound[0]' "$dir/with.json") == ss-sb ]] || return 1
+    # applying it twice is a no-op, not a duplicate
+    cp -- "$dir/with.json" "$SB_CONFIG"
+    ss_entry_candidate_with_inbound "$dir/with-again.json" 443 "$key" "::" || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 1 and
+           ([.route.rules[] | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 1' \
+      "$dir/with-again.json" >/dev/null || return 1
+    cmp -s -- "$dir/with.json" "$dir/with-again.json" || return 1
+    # an existing relay final survives enabling the entry
+    jq '.route.final = "relay"' "$dir/with.json" > "$SB_CONFIG"
+    ss_entry_candidate_with_inbound "$dir/with-relay.json" 8443 "$key" "::" || return 1
+    [[ $(jq -r '.route.final' "$dir/with-relay.json") == relay ]] || return 1
+    # removing it takes the inbound and its rule away and keeps the rest
+    cp -- "$dir/with.json" "$SB_CONFIG"
+    ss_entry_candidate_without_inbound "$dir/without.json" || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
+           ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1' "$dir/without.json" >/dev/null || return 1
+    # a duplicated inbound is refused instead of silently collapsed
+    jq '.inbounds += [.inbounds[] | select(.tag == "ss-sb")]' "$dir/with.json" > "$SB_CONFIG"
+    ss_entry_candidate_with_inbound "$dir/dup.json" 443 "$key" "::" 2>/dev/null && return 1
+    return 0
+  )
+}
+expect_success "optional SS entry candidates add, repeat and remove the inbound idempotently" \
+  ss_entry_candidate_builders
+
+# Generated client files are line-oriented YAML/JSON: a fragment whose trailing
+# newline was eaten by $( ) silently glues two entries together (3.1.0 shipped
+# that bug until the real-output harness caught it), and `sing-box check` cannot
+# see it because the JSON side stays parseable. This locks the structure down.
+client_files_keep_line_structure(){
+  (
+    local dir="$relay_roundtrip/clients"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell is the point: it owns SB_DIR
+    SB_DIR="$dir"
+    # shellcheck disable=SC2034  # consumed through dynamic scope by sb_client
+    # shellcheck disable=SC2030  # the subshell owns these path globals
+    SB_BIN=/bin/true
+    # shellcheck disable=SC2034
+    hostname=testhost
+    # shellcheck disable=SC2034
+    server_ipcl=127.0.0.1
+    # shellcheck disable=SC2034
+    cl_hy2_ip=127.0.0.1
+    # shellcheck disable=SC2034
+    hy2_name=www.bing.com
+    # shellcheck disable=SC2034
+    hy2_port=18443
+    # shellcheck disable=SC2034
+    uuid=123e4567-e89b-42d3-a456-426614174000
+    # shellcheck disable=SC2034
+    hy2_certificate_field=
+    # shellcheck disable=SC2034
+    hy2_certificate_json=
+    # shellcheck disable=SC2034
+    hy2_clash_ca=
+    # shellcheck disable=SC2034
+    ss_enabled=1
+    # shellcheck disable=SC2034
+    ss_port=18444
+    # shellcheck disable=SC2034
+    ss_password="$ss_key_valid"
+    sb_client || return 1
+    # every Clash proxy group member sits on its own line
+    group=$(awk '/^proxy-groups:/{f=1} f&&/^  proxies:/{g=1;next} g&&/^    - /{print} g&&!/^    - /{exit}' \
+      "$SB_DIR/clash.yaml")
+    [[ $(printf '%s\n' "$group" | wc -l) -eq 3 ]] || return 1
+    [[ $group == *'    - DIRECT'* && $group == *'    - ss-testhost'* ]] || return 1
+    # the optional proxy block is not glued onto the next proxy
+    grep -q '^  udp: false$' "$SB_DIR/clash.yaml" || return 1
+    grep -q '^- name: hysteria2-testhost$' "$SB_DIR/clash.yaml" || return 1
+    # the sing-box selector lists one member per line
+    selector=$(awk '/"default": "hy2-testhost"/{f=1;next} f&&/^        "/{print} f&&/^      \]/{exit}' \
+      "$SB_DIR/sbox.json")
+    [[ $(printf '%s\n' "$selector" | wc -l) -eq 2 ]] || return 1
+    return 0
+  )
+}
+expect_success "generated client files keep one entry per line" client_files_keep_line_structure
 expect_success "Cloudflare Account ID is valid" \
   valid_cloudflare_account_id 0123456789ABCDEF0123456789abcdef
 expect_failure "short Cloudflare Account ID is invalid" valid_cloudflare_account_id 01234567
@@ -1442,6 +1542,8 @@ commit_config(){
 
 export SB_DIR="$TEMP_DIR/credentials"
 export SB_CONFIG="$SB_DIR/sb.json"
+# SB_BIN is also rebound inside the client-file case's own subshell on purpose.
+# shellcheck disable=SC2031
 export SB_BIN="$SB_DIR/sing-box"
 mkdir -p "$SB_DIR"
 printf '%s\n' '{"fixture":true}' > "$SB_CONFIG"
@@ -1532,19 +1634,65 @@ pass "SS-2022 key rollback failure is shown"
 pass "SS-2022 key rollback failure waits before returning"
 
 CREDENTIAL_UUID_CALLS=0
-CREDENTIAL_SS_CALLS=0
+# Called indirectly by the sourced credential menu.
+# shellcheck disable=SC2317
 changeuuid(){ CREDENTIAL_UUID_CALLS=$((CREDENTIAL_UUID_CALLS + 1)); }
-change_ss_password(){ CREDENTIAL_SS_CALLS=$((CREDENTIAL_SS_CALLS + 1)); }
 FLOW_RESPONSES=(1 2 9 0)
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
-expect_success "credential menu dispatches both credential flows" change_credentials
-[[ $CREDENTIAL_UUID_CALLS -eq 1 && $CREDENTIAL_SS_CALLS -eq 1 ]] ||
-  fail "credential menu did not dispatch both flows exactly once"
-pass "credential menu dispatches both flows exactly once"
-[[ $FLOW_MESSAGES == *'请输入0、1或2'* ]] || fail "credential menu invalid choice was not shown"
+expect_success "credential menu dispatches the UUID flow only" change_credentials
+[[ $CREDENTIAL_UUID_CALLS -eq 1 ]] ||
+  fail "credential menu did not dispatch the UUID flow exactly once"
+pass "credential menu dispatches the UUID flow exactly once"
+[[ $FLOW_MESSAGES == *'请输入0或1'* ]] || fail "credential menu invalid choice was not shown"
 pass "credential menu reports invalid choices"
+[[ $FLOW_MESSAGES == *'菜单[8]'* ]] ||
+  fail "credential menu does not point at the optional-features menu"
+pass "credential menu points at menu [8] for the Shadowsocks key"
+unset -f changeuuid
+
+SS_MENU_CALLS=
+# Called indirectly by the sourced optional-features submenu.
+# shellcheck disable=SC2317
+enable_ss_entry(){ SS_MENU_CALLS+="enable "; }
+# shellcheck disable=SC2317
+disable_ss_entry(){ SS_MENU_CALLS+="disable "; }
+# shellcheck disable=SC2317
+change_ss_port(){ SS_MENU_CALLS+="port "; }
+# shellcheck disable=SC2317
+change_ss_password(){ SS_MENU_CALLS+="key "; }
+FLOW_RESPONSES=(1 3 4 2 9 0)
+FLOW_RESPONSE_INDEX=0
+FLOW_MESSAGES=
+FLOW_PROMPTS=
+expect_success "optional SS entry submenu dispatches every action" manage_ss_entry
+[[ $SS_MENU_CALLS == 'enable port key disable ' ]] ||
+  fail "optional SS entry submenu dispatched the wrong actions: $SS_MENU_CALLS"
+pass "optional SS entry submenu dispatches every action"
+[[ $FLOW_MESSAGES == *'请输入0、1、2、3或4'* ]] ||
+  fail "optional SS entry submenu invalid choice was not shown"
+pass "optional SS entry submenu reports invalid choices"
+unset -f enable_ss_entry disable_ss_entry change_ss_port change_ss_password
+
+OPTIONAL_CALLS=
+# Called indirectly by the sourced optional-features menu.
+# shellcheck disable=SC2317
+manage_ss_entry(){ OPTIONAL_CALLS+="ss "; }
+# shellcheck disable=SC2317
+manage_relay(){ OPTIONAL_CALLS+="relay "; }
+FLOW_RESPONSES=(1 2 9 0)
+FLOW_RESPONSE_INDEX=0
+FLOW_MESSAGES=
+FLOW_PROMPTS=
+expect_success "optional-features menu dispatches both entries" manage_optional_features
+[[ $OPTIONAL_CALLS == 'ss relay ' ]] ||
+  fail "optional-features menu dispatched the wrong entries: $OPTIONAL_CALLS"
+pass "optional-features menu dispatches both entries exactly once"
+[[ $FLOW_MESSAGES == *'请输入0、1或2'* ]] ||
+  fail "optional-features menu invalid choice was not shown"
+pass "optional-features menu reports invalid choices"
+unset -f manage_ss_entry manage_relay
 
 LIFECYCLE_ROOT="$TEMP_DIR/lifecycle"
 export SB_DIR="$LIFECYCLE_ROOT/sb"

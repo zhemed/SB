@@ -83,13 +83,26 @@ result(){
     return 1
   fi
   uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
-  ss_port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  ss_password=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' "$SB_CONFIG" 2>/dev/null) || return 1
+  # The Shadowsocks-2022 entry is optional, so "no such inbound" is a normal
+  # state rather than a broken config: everything downstream keys off ss_enabled.
+  ss_enabled=0
+  ss_port=
+  ss_password=
+  if ss_password=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' "$SB_CONFIG" 2>/dev/null); then
+    ss_enabled=1
+    ss_port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
+  else
+    ss_password=
+  fi
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
-  if ! valid_uuid "$uuid" || ! valid_port "$ss_port" ||
-     ! valid_port "$hy2_port" || ! valid_ss_password "$ss_password"; then
+  if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
     red "服务端配置中的节点参数不完整或格式无效"
+    return 1
+  fi
+  if [[ $ss_enabled -eq 1 ]] &&
+     { ! valid_port "$ss_port" || ! valid_ss_password "$ss_password"; }; then
+    red "服务端配置中的 Shadowsocks-2022 节点参数无效"
     return 1
   fi
   hy2_certificate_json=
@@ -164,10 +177,31 @@ resss(){
 # Client config generation (kept compatible with sing-box 1.10.7)
 sb_client(){
   local sbox_candidate clash_candidate hy2_certificate_field=
+  local ss_outbound_field=
+  local ss_selector_member=
+  local ss_clash_proxy=
+  local ss_clash_member=
   sbox_candidate=$(mktemp "$SB_DIR/.sbox.json.XXXXXX") || return 1
   clash_candidate=$(mktemp "$SB_DIR/.clash.yaml.XXXXXX") || { rm -f "$sbox_candidate"; return 1; }
   if [[ -n $hy2_certificate_json ]]; then
     hy2_certificate_field=$(printf ',\n        "certificate": %s' "$hy2_certificate_json")
+  fi
+  # Optional Shadowsocks-2022 entry: emit its client pieces only when the server
+  # actually runs that inbound. Order stays SS-2022 first, Hysteria2 second.
+  if [[ $ss_enabled -eq 1 ]]; then
+    ss_outbound_field=$(printf '    {\n      "type": "shadowsocks",\n      "tag": "ss-%s",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
+      "$hostname" "$server_ipcl" "$ss_port" "$SS_METHOD" "$ss_password") || return 1
+    ss_selector_member=$(printf '        "ss-%s",\n' "$hostname") || return 1
+    ss_clash_proxy=$(printf -- '- name: ss-%s\n  type: ss\n  server: %s\n  port: %s\n  cipher: %s\n  password: %s\n  udp: false\n\n' \
+      "$hostname" "$server_ipcl" "$ss_port" "$SS_METHOD" "$ss_password") || return 1
+    ss_clash_member=$(printf '    - ss-%s\n' "$hostname") || return 1
+    # Command substitution eats every trailing newline, so the line breaks the
+    # template relies on have to be put back explicitly. Without this the Clash
+    # proxies and the group members run into the next line.
+    ss_outbound_field+=$'\n'
+    ss_selector_member+=$'\n'
+    ss_clash_proxy+=$'\n\n'
+    ss_clash_member+=$'\n'
   fi
   if ! cat > "$sbox_candidate" <<EOF
 {
@@ -296,16 +330,7 @@ sb_client(){
     "auto_detect_interface": true
   },
   "outbounds": [
-    {
-      "type": "shadowsocks",
-      "tag": "ss-$hostname",
-      "server": "$server_ipcl",
-      "server_port": $ss_port,
-      "method": "$SS_METHOD",
-      "password": "$ss_password",
-      "network": "tcp"
-    },
-    {
+${ss_outbound_field}    {
       "type": "hysteria2",
       "tag": "hy2-$hostname",
       "server": "$cl_hy2_ip",
@@ -327,8 +352,7 @@ sb_client(){
       "type": "selector",
       "default": "hy2-$hostname",
       "outbounds": [
-        "ss-$hostname",
-        "hy2-$hostname"
+${ss_selector_member}        "hy2-$hostname"
       ]
     },
     {
@@ -387,15 +411,7 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-- name: ss-$hostname
-  type: ss
-  server: $server_ipcl
-  port: $ss_port
-  cipher: $SS_METHOD
-  password: $ss_password
-  udp: false
-
-- name: hysteria2-$hostname
+${ss_clash_proxy}- name: hysteria2-$hostname
   type: hysteria2
   server: $cl_hy2_ip
   port: $hy2_port
@@ -412,8 +428,7 @@ proxy-groups:
   type: select
   proxies:
     - hysteria2-$hostname
-    - ss-$hostname
-    - DIRECT
+${ss_clash_member}    - DIRECT
 
 rules:
   - GEOIP,LAN,DIRECT
@@ -430,31 +445,61 @@ EOF
   mv -fT -- "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
 }
 
+# The optional entry was switched off: drop the share file it used to produce
+# instead of leaving a stale link that no longer connects.
+remove_saved_ss_link(){
+  local path="$SB_DIR/ss.txt"
+  [[ -e $path || -L $path ]] || return 0
+  managed_regular_file_is_trusted "$path" || return 1
+  rm -f -- "$path"
+}
+
 sbshare(){
-  local aggregate_tmp hy2_tmp ss_tmp
-  ss_tmp=$(mktemp "$SB_DIR/.ss.XXXXXX") || return 1
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f "$ss_tmp"; return 1; }
-  if ! result || ! resss "$ss_tmp" || ! reshy2 "$hy2_tmp"; then
-    rm -f "$ss_tmp" "$hy2_tmp"
+  local aggregate_tmp hy2_tmp ss_tmp=
+  if ! result; then
+    return 1
+  fi
+  # Shadowsocks-2022 is emitted first when it exists, matching the client
+  # configuration order; the optional entry is simply skipped when it is off.
+  if [[ $ss_enabled -eq 1 ]]; then
+    ss_tmp=$(mktemp "$SB_DIR/.ss.XXXXXX") || return 1
+    if ! resss "$ss_tmp"; then
+      rm -f "$ss_tmp"
+      return 1
+    fi
+  fi
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${ss_tmp:+"$ss_tmp"}; return 1; }
+  if ! reshy2 "$hy2_tmp"; then
+    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"}
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
-    rm -f "$hy2_tmp" "$ss_tmp"
+    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"}
     return 1
   }
-  if ! { cat "$ss_tmp" && cat "$hy2_tmp"; } > "$aggregate_tmp"; then
-    rm -f "$hy2_tmp" "$ss_tmp" "$aggregate_tmp"
+  if ! {
+    [[ -z $ss_tmp ]] || cat "$ss_tmp"
+    cat "$hy2_tmp"
+  } > "$aggregate_tmp"; then
+    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
     return 1
   fi
-  chmod 600 "$hy2_tmp" "$ss_tmp" "$aggregate_tmp" || {
-    rm -f "$hy2_tmp" "$ss_tmp" "$aggregate_tmp"
+  if ! chmod 600 "$hy2_tmp" "$aggregate_tmp" ${ss_tmp:+"$ss_tmp"}; then
+    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
     return 1
-  }
+  fi
   if ! sb_client; then
-    rm -f "$hy2_tmp" "$ss_tmp" "$aggregate_tmp"
+    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
     return 1
   fi
-  mv -fT -- "$ss_tmp" "$SB_DIR/ss.txt" || { rm -f "$ss_tmp" "$hy2_tmp" "$aggregate_tmp"; return 1; }
+  if [[ -n $ss_tmp ]]; then
+    mv -fT -- "$ss_tmp" "$SB_DIR/ss.txt" || {
+      rm -f "$ss_tmp" "$hy2_tmp" "$aggregate_tmp"
+      return 1
+    }
+  elif ! remove_saved_ss_link; then
+    yellow "Shadowsocks-2022 入口未启用，但遗留的 $SB_DIR/ss.txt 无法删除，请手动检查"
+  fi
   mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
   atomic_copy_private_file "$SB_DIR/jhdy.txt" "$SB_DIR/jhsub.txt" || return 1

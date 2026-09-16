@@ -2,11 +2,25 @@
 # Generate server config JSON
 render_server_config(){
   local output=$1 listen_addr relay_outbound_suffix route_final
+  local ss_inbound_suffix ss_udp_rule
   [[ -n $output ]] || return 1
   relay_outbound_suffix=
   route_final=direct
+  ss_inbound_suffix=
+  ss_udp_rule=
   listen_addr=$(server_listen_address "$IPV6_SYSCTL_ROOT") || return 1
   [[ -n $listen_addr ]] || return 1
+  # The Shadowsocks-2022 entry is optional and absent by default: a new install
+  # creates only hysteria2, and repair enables it iff the source config has it.
+  # Callers must set ss_entry_enabled=1 explicitly; "unset" means "do not emit".
+  if [[ ${ss_entry_enabled:-0} -eq 1 ]]; then
+    ss_inbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "ss-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "network": "tcp",\n      "method": "%s",\n      "password": "%s"\n    }' \
+      "$listen_addr" "$port_ss" "$SS_METHOD" "$ss_password") || return 1
+    ss_udp_rule=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n')
+    # Command substitution strips the trailing newline; put it back so the rule
+    # keeps its own line (JSON tolerates the merge, readers do not).
+    ss_udp_rule+=$'\n'
+  fi
   # The optional upstream is re-read from relay.conf on every render, so a
   # rewritten config keeps the relay instead of silently falling back to a
   # direct exit. An unreadable state file is reported, not guessed at.
@@ -54,18 +68,7 @@ render_server_config(){
         "certificate_path": "${certificatec_hy2}",
         "key_path": "${certificatep_hy2}"
       }
-    },
-    {
-      "type": "shadowsocks",
-      "sniff": true,
-      "sniff_override_destination": true,
-      "tag": "ss-sb",
-      "listen": "${listen_addr}",
-      "listen_port": ${port_ss},
-      "network": "tcp",
-      "method": "${SS_METHOD}",
-      "password": "${ss_password}"
-    }
+    }${ss_inbound_suffix}
   ],
   "outbounds": [
     {
@@ -81,14 +84,7 @@ render_server_config(){
   "route": {
     "final": "${route_final}",
     "rules": [
-      {
-        "inbound": [
-          "ss-sb"
-        ],
-        "network": "udp",
-        "outbound": "block"
-      },
-      {
+${ss_udp_rule}      {
         "protocol": [
           "quic",
           "stun"

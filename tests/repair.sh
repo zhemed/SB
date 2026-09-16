@@ -511,6 +511,33 @@ legacy_vless_config_is_migrated(){
   )
 }
 
+hysteria2_only_config_is_preserved(){
+  (
+    local case_dir="$TEMP_DIR/hy2-only" action
+    mkdir -p "$case_dir"
+    # The 3.1.0 default shape: no Shadowsocks-2022 inbound at all.
+    ss_entry_enabled=0
+    port_ss=
+    ss_password=
+    render_server_config "$case_dir/hy2-only.json" || return 1
+    chmod 600 "$case_dir/hy2-only.json"
+    jq -e '[.inbounds[] | select(.tag == "ss-sb")] | length == 0' "$case_dir/hy2-only.json" >/dev/null || return 1
+    SB_CONFIG="$case_dir/hy2-only.json"
+    REPAIR_CERT_FELL_BACK=0
+    load_repair_config_values "$SB_CONFIG" || return 1
+    [[ $REPAIR_SS_ENABLED -eq 0 && -z $REPAIR_SS_PORT && -z $REPAIR_SS_PASSWORD ]] || return 1
+    config_contains_removed_protocol "$SB_CONFIG" && return 1
+    try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置" || return 1
+    action=$REPAIR_CONFIG_ACTION
+    # repair must not invent an optional entry the operator never enabled
+    jq -e '[.inbounds[] | select(.tag == "ss-sb")] | length == 0' "$SB_CONFIG" >/dev/null || return 1
+    jq -e --arg uuid "$uuid" \
+      'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' "$SB_CONFIG" >/dev/null || return 1
+    jq -e '.route.final == "direct"' "$SB_CONFIG" >/dev/null || return 1
+    [[ -n $action ]]
+  )
+}
+
 pre_v3_socks_config_is_migrated(){
   (
     local case_dir="$TEMP_DIR/pre-v3-socks" action key
@@ -608,6 +635,10 @@ chmod 755 "$SB_BIN"
 
 uuid=123e4567-e89b-42d3-a456-426614174000
 # Values below are consumed through Bash dynamic scope by render_server_config.
+# The Shadowsocks-2022 entry is optional and off by default; this fixture keeps it
+# enabled so the preservation path stays covered.
+# shellcheck disable=SC2034
+ss_entry_enabled=1
 # shellcheck disable=SC2034
 port_ss=1080
 # shellcheck disable=SC2034
@@ -639,7 +670,8 @@ expect_success "managed server values are extracted" load_repair_config_values "
 [[ $REPAIR_UUID == "$uuid" &&
    $REPAIR_SS_PORT == 1080 && $REPAIR_HY2_PORT == 8443 &&
    $REPAIR_CERT_MODE == self_signed &&
-   $REPAIR_SOCKS_INBOUND == 0 ]] || fail "extracted repair values are incorrect"
+   $REPAIR_SS_ENABLED == 1 && $REPAIR_SOCKS_INBOUND == 0 ]] ||
+  fail "extracted repair values are incorrect"
 pass "managed server extraction preserves node values"
 
 canonical="$TEMP_DIR/canonical.json"
@@ -757,6 +789,8 @@ expect_success "a legacy VLESS config is migrated and keeps its node values" \
   legacy_vless_config_is_migrated
 expect_success "a pre-3.0.0 SOCKS5 config is migrated to Shadowsocks-2022" \
   pre_v3_socks_config_is_migrated
+expect_success "a hysteria2-only config keeps no Shadowsocks-2022 inbound" \
+  hysteria2_only_config_is_preserved
 expect_success "interrupt restores only the in-flight ACME recovery point" \
   interrupt_handler_restores_only_inflight_acme_state
 expect_success "INT restores the original stack and cleans repair temporaries" \

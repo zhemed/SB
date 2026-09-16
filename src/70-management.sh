@@ -533,26 +533,23 @@ change_cert_mode(){
 
 # Change ports
 change_ports(){
-  local nport port candidate menu retry commit_status ss_port hy2_port port_ss port_hy2
+  local nport port candidate menu retry commit_status hy2_port port_hy2
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! ss_port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || \
-     ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
+  if ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前端口失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
-  port_ss=$ss_port
   port_hy2=$hy2_port
   echo
   while true; do
     green "更改端口"
     green "1：Hysteria2主端口 ${yellow}当前: $hy2_port${plain}"
-    green "2：Shadowsocks-2022端口 ${yellow}当前: $ss_port${plain}"
     green "0：返回主菜单"
-    readp "请选择【0-2】：" menu || return 1
+    readp "请选择【0-1】：" menu || return 1
     case "$menu" in
       ""|0) return 0 ;;
       1)
@@ -595,52 +592,13 @@ change_ports(){
         readp "按回车重新输入，输入0返回主菜单：" retry || return 1
         [[ $retry == 0 ]] && return 1
         ;;
-      2)
-        readp "请输入新Shadowsocks-2022端口 (1-65535，留空随机10000-65535): " nport || return 1
-        port="$nport"
-        chooseport tcp || continue
-        if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-          red "创建端口候选配置失败，原配置未修改"
-          readp "按回车重试，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if ! jq --argjson p "$port" '
-          if ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) != 1
-          then error("ss inbound missing or duplicated")
-          else (.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port) = $p end
-        ' "$SB_CONFIG" > "$candidate" || \
-          ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
-          rm -f "$candidate"
-          red "生成端口候选配置失败，原配置未修改"
-          readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if commit_config "$candidate"; then
-          refresh_share_files_after_change || true
-          green "Shadowsocks-2022端口修改成功：$port"
-          yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
-          readp "按回车返回主菜单..."
-          return 0
-        else
-          commit_status=$?
-        fi
-        if [[ $commit_status -eq 2 ]]; then
-          red "端口修改失败且自动回滚失败，请先检查服务和备份配置"
-          readp "按回车返回主菜单..."
-          return 2
-        fi
-        red "端口修改失败，原配置未修改或已恢复"
-        readp "按回车重新输入，输入0返回主菜单：" retry || return 1
-        [[ $retry == 0 ]] && return 1
-        ;;
       *)
-        red "请输入0、1或2"
+        red "请输入0或1"
         ;;
     esac
   done
 }
+
 # Credential management
 refresh_share_files_after_change(){
   if ! sbshare >/dev/null 2>&1; then
@@ -782,14 +740,13 @@ change_credentials(){
     echo
     green "凭据管理"
     green "1：更改Hysteria2 UUID（密码）"
-    green "2：更改Shadowsocks-2022密钥"
     green "0：返回主菜单"
-    readp "请选择【0-2】：" choice || return 1
+    yellow "Shadowsocks-2022 的密钥在菜单[8]可选功能里管理"
+    readp "请选择【0-1】：" choice || return 1
     case "$choice" in
       1) changeuuid ;;
-      2) change_ss_password ;;
       ""|0) return 0 ;;
-      *) red "请输入0、1或2" ;;
+      *) red "请输入0或1" ;;
     esac
   done
 }
@@ -963,6 +920,267 @@ manage_relay(){
     case "$choice" in
       1) set_relay_upstream ;;
       2) clear_relay_upstream ;;
+      ""|0) return 0 ;;
+      *) red "请输入0、1或2" ;;
+    esac
+  done
+}
+
+# Optional features (menu [8])
+ss_entry_is_enabled(){
+  [[ -s $SB_CONFIG ]] &&
+    jq -e '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) == 1' \
+      "$SB_CONFIG" >/dev/null 2>&1
+}
+
+ss_entry_port(){
+  jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' \
+    "$SB_CONFIG" 2>/dev/null
+}
+
+# Candidate builders for the optional entry. Both are idempotent: the inbound and
+# its UDP-block rule are removed before being (re)inserted, so applying them twice
+# yields the same configuration. They patch the live config with jq rather than
+# re-rendering, because a render would need every dynamic-scope node parameter.
+ss_entry_candidate_with_inbound(){
+  local output=$1 port=$2 password=$3 listen=$4
+  jq --argjson port "$port" --arg password "$password" --arg method "$SS_METHOD" --arg listen "$listen" '
+    if ([.inbounds[] | select(.tag == "ss-sb")] | length) > 1 then
+      error("duplicated ss-sb inbound")
+    else
+      .inbounds = ([.inbounds[] | select(.tag != "ss-sb")] +
+        [{type: "shadowsocks", sniff: true, sniff_override_destination: true, tag: "ss-sb",
+          listen: $listen, listen_port: $port, network: "tcp",
+          method: $method, password: $password}]) |
+      .route.rules = ([{inbound: ["ss-sb"], network: "udp", outbound: "block"}] +
+        [.route.rules[]? | select(((.inbound // []) | index("ss-sb")) == null)]) |
+      .route.final = (.route.final // "direct")
+    end
+  ' "$SB_CONFIG" > "$output" || return 1
+  jq -e --argjson port "$port" --arg password "$password" '
+    ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .network == "tcp" and
+                           .listen_port == $port and .password == $password)] | length) == 1 and
+    ([.route.rules[] | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 1
+  ' "$output" >/dev/null
+}
+
+ss_entry_candidate_without_inbound(){
+  local output=$1
+  jq '
+    .inbounds = [.inbounds[] | select(.tag != "ss-sb")] |
+    .route.rules = [.route.rules[]? | select(((.inbound // []) | index("ss-sb")) == null)]
+  ' "$SB_CONFIG" > "$output" || return 1
+  jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
+         ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0' \
+    "$output" >/dev/null
+}
+
+enable_ss_entry(){
+  local port password listen_addr candidate commit_status retry
+  if ! sbactive; then
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if ss_entry_is_enabled; then
+    yellow "Shadowsocks-2022 入口已经启用；改端口用【3】，改密钥用【4】"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
+  if ! listen_addr=$(jq -er '.inbounds[] | select(.tag == "hy2-sb") | .listen' "$SB_CONFIG" 2>/dev/null); then
+    red "读取现有监听地址失败，本次未启用"
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  echo
+  green "启用 Shadowsocks-2022 入口（TCP 备用入口，需自行放行其 TCP 端口）"
+  while true; do
+    choose_ss_port || return 1
+    password=$(generate_ss_password) || password=
+    if ! valid_ss_password "$password"; then
+      red "生成Shadowsocks-2022密钥失败"
+      readp "按回车返回可选功能..."
+      return 1
+    fi
+    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
+      red "创建候选配置失败，原配置未修改"
+      readp "按回车返回可选功能..."
+      return 1
+    fi
+    if ! ss_entry_candidate_with_inbound "$candidate" "$port" "$password" "$listen_addr" ||
+       ! chmod 600 "$candidate"; then
+      rm -f "$candidate"
+      red "生成候选配置失败，原配置未修改"
+      readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+      [[ $retry == 0 ]] && return 1
+      continue
+    fi
+    if commit_config "$candidate"; then
+      refresh_share_files_after_change || true
+      green "Shadowsocks-2022 入口已启用：端口 ${port}/tcp"
+      yellow "密钥不可推导，丢失只能重签；协议用时间戳抗重放，请确保本机 NTP 正常"
+      yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
+      readp "按回车返回可选功能..."
+      return 0
+    else
+      commit_status=$?
+    fi
+    if [[ $commit_status -eq 2 ]]; then
+      red "启用失败且自动回滚失败，请先检查服务和备份配置"
+      readp "按回车返回可选功能..."
+      return 2
+    fi
+    red "启用失败，原配置未修改或已恢复"
+    readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+    [[ $retry == 0 ]] && return 1
+  done
+}
+
+disable_ss_entry(){
+  local candidate confirm commit_status
+  if ! sbactive; then
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if ! ss_entry_is_enabled; then
+    yellow "Shadowsocks-2022 入口当前未启用，无需停用"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
+  echo
+  yellow "停用后使用这个入口的客户端会立即连不上，分享文件与客户端配置也会去掉它"
+  readp "确认停用 Shadowsocks-2022 入口？输入 YES 确认：" confirm || return 1
+  [[ $confirm == YES ]] || return 0
+  if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
+    red "创建候选配置失败，原配置未修改"
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if ! ss_entry_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
+    rm -f "$candidate"
+    red "生成候选配置失败，原配置未修改"
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if commit_config "$candidate"; then
+    refresh_share_files_after_change || true
+    green "Shadowsocks-2022 入口已停用"
+    readp "按回车返回可选功能..."
+    return 0
+  else
+    commit_status=$?
+  fi
+  if [[ $commit_status -eq 2 ]]; then
+    red "停用失败且自动回滚失败，请先检查服务和备份配置"
+    readp "按回车返回可选功能..."
+    return 2
+  fi
+  red "停用失败，原配置未修改或已恢复"
+  readp "按回车返回可选功能..."
+  return 1
+}
+
+change_ss_port(){
+  local current nport port candidate retry commit_status
+  if ! sbactive; then
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if ! current=$(ss_entry_port); then
+    yellow "Shadowsocks-2022 入口当前未启用，请先用【1】启用"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
+  echo
+  green "当前 Shadowsocks-2022 端口：$current/tcp"
+  while true; do
+    readp "请输入新Shadowsocks-2022端口 (1-65535，留空随机10000-65535): " nport || return 1
+    port="$nport"
+    chooseport tcp || continue
+    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
+      red "创建端口候选配置失败，原配置未修改"
+      readp "按回车返回可选功能..."
+      return 1
+    fi
+    if ! jq --argjson p "$port" '
+      if ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) != 1
+      then error("ss-sb inbound missing or duplicated")
+      else (.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port) = $p end
+    ' "$SB_CONFIG" > "$candidate" || \
+      ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
+      rm -f "$candidate"
+      red "生成端口候选配置失败，原配置未修改"
+      readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+      [[ $retry == 0 ]] && return 1
+      continue
+    fi
+    if commit_config "$candidate"; then
+      refresh_share_files_after_change || true
+      green "Shadowsocks-2022端口修改成功：$port"
+      yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
+      readp "按回车返回可选功能..."
+      return 0
+    else
+      commit_status=$?
+    fi
+    if [[ $commit_status -eq 2 ]]; then
+      red "端口修改失败且自动回滚失败，请先检查服务和备份配置"
+      readp "按回车返回可选功能..."
+      return 2
+    fi
+    red "端口修改失败，原配置未修改或已恢复"
+    readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+    [[ $retry == 0 ]] && return 1
+  done
+}
+
+manage_ss_entry(){
+  local choice port
+  while true; do
+    echo
+    green "Shadowsocks-2022 入口"
+    if port=$(ss_entry_port); then
+      green "当前状态：${yellow}已启用${green}（TCP 端口 ${port}）"
+    else
+      green "当前状态：${yellow}未启用${green}"
+    fi
+    yellow "这是一个可选的 TCP 备用入口；默认不安装，启用后需自行放行其 TCP 端口"
+    green "1：启用（默认随机端口，可选自定义）"
+    green "2：停用"
+    green "3：更改端口"
+    green "4：更改密钥"
+    green "0：返回可选功能"
+    readp "请选择【0-4】：" choice || return 1
+    case "$choice" in
+      1) enable_ss_entry ;;
+      2) disable_ss_entry ;;
+      3) change_ss_port ;;
+      4) change_ss_password ;;
+      ""|0) return 0 ;;
+      *) red "请输入0、1、2、3或4" ;;
+    esac
+  done
+}
+
+manage_optional_features(){
+  local choice port
+  while true; do
+    echo
+    green "可选功能"
+    if port=$(ss_entry_port); then
+      green "1：Shadowsocks-2022 入口 ${yellow}已启用（端口 $port）${plain}"
+    else
+      green "1：Shadowsocks-2022 入口 ${yellow}未启用${plain}"
+    fi
+    if load_relay_settings; then
+      green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"
+    else
+      green "2：上游/中转 ${yellow}未配置${plain}"
+    fi
+    green "0：返回主菜单"
+    readp "请选择【0-2】：" choice || return 1
+    case "$choice" in
+      1) manage_ss_entry ;;
+      2) manage_relay ;;
       ""|0) return 0 ;;
       *) red "请输入0、1或2" ;;
     esac
