@@ -815,7 +815,7 @@ set_relay_upstream(){
     if ! relay_upstream_reachable "$server" "$port"; then
       yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动或地址填错）"
       yellow "启用后所有出网流量都会走它，上游不通等于断网；清除上游可立即恢复直连"
-      if ! confirm_yes "确认仍要保存？输入 YES/y 继续（其他输入取消）："; then
+      if ! confirm_yes "上游不可达，仍要保存并切换出网？[回车/y 确认，n 取消]："; then
         yellow "已取消，未做任何修改"
         readp "按回车返回可选功能..."
         return 0
@@ -869,7 +869,7 @@ clear_relay_upstream(){
     return 0
   fi
   echo
-  if ! confirm_yes "确认清除上游并恢复直连出网？输入 YES/y 确认（其他输入取消）："; then
+  if ! confirm_yes "确认清除上游并恢复直连出网？[回车/y 确认，n 取消]："; then
     yellow "已取消，未做任何修改"
     readp "按回车返回可选功能..."
     return 0
@@ -1054,7 +1054,7 @@ disable_ss_entry(){
   fi
   echo
   yellow "停用后使用这个入口的客户端会立即连不上，分享文件与客户端配置也会去掉它"
-  if ! confirm_yes "确认停用 Shadowsocks-2022 入口？输入 YES/y 确认（其他输入取消）："; then
+  if ! confirm_yes "确认停用 Shadowsocks-2022 入口？[回车/y 确认，n 取消]："; then
     yellow "已取消，未做任何修改"
     readp "按回车返回可选功能..."
     return 0

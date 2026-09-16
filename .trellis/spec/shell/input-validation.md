@@ -126,6 +126,29 @@ choose_ss_port(){
 
 ---
 
+### Destructive confirmations
+
+Anything that changes or removes a working listener goes through `confirm_yes`
+(`src/00-bootstrap.sh:76-88`), never a bare `readp` plus a string comparison:
+
+```bash
+if ! confirm_yes "确认停用 Shadowsocks-2022 入口？[回车/y 确认，n 取消]："; then
+  yellow "已取消，未做任何修改"
+  readp "按回车返回可选功能..."
+  return 0
+fi
+```
+
+- **Enter confirms** (the prompt asks about the action the operator just chose), `y`/`yes` in any
+  case confirms, `n`/`no` and anything unrecognised cancels, and EOF cancels too — a lost terminal
+  is never treated as consent.
+- The prompt states both outcomes (`[回车/y 确认，n 取消]`) so nobody has to guess.
+- **A cancellation is always reported** (`已取消，未做任何修改`) and then it waits for a keypress.
+  A bare `return 0` redraws the menu and looks exactly like a broken entry — that shipped as a real
+  bug in 3.1.0/3.1.1 (`[[ $confirm == YES ]] || return 0` silently swallowed a lowercase `yes`).
+- Typed-word gates are a different, deliberate class: `rebuild_config_in_place` still requires the
+  literal `REBUILD`, because that path invalidates every client and is not a yes/no question.
+
 ## 3. Menu input
 
 Top-level menu dispatch is a `case` on a validated string, with a catch-all that re-prompts rather

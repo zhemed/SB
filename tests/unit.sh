@@ -220,11 +220,13 @@ confirm_rejects(){
   confirm_answer=$1
   ! confirm_yes "prompt"
 }
+expect_success "an empty answer confirms a destructive action" confirm_accepts ''
 expect_success "YES confirms a destructive action" confirm_accepts YES
 expect_success "lowercase yes confirms a destructive action" confirm_accepts yes
 expect_success "mixed-case Yes confirms a destructive action" confirm_accepts Yes
 expect_success "single y confirms a destructive action" confirm_accepts y
-expect_success "an empty answer cancels a destructive action" confirm_rejects ''
+expect_success "n cancels a destructive action" confirm_rejects n
+expect_success "NO cancels a destructive action" confirm_rejects NO
 expect_success "unrelated text cancels a destructive action" confirm_rejects YESPLEASE
 unset -f readp
 
@@ -271,6 +273,7 @@ cancelled_disable_is_reported(){
     # shellcheck disable=SC2317
     sbactive(){ return 0; }
     # shellcheck disable=SC2317
+    # shellcheck disable=SC2030  # the subshell owns this counter
     commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }
     COMMIT_INDEX=0
     disable_ss_entry || return 1
@@ -282,6 +285,69 @@ cancelled_disable_is_reported(){
 }
 expect_success "an unconfirmed disable reports the cancellation and changes nothing" \
   cancelled_disable_is_reported
+
+empty_answer_disables_the_entry(){
+  (
+    local dir="$relay_roundtrip/empty-confirm"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell owns these globals
+    SB_DIR="$dir"
+    # shellcheck disable=SC2030
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":443,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"}]}}' > "$SB_CONFIG"
+    FLOW_RESPONSES=('' '')
+    FLOW_RESPONSE_INDEX=0
+    FLOW_MESSAGES=
+    FLOW_PROMPTS=
+    # Called indirectly by the sourced management flows.
+    # shellcheck disable=SC2317
+    readp(){
+      local prompt=$1 target=${2-} response
+      FLOW_PROMPTS+="$prompt"$'\n'
+      [[ $FLOW_RESPONSE_INDEX -lt ${#FLOW_RESPONSES[@]} ]] || return 1
+      response=${FLOW_RESPONSES[$FLOW_RESPONSE_INDEX]}
+      FLOW_RESPONSE_INDEX=$((FLOW_RESPONSE_INDEX + 1))
+      if [[ -n $target ]]; then
+        printf -v "$target" '%s' "$response"
+      else
+        REPLY=$response
+      fi
+    }
+    # shellcheck disable=SC2317
+    yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    red(){ FLOW_MESSAGES+="red:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    green(){ FLOW_MESSAGES+="green:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    blue(){ FLOW_MESSAGES+="blue:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    white(){ :; }
+    # shellcheck disable=SC2317
+    sbactive(){ return 0; }
+    # shellcheck disable=SC2317
+    refresh_share_files_after_change(){ return 0; }
+    # shellcheck disable=SC2317
+    # shellcheck disable=SC2030  # the subshell owns this counter
+    commit_config(){
+      # shellcheck disable=SC2031  # the counter is deliberately subshell-local
+      COMMIT_INDEX=$((COMMIT_INDEX + 1))
+      cp -- "$1" "$SB_CONFIG"
+      rm -f -- "$1"
+      return 0
+    }
+    COMMIT_INDEX=0
+    disable_ss_entry || return 1
+    [[ $COMMIT_INDEX -eq 1 ]] || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0' \
+      "$SB_CONFIG" >/dev/null || return 1
+    [[ $FLOW_MESSAGES == *'Shadowsocks-2022 入口已停用'* ]] || return 1
+    return 0
+  )
+}
+expect_success "Enter (the default answer) disables the optional entry" \
+  empty_answer_disables_the_entry
 
 relay_candidate_builders(){
   (

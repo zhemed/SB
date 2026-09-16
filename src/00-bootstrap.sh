@@ -70,14 +70,16 @@ readp(){
   fi
 }
 
-# Confirmation gate for destructive actions. Accepts yes/y in any case, and
-# returns non-zero for anything else (including EOF) so the caller can say that
-# nothing happened — a silent `return` looks exactly like a broken menu item.
+# Confirmation gate for destructive actions.
+# Enter (empty) or y/yes in any case confirms; everything else — including an
+# explicit n/no — cancels, and returns non-zero so the caller can say that
+# nothing happened. A silent `return` looks exactly like a broken menu item.
+# EOF (Ctrl-D) also cancels: never treat a lost terminal as consent.
 confirm_yes(){
   local prompt=$1 answer
   readp "$prompt" answer || return 1
   case "${answer^^}" in
-    YES|Y) return 0 ;;
+    ""|Y|YES) return 0 ;;
     *) return 1 ;;
   esac
 }
@@ -105,7 +107,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.1.1"
+sb_version="v3.1.2"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
