@@ -117,3 +117,29 @@
 6. **真实内核证据**写入 [research.md](./research.md)：`check` + 真启动 + SS-2022 真握手 + 中转链路端到端。
 7. 阶段 5 的「推送前给提交计划」尚未执行，等用户确认；`check-version-bump.sh` 已通过
    （`2.0.1 -> 3.0.0 covers 10 source change(s) against 34f2676`）。
+
+---
+
+## 发布记录
+
+| 版本 | commit | 说明 |
+|---|---|---|
+| v3.0.0 | `c9baa95` | 发布本体（四个维护项） |
+| （文档） | `ab58ef4` | 规范同步（含 300 条行号引用逐条核对） |
+| （任务） | `b433b40` | 本任务记录 |
+| v3.0.1 | `b7b3649` | 修 CI 抓到的 SC2318，并让门禁打印 ShellCheck 版本 |
+
+## 一次真实的翻车（值得记住）
+
+v3.0.0 推上去后 **CI 直接红了**：`relay_upstream_reachable` 里写了
+
+```bash
+local server=$1 port=$2 target=$server   # SC2318：$server 在同一个 local 里还没生效
+```
+
+本地 `shellcheck 0.8.0` 不认识 SC2318（该规则是更新版本才加的），而 CI 用 apt 装的是更新版，
+于是本地绿灯、CI 红。教训不是「多跑一次测试」，而是**工具版本差本身就是一个漏检通道**：
+
+- 已修：拆成两条 `local`；
+- 已加：`tests/verify.sh` 在 lint 前打印 `verify: shellcheck <版本>`，让版本差在日志里可见；
+- 已写进规范：`.trellis/spec/tests/writing-tests.md` §4。

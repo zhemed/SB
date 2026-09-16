@@ -168,6 +168,12 @@ Documented as-is; do not assume coverage that does not exist.
   **Because of this, a lint failure can reach `main` and only surface in CI.** Install shellcheck
   locally before trusting a green local gate — a SC2016 in newly added assertions did exactly this
   and turned CI red for two consecutive pushed commits.
+- **Version skew is the other half of that gap.** CI installs ShellCheck from `apt` on
+  `ubuntu-latest`; a dev box can carry an older release that simply does not know newer codes. On
+  2026-09-16 a green local 0.8.0 gate let `local server=$1 port=$2 target=$server` (SC2318) reach
+  `main` as v3.0.0 and CI failed on the newer linter; v3.0.1 fixed the code. The gate now prints the
+  version it used (`verify: shellcheck 0.10.0`) — compare that with CI's before trusting a green
+  run, and install a matching or newer binary when they differ.
 - **Nothing in the suite validates the generated sing-box configuration semantically.** `MOCKCORE`
   implements `check` as `jq -e .` (`tests/repair.sh:599-606`), i.e. JSON well-formedness only, and no
   `sing-box` binary exists in the test environment. The product's own `"$SB_BIN" check -c` path is
