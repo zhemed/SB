@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 1
-- **Last Active**: 2026-09-13
+- **Total Sessions**: 2
+- **Last Active**: 2026-09-16
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~59 | Active |
+| `journal-1.md` | ~81 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 2 | 2026-09-16 | v3.0.0：SOCKS5 入站换 Shadowsocks-2022 + 上游/中转能力 | `c9baa95` | `main` |
 | 1 | 2026-09-13 | 启用 Trellis、重建规范、移除 VLESS Reality、版本与 CI 治理、sing-box 版本调查 | `d18da36`, `e535d97`, `24f6748`, `84975fd`, `e4cda5d`, `53dc801`, `d6d0326`, `710a46e`, `2835591` | `main` |
 <!-- @@@/auto:session-history -->
 

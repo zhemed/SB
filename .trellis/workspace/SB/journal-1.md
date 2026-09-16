@@ -57,3 +57,25 @@
 - 客户端 sbox.json 自 sing-box 1.13.0 起已不可用（legacy DNS + dns outbound + tun sniff），独立于内核升级，待决策是否单独修复
 - 服务端内核升级待 1.15 稳定版后评估；升级与配置迁移必须同时进行（两种形式互不兼容）
 - 本轮改动已推到 origin/main
+
+
+## Session 2: v3.0.0：SOCKS5 入站换 Shadowsocks-2022 + 上游/中转能力
+<!-- trellis-session: v=2 fp=28abc5579ebc4c7d -->
+
+**Date**: 2026-09-16
+**Task**: v3.0.0：SOCKS5 入站换 Shadowsocks-2022 + 上游/中转能力
+**Branch**: `main`
+
+### Summary
+
+把 socks5 入站换成 SS-2022（2022-blake3-aes-256-gcm，44 位 base64 密钥，入站必须 network:tcp 否则与 hy2 抢 443/udp），新增 upstream/relay 能力（/etc/sb/relay.conf 状态文件 + 菜单[8]，每次渲染重新注入、改端口/凭据/修复都不丢），删掉永不匹配的兜底 route 规则改用 route.final，入站监听按主机 IPv6 状态探测（关闭 -> 0.0.0.0）。真实内核 1.10.7 复验：check + 真启动 + SS-2022 真握手 + 中转链路端到端。发布 v3.0.0 后 CI 因 SC2318 变红（本地 shellcheck 0.8.0 不认识该规则），v3.0.1 修复并让门禁打印 ShellCheck 版本。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `c9baa95` | feat(sb): SOCKS5 入站换成 Shadowsocks-2022，并新增上游/中转能力（v3.0.0） |
+
+### Status
+
+[OK] **Completed**
