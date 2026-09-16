@@ -93,7 +93,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.0.0"
+sb_version="v3.0.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -4471,7 +4471,8 @@ change_credentials(){
 
 # Upstream / relay ("线路机 -> 落地机")
 relay_upstream_reachable(){
-  local server=$1 port=$2 target=$server
+  local server=$1 port=$2 target
+  target=$server
   valid_ipv6 "$server" && target="[$server]"
   timeout 3 bash -c "exec 3<>/dev/tcp/$target/$port" >/dev/null 2>&1
 }

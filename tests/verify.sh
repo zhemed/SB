@@ -45,12 +45,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SS_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
-[[ $(grep -Fxc 'sb_version="v3.0.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 3.0.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.0.0' ]] ||
-  fail "VERSION file is not 3.0.0"
-grep -Fq -- "当前项目版本：\`3.0.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 3.0.0"
+[[ $(grep -Fxc 'sb_version="v3.0.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 3.0.1"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.0.1' ]] ||
+  fail "VERSION file is not 3.0.1"
+grep -Fq -- "当前项目版本：\`3.0.1\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 3.0.1"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -310,6 +310,10 @@ inscertificate_function=$(awk '/^inscertificate\(\)\{/{inside=1} inside' "$ROOT_
   fail "only initial installation may mark ACME install hooks as initial"
 
 if command -v shellcheck >/dev/null 2>&1; then
+  # Print the version: the CI image ships a different ShellCheck than most dev
+  # boxes, and a newer linter adds codes (SC2318 was the first to slip through a
+  # green local gate). Seeing the version in the log is how that skew is spotted.
+  printf 'verify: shellcheck %s\n' "$(shellcheck --version | awk '/^version:/{print $2}')"
   shellcheck --shell=bash --severity=info "$ROOT_DIR/sb.sh"
   shellcheck --shell=bash --severity=info "$hook_candidate"
   shellcheck --shell=bash --severity=info \
