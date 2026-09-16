@@ -14,9 +14,9 @@ Run `bash tests/verify.sh` after any change in this document's scope.
 
 | Location | Value form | Asserted by |
 |----------|-----------|-------------|
-| `VERSION` | `3.0.0` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
-| `src/00-bootstrap.sh:96` | `sb_version="v3.0.0"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
-| `README.md` "当前项目版本" line | `` 当前项目版本：`3.0.0` `` | `tests/verify.sh:52-53` |
+| `VERSION` | `3.1.0` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
+| `src/00-bootstrap.sh:96` | `sb_version="v3.1.0"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
+| `README.md` "当前项目版本" line | `` 当前项目版本：`3.1.0` `` | `tests/verify.sh:52-53` |
 
 The build derives the required literal from `VERSION` itself:
 
@@ -155,10 +155,14 @@ formatting is fine; weakening these values is a gate failure by design.
   does not default to a removed group (`tests/verify.sh:160-173`), does not default to the
   Shadowsocks-2022 proxy (`:196-198`), and that the Clash select group defaults to the encrypted
   Hysteria2 proxy (`:199-209`).
-- The Shadowsocks-2022 inbound is TCP-only (`"network": "tcp"`, `src/30-server-config.sh:65`) because
-  the UDP half of the shared port belongs to Hysteria2; `tests/verify.sh:227-234` requires the UDP
-  block route (`"network": "udp"` from the `ss-sb` inbound) and the three installer warnings
-  (`Shadowsocks-2022 入站只承载 TCP`, `密钥不可推导`, `时间戳抗重放`).
+- The Shadowsocks-2022 inbound is **optional** (3.1.0): a new install creates hysteria2 only. The
+  gate proves that by extracting `insport` and failing if its body mentions `ss_password`, `port_ss`,
+  `ss-sb` or `generate_ss_password` (`tests/verify.sh:152-161`), and by requiring
+  `choose_ss_port()`, `ss_entry_is_enabled()`, `ss_entry_candidate_with_inbound()` and
+  `ss_entry_candidate_without_inbound()`. When it is enabled, the inbound is TCP-only
+  (`"network": "tcp"`, `src/30-server-config.sh:65`) because the UDP half of the shared port belongs
+  to Hysteria2; `tests/verify.sh:229-234` requires the UDP block route (`"network": "udp"` from the
+  `ss-sb` inbound) and the key-loss / clock warnings (`密钥不可推导`, `时间戳抗重放`).
 - `tests/verify.sh:132-145` fails if the retired plaintext SOCKS5 integration comes back
   (`"tag": "socks5-sb"`, `"type": "socks"`, `type: socks5`, `SOCKS_USERNAME`,
   `valid_socks_password`, `change_socks_password`, `ressocks5`, `socks5.txt`) or if the dead

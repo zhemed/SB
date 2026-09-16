@@ -99,10 +99,20 @@ Conventions shown here, all of them expected in new input code:
   reserved argument without a real caller.
 
 ```bash
-ssport(){
-  readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport tcp
-  port_ss=$port
+choose_ss_port(){
+  local choice
+  while true; do
+    yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认"
+    yellow "2：自定义端口"
+    readp "请输入【1-2】：" choice || return 1
+    case "$choice" in
+      ""|1) port=$(random_available_port tcp) || return 1; return 0 ;;
+      2) readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port || return 1
+         chooseport tcp
+         return $? ;;
+      *) red "请输入1或2" ;;
+    esac
+  done
 }
 ```
 
@@ -110,8 +120,6 @@ ssport(){
   (`port_ss`, `port_hy2`). Reset `port=` before each selection so a stale value cannot be reused:
 
 ```bash
-        port=
-        ssport
         port=
         hy2port
 ```

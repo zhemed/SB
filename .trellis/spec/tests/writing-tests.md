@@ -117,8 +117,9 @@ exactly once), the HTTPS-only policy string, the verified acme.sh archive URL, a
 
 Six modification success messages are required (`tests/verify.sh:83-93`), as are lifecycle strings
 (`:54-69`), Shadowsocks-2022 integration strings (`:95-129`), client security settings (`:211-225`),
-and the three Shadowsocks-2022 warnings — TCP-only inbound, unrecoverable key loss, clock-based
-replay protection (`:229-234`). `tests/unit.sh` pins `UUID格式错误` in the `changeuuid` flow.
+the `insport` negative assertion that keeps the optional entry out of new installs (`:152-161`), and
+the key-loss / clock warnings (`:229-234`). `tests/unit.sh` pins `UUID格式错误` in the `changeuuid`
+flow.
 
 Rewording a user message is therefore a two-file change.
 

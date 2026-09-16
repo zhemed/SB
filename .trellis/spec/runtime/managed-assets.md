@@ -24,8 +24,12 @@ Defined once in `src/00-bootstrap.sh:16-32`. Use the constants; do not re-type p
 
 ### Non-secret artefacts inside `SB_DIR`
 
-`SHA256.txt`, `server_ip.log`, `server_ipcl.log`, `hy2.txt`, `ss.txt`, `jhdy.txt`,
+`SHA256.txt`, `server_ip.log`, `server_ipcl.log`, `hy2.txt`, `jhdy.txt`,
 `jhsub.txt`, `sbox.json`, `clash.yaml`, `cert.pem`, `private.key`, `.ip_cache`, `.deps_ok`.
+
+`ss.txt` exists only while the optional Shadowsocks-2022 entry is enabled: `sbshare` writes it when
+the inbound is present and removes it (through `remove_saved_ss_link`) when it is not, so a stale
+share link cannot outlive the listener it points at.
 
 `relay.conf` is the optional upstream ("线路机 → 落地机") state file, mode 600. Exactly three
 `key=value` lines — `server=`, `port=`, `password=` — with no shell evaluation and no unknown-key

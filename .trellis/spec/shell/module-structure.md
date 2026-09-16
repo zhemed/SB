@@ -12,9 +12,9 @@ the one that is "closest" to the call site.
 | `src/20-ports.sh` | All `valid_*` validators, port conflict detection and selection, credential generation and validation (Hysteria2 UUID, Shadowsocks-2022 key) |
 | `src/30-server-config.sh` | Server-side `sb.json` rendering (inbounds, the optional `relay` outbound, `route.final`) and its install-time candidate validation |
 | `src/40-service.sh` | Managed-path trust checks, atomic private writers, the optional-upstream state file (`relay.conf` load/save/clear), systemd/OpenRC unit rendering + ownership, `commit_config`, last-good config, service start/stop/state |
-| `src/50-client-output.sh` | Share links (Hysteria2 / Shadowsocks-2022) and generated client files `sbox.json` / `clash.yaml` |
+| `src/50-client-output.sh` | Share links (Hysteria2, plus the optional Shadowsocks-2022 entry when it exists) and generated client files `sbox.json` / `clash.yaml` |
 | `src/60-cron.sh` | Crontab marker management, the `ACMERENEW` renewal runner, daily restart task, `with_acme_lock` |
-| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, upstream/relay |
+| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, and the optional features — the Shadowsocks-2022 entry (enable/disable/port/key) and the upstream/relay |
 | `src/80-lifecycle.sh` | Dependency installation, `/usr/bin/sb` shortcut, `prepare_runtime_state`, uninstall |
 | `src/85-repair.sh` | Diagnosis and the repair transaction (including the pre-3.0.0 SOCKS5 → Shadowsocks-2022 config migration) |
 | `src/90-main.sh` | Install flow, main menu, interrupt trap, the entrypoint |
@@ -74,7 +74,7 @@ The final `menu` call is the last statement in the file (`src/90-main.sh:217`). 
 
 **Every other module contains function definitions only.** No stray `echo`, no module-level
 variable assignments, no `if` blocks at column 0. This is what makes concatenation order safe: by
-the time `menu` runs, all 243 functions exist.
+the time `menu` runs, all 253 functions exist.
 
 Global variables that persist across calls are therefore declared **only** in `00-bootstrap.sh`:
 
