@@ -101,3 +101,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: v3.1.1：修确认提示大小写导致的静默取消
+<!-- trellis-session: v=2 fp=100578f399a0891f -->
+
+**Date**: 2026-09-16
+**Task**: v3.1.1：修确认提示大小写导致的静默取消
+**Branch**: `main`
+
+### Summary
+
+用户实测反馈：在【8】可选功能里停用 SS 入口时输入小写的 yes，菜单只重画一遍、什么都没发生。根因是确认判断写成 [[ $confirm == YES ]] || return 0——大小写敏感且静默返回。新增 confirm_yes（YES/y 不分大小写）并让三处 YES 确认（停用入口、清除上游、上游不可达覆盖）都在取消时打印「已取消，未做任何修改」；prompt 文案写明其他输入即取消。加 6 条 confirm_yes 单测 + 1 条调用层覆盖（非确认输入不提交、不改配置、必须提示）。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6c7cd41` | fix(sb): 确认提示区分大小写，输入 yes 时静默取消（v3.1.1） |
+
+### Status
+
+[OK] **Completed**
