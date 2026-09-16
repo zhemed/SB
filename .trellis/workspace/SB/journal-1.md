@@ -123,3 +123,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 5: v3.1.2：确认改为回车即确认，并给出显式 n
+<!-- trellis-session: v=2 fp=5b5f6f9c1b1d22d5 -->
+
+**Date**: 2026-09-16
+**Task**: v3.1.2：确认改为回车即确认，并给出显式 n
+**Branch**: `main`
+
+### Summary
+
+确认提示统一成「[回车/y 确认，n 取消]」：回车与 y/yes（不分大小写）确认，n/no 与任何无法识别的输入取消，EOF 也取消；取消仍显式提示。三处确认（停用 SS 入口、清除上游、上游不可达覆盖）同步；REBUILD 整词门禁保持原样（那类操作会打断所有客户端，不适合默认回车）。测试：confirm_yes 8 条覆盖 + 调用层用例（回车确认必须真的删掉入站与 UDP 规则）。规范里把这条约定写进 input-validation.md（含 3.1.0/3.1.1 静默取消的真实 bug 记录）。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d4f6313` | feat(sb): 确认改为回车即确认，并给出显式 n 选项（v3.1.2） |
+
+### Status
+
+[OK] **Completed**
