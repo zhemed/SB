@@ -553,7 +553,12 @@ change_ports(){
     case "$menu" in
       ""|0) return 0 ;;
       1)
-        readp "请输入新主端口 (1-65535，留空随机10000-65535): " nport || return 1
+        readp "请输入新主端口 (1-65535，留空随机10000-65535，输入0取消): " nport || return 1
+        if [[ $nport == 0 ]]; then
+          yellow "已取消，端口未修改"
+          readp "按回车返回主菜单..."
+          return 0
+        fi
         port="$nport"
         chooseport udp || continue
         if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
@@ -686,8 +691,12 @@ change_ss_password(){
   green "当前Shadowsocks-2022密钥：$current_password"
   yellow "密钥不可推导：改完必须同步更新所有客户端，否则会全部连不上"
   while true; do
-    readp "输入新密钥（44位标准base64，回车随机生成，输入0返回凭据菜单）：" choice || return 1
-    [[ $choice == 0 ]] && return 0
+    readp "输入新密钥（44位标准base64，回车随机生成，输入0取消）：" choice || return 1
+    if [[ $choice == 0 ]]; then
+      yellow "已取消，密钥未修改"
+      readp "按回车返回可选功能..."
+      return 0
+    fi
     if [[ -z $choice ]]; then
       new_password=$(generate_ss_password) || new_password=
     else
@@ -795,20 +804,32 @@ set_relay_upstream(){
   fi
   echo
   while true; do
-    readp "请输入落地机地址（IPv4/IPv6/域名，输入0返回主菜单）：" server || return 1
-    [[ $server == 0 ]] && return 0
+    readp "请输入落地机地址（IPv4/IPv6/域名，输入0取消）：" server || return 1
+    if [[ $server == 0 ]]; then
+      yellow "已取消，未做任何修改"
+      readp "按回车返回可选功能..."
+      return 0
+    fi
     if ! relay_server_is_valid "$server"; then
       red "地址格式无效"
       continue
     fi
-    readp "请输入落地机端口（1-65535，输入0返回主菜单）：" port || return 1
-    [[ $port == 0 ]] && return 0
+    readp "请输入落地机端口（1-65535，输入0取消）：" port || return 1
+    if [[ $port == 0 ]]; then
+      yellow "已取消，未做任何修改"
+      readp "按回车返回可选功能..."
+      return 0
+    fi
     if ! valid_port "$port"; then
       red "端口必须是1-65535之间的整数"
       continue
     fi
-    readp "请输入落地机的Shadowsocks-2022密钥（44位base64，输入0返回主菜单）：" password || return 1
-    [[ $password == 0 ]] && return 0
+    readp "请输入落地机的Shadowsocks-2022密钥（44位base64，输入0取消）：" password || return 1
+    if [[ $password == 0 ]]; then
+      yellow "已取消，未做任何修改"
+      readp "按回车返回可选功能..."
+      return 0
+    fi
     if ! valid_ss_password "$password"; then
       red "密钥必须是44位标准base64（32字节密钥，末尾一个=号）"
       continue
@@ -1006,7 +1027,16 @@ enable_ss_entry(){
   echo
   green "启用 Shadowsocks-2022 入口（TCP 备用入口，需自行放行其 TCP 端口）"
   while true; do
-    choose_ss_port || return 1
+    choose_ss_port
+    case $? in
+      0) : ;;
+      2)
+        yellow "已取消，未做任何修改"
+        readp "按回车返回可选功能..."
+        return 0
+        ;;
+      *) return 1 ;;
+    esac
     password=$(generate_ss_password) || password=
     if ! valid_ss_password "$password"; then
       red "生成Shadowsocks-2022密钥失败"
@@ -1109,7 +1139,12 @@ change_ss_port(){
   echo
   green "当前 Shadowsocks-2022 端口：$current/tcp"
   while true; do
-    readp "请输入新Shadowsocks-2022端口 (1-65535，留空随机10000-65535): " nport || return 1
+    readp "请输入新Shadowsocks-2022端口 (1-65535，留空随机10000-65535，输入0取消): " nport || return 1
+    if [[ $nport == 0 ]]; then
+      yellow "已取消，端口未修改"
+      readp "按回车返回可选功能..."
+      return 0
+    fi
     port="$nport"
     chooseport tcp || continue
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then

@@ -258,6 +258,83 @@ ss_share_printing(){
   )
 }
 expect_success "the optional entry reports its link and key after a change" ss_share_printing
+
+# A prompt that precedes a live change must have a way out; pressing Enter at the
+# port prompt means "random", so a cancel has to be an explicit key.
+ss_port_change_can_cancel(){
+  (
+    local dir="$relay_roundtrip/port-cancel"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell owns these globals
+    SB_DIR="$dir"
+    # shellcheck disable=SC2030
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
+    local before
+    before=$(sha256sum "$SB_CONFIG" | awk '{print $1}')
+    FLOW_RESPONSES=('0' '')
+    FLOW_RESPONSE_INDEX=0
+    FLOW_MESSAGES=
+    # Called indirectly by the sourced management flows.
+    # shellcheck disable=SC2317
+    readp(){
+      local prompt=$1 target=${2-} response
+      FLOW_PROMPTS+="$prompt"$'\n'
+      [[ $FLOW_RESPONSE_INDEX -lt ${#FLOW_RESPONSES[@]} ]] || return 1
+      response=${FLOW_RESPONSES[$FLOW_RESPONSE_INDEX]}
+      FLOW_RESPONSE_INDEX=$((FLOW_RESPONSE_INDEX + 1))
+      if [[ -n $target ]]; then
+        printf -v "$target" '%s' "$response"
+      else
+        REPLY=$response
+      fi
+    }
+    # shellcheck disable=SC2317
+    yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    green(){ FLOW_MESSAGES+="green:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    red(){ FLOW_MESSAGES+="red:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    blue(){ FLOW_MESSAGES+="blue:$1"$'\n'; }
+    # shellcheck disable=SC2317
+    white(){ :; }
+    # shellcheck disable=SC2317
+    sbactive(){ return 0; }
+    # shellcheck disable=SC2317
+    # shellcheck disable=SC2030  # the subshell owns this counter
+    # shellcheck disable=SC2317
+    # shellcheck disable=SC2030,SC2031  # the counter is deliberately subshell-local
+    commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }
+    COMMIT_INDEX=0
+    change_ss_port || return 1
+    [[ $COMMIT_INDEX -eq 0 ]] || return 1
+    [[ $FLOW_MESSAGES == *'已取消，端口未修改'* ]] || return 1
+    [[ $(sha256sum "$SB_CONFIG" | awk '{print $1}') == "$before" ]] || return 1
+    [[ $FLOW_PROMPTS == *'输入0取消'* ]] || return 1
+    return 0
+  )
+}
+expect_success "the port-change prompt can be cancelled without touching the config" \
+  ss_port_change_can_cancel
+
+# choose_ss_port reports cancellation with a distinct status so enable_ss_entry
+# can abort instead of minting a key and a random port behind the operator's back.
+choose_ss_port_cancel_status(){
+  (
+    # shellcheck disable=SC2317
+    readp(){ printf -v "$2" '%s' "$CANNED"; }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    CANNED=0
+    choose_ss_port
+    [[ $? -eq 2 ]]
+  )
+}
+expect_success "cancelling the port question is distinct from a random port" \
+  choose_ss_port_cancel_status
 unset -f readp
 
 # The caller must also *say* that nothing happened: the original bug was a
@@ -303,7 +380,7 @@ cancelled_disable_is_reported(){
     # shellcheck disable=SC2317
     sbactive(){ return 0; }
     # shellcheck disable=SC2317
-    # shellcheck disable=SC2030  # the subshell owns this counter
+    # shellcheck disable=SC2030,SC2031  # the counter is deliberately subshell-local
     commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }
     COMMIT_INDEX=0
     disable_ss_entry || return 1

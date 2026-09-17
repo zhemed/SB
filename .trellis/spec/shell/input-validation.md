@@ -126,6 +126,17 @@ choose_ss_port(){
 
 ---
 
+### Value prompts always offer a way out
+
+A prompt that asks for a value which is about to be written into the live config must have an
+explicit escape: `输入0取消` in the question, and cancelling prints `已取消，未做任何修改` before
+returning. **Empty input is not a cancel** — in the port prompts it means "pick a random free port"
+(that is the documented default), so an operator who presses Enter expecting to back out gets a silent
+port change instead. That shipped in 3.1.2: `change_ss_port` asked for a port with no cancel key and
+rewrote a working listener. Fixed in 3.1.4 for the Shadowsocks-2022 port, the Hysteria2 port and the
+upstream fields, with `choose_ss_port` returning a distinct status (2) so `enable_ss_entry` aborts
+instead of minting a key and a random port.
+
 ### Destructive confirmations
 
 Anything that changes or removes a working listener goes through `confirm_yes`

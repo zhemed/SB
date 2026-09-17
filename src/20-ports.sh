@@ -84,23 +84,28 @@ random_available_port(){
 # Port selection for the optional Shadowsocks-2022 entry (menu [8]).
 # Empty/1 = random, 2 = custom — the same shape the installer uses for its own
 # port question. The result is returned in the global `port`.
+# Returns 0 with `port` set, or 2 when the operator cancelled: a prompt that
+# precedes a live change must always offer a way out.
 choose_ss_port(){
   local choice
   while true; do
     yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认"
     yellow "2：自定义端口"
-    readp "请输入【1-2】：" choice || return 1
+    yellow "0：取消"
+    readp "请输入【0-2】：" choice || return 1
     case "$choice" in
       ""|1)
         port=$(random_available_port tcp) || return 1
         return 0
         ;;
       2)
-        readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port || return 1
+        readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535，输入0取消)：" port || return 1
+        [[ $port == 0 ]] && return 2
         chooseport tcp
         return $?
         ;;
-      *) red "请输入1或2" ;;
+      0) return 2 ;;
+      *) red "请输入0、1或2" ;;
     esac
   done
 }
