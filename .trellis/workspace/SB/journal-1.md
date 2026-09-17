@@ -189,3 +189,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 8: 评估并否决：SS-2022 入口开 UDP（归档）
+<!-- trellis-session: v=2 fp=71d8f0af8e9c9f52 -->
+
+**Date**: 2026-09-17
+**Task**: 评估并否决：SS-2022 入口开 UDP（归档）
+**Branch**: `main`
+
+### Summary
+
+用户问 SS 入口换成/加上 UDP 的代价。实测：network 支持 udp/两者、multiplex 也接受；但 SS 与 hy2 同号 UDP 端口时 check 通过、真启动 FATAL。代价：多一个 UDP 端口或动 hy2 端口（客户端全废）、我们自己的 quic/stun 规则仍拦大头、解决不了'UDP 被限速'这个它存在的理由、客户端要重导、契约与测试要跟着改。结论：不实施，维持 TCP-only；将来若 QUIC 被定点干扰而裸 UDP 可用，先做 udp_over_tcp 而不是原生 UDP。记录在归档任务 09-17-ss-entry-udp-eval，并在 version-pins 的钉死串清单旁留了指针。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `49776e9` | chore(task): 记录 SS-2022 入口是否承载 UDP 的评估与结论 |
+
+### Status
+
+[OK] **Completed**
