@@ -163,6 +163,11 @@ formatting is fine; weakening these values is a gate failure by design.
   (`"network": "tcp"`, `src/30-server-config.sh:65`) because the UDP half of the shared port belongs
   to Hysteria2; `tests/verify.sh:229-234` requires the UDP block route (`"network": "udp"` from the
   `ss-sb` inbound) and the key-loss / clock warnings (`密钥不可推导`, `时间戳抗重放`).
+  Whether that inbound should also carry UDP was evaluated and **rejected** in 2026-09 (see
+  `.trellis/tasks/archive/2026-09/09-17-ss-entry-udp-eval/research.md`): an extra UDP port or moving
+  hysteria2 off 443, the `quic`/`stun` block still eating most UDP, and — decisively — it cannot fix
+  the "UDP is throttled" case the entry exists for. Revisit only if QUIC is specifically interfered
+  with while plain UDP works, and reach for `udp_over_tcp` first.
 - `tests/verify.sh:132-145` fails if the retired plaintext SOCKS5 integration comes back
   (`"tag": "socks5-sb"`, `"type": "socks"`, `type: socks5`, `SOCKS_USERNAME`,
   `valid_socks_password`, `change_socks_password`, `ressocks5`, `socks5.txt`) or if the dead
