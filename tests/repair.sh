@@ -519,7 +519,6 @@ hysteria2_only_config_is_preserved(){
     socks_entry_enabled=0
     port_socks5=
     socks_password=
-    preserved_entry_inbound=
     render_server_config "$case_dir/hy2-only.json" || return 1
     chmod 600 "$case_dir/hy2-only.json"
     jq -e '[.inbounds[] | select(.tag == "ss-sb" or .tag == "socks5-sb")] | length == 0' \
@@ -527,8 +526,7 @@ hysteria2_only_config_is_preserved(){
     SB_CONFIG="$case_dir/hy2-only.json"
     REPAIR_CERT_FELL_BACK=0
     load_repair_config_values "$SB_CONFIG" || return 1
-    [[ $REPAIR_SOCKS_ENABLED -eq 0 && -z $REPAIR_SOCKS_PORT && -z $REPAIR_SOCKS_PASSWORD &&
-       -z $REPAIR_PRESERVED_INBOUND ]] || return 1
+    [[ $REPAIR_SOCKS_ENABLED -eq 0 && -z $REPAIR_SOCKS_PORT && -z $REPAIR_SOCKS_PASSWORD ]] || return 1
     config_contains_removed_protocol "$SB_CONFIG" && return 1
     try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置" || return 1
     action=$REPAIR_CONFIG_ACTION
@@ -552,13 +550,12 @@ socks5_entry_config_round_trips(){
     # rewrite path runs the way a restore-from-backup does.
     socks_entry_enabled=1
     port_socks5=1081
-    preserved_entry_inbound=
     render_server_config "$case_dir/source.json" || return 1
     chmod 600 "$case_dir/source.json"
     SB_CONFIG="$case_dir/active.json"
     REPAIR_CERT_FELL_BACK=0
     load_repair_config_values "$case_dir/source.json" || return 1
-    [[ $REPAIR_SOCKS_ENABLED -eq 1 && -z $REPAIR_PRESERVED_INBOUND ]] || return 1
+    [[ $REPAIR_SOCKS_ENABLED -eq 1 ]] || return 1
     [[ $REPAIR_SOCKS_PORT == 1081 && $REPAIR_SOCKS_PASSWORD == "$socks_password" ]] || return 1
     config_contains_removed_protocol "$case_dir/source.json" && return 1
     try_repair_config_source "$case_dir/source.json" "已从当前节点参数重建标准配置" || return 1
@@ -576,30 +573,37 @@ socks5_entry_config_round_trips(){
   )
 }
 
-preserved_ss_inbound_is_preserved_verbatim(){
+retired_ss_inbound_is_rewritten_away(){
   (
-    local case_dir="$TEMP_DIR/preserved-ss-repair" action before after
+    local case_dir="$TEMP_DIR/retired-ss-repair" action
     mkdir -p "$case_dir"
+    # An upgraded host still carries the entry an older release rendered; 5.0.0
+    # cannot produce one, so inject it by hand — that is exactly the shape the
+    # repair path has to cope with.
     render_server_config "$case_dir/source.json" || return 1
+    jq --arg password "$ss_password" '
+      .inbounds += [{type: "shadowsocks", tag: "ss-sb", listen: "::", listen_port: 1080,
+                     network: "tcp", method: "2022-blake3-aes-256-gcm", password: $password}] |
+      .route.rules = [{inbound: ["ss-sb"], network: "udp", outbound: "block"}] + .route.rules
+    ' "$case_dir/source.json" > "$case_dir/patched.json" || return 1
+    mv -fT -- "$case_dir/patched.json" "$case_dir/source.json" || return 1
     chmod 600 "$case_dir/source.json"
-    before=$(jq -c '.inbounds[] | select(.tag == "ss-sb")' "$case_dir/source.json") || return 1
-    [[ -n $before ]] || return 1
+    # The retired entry counts as a removed protocol, so the config is rewritten
+    # instead of being declared healthy.
+    config_contains_removed_protocol "$case_dir/source.json" || return 1
     SB_CONFIG="$case_dir/active.json"
     REPAIR_CERT_FELL_BACK=0
     load_repair_config_values "$case_dir/source.json" || return 1
-    # the raw JSON is captured, so a rewrite can re-emit it unchanged
-    [[ $REPAIR_PRESERVED_INBOUND == "$before" ]] || return 1
-    [[ $REPAIR_PRESERVED_PORT == 1080 && $REPAIR_PRESERVED_KEY == "$ss_password" ]] || return 1
-    # a preserved entry is not a removed protocol: it must not force a rewrite
-    config_contains_removed_protocol "$case_dir/source.json" && return 1
+    [[ $REPAIR_SOCKS_ENABLED -eq 0 ]] || return 1
     try_repair_config_source "$case_dir/source.json" "已从当前节点参数重建标准配置" || return 1
     action=$REPAIR_CONFIG_ACTION
-    after=$(jq -c '.inbounds[] | select(.tag == "ss-sb")' "$SB_CONFIG") || return 1
-    [[ $after == "$before" ]] || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0' \
+      "$SB_CONFIG" >/dev/null || return 1
     jq -e --arg uuid "$uuid" \
       'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' "$SB_CONFIG" >/dev/null || return 1
-    # ... and the report has to say that it was kept
-    [[ $action == *'保留原有的 Shadowsocks-2022 入口'* ]]
+    # ... and the report has to say what happened to it
+    [[ $action == *'移除已废弃的 inbound'* ]]
   )
 }
 
@@ -670,9 +674,10 @@ chmod 755 "$SB_BIN"
 
 uuid=123e4567-e89b-42d3-a456-426614174000
 # Values below are consumed through Bash dynamic scope by render_server_config.
-# A new install creates hysteria2 only: the optional SOCKS5 entry stays off in
-# this fixture, which instead carries a pre-4.0.0 Shadowsocks-2022 inbound so the
-# "preserved verbatim" path stays covered.
+# A new install creates hysteria2 only: the optional SOCKS5 entry stays off here,
+# and the fixture carries the pre-4.0.0 Shadowsocks-2022 inbound an upgraded host
+# would still have. 5.0.0 never renders one, so it is injected by hand — that is
+# also the only way to produce the shape the repair path must clean up.
 # shellcheck disable=SC2034
 socks_entry_enabled=0
 # shellcheck disable=SC2034
@@ -682,14 +687,18 @@ socks_password='Socks.Pass_Two-7890~X'
 port_hy2=8443
 ss_password=AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA=
 # shellcheck disable=SC2034
-preserved_entry_inbound=$(printf '{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":1080,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"%s"}' "$ss_password")
-# shellcheck disable=SC2034
 ipv=prefer_ipv4
 # shellcheck disable=SC2034
 certificatec_hy2="$SB_DIR/cert.pem"
 # shellcheck disable=SC2034
 certificatep_hy2="$SB_DIR/private.key"
 render_server_config "$SB_CONFIG" || fail "cannot create repair fixture"
+jq --arg password "$ss_password" '
+  .inbounds += [{type: "shadowsocks", tag: "ss-sb", listen: "::", listen_port: 1080,
+                 network: "tcp", method: "2022-blake3-aes-256-gcm", password: $password}] |
+  .route.rules = [{inbound: ["ss-sb"], network: "udp", outbound: "block"}] + .route.rules
+' "$SB_CONFIG" > "$TEMP_DIR/fixture.json" || fail "cannot inject the retired inbound"
+mv -fT -- "$TEMP_DIR/fixture.json" "$SB_CONFIG" || fail "cannot install the repair fixture"
 chmod 600 "$SB_CONFIG"
 
 expect_success "managed directory with a foreign owner is rejected" \
@@ -710,21 +719,24 @@ expect_success "managed server values are extracted" load_repair_config_values "
    $REPAIR_HY2_PORT == 8443 &&
    $REPAIR_CERT_MODE == self_signed &&
    $REPAIR_SOCKS_ENABLED == 0 &&
-   -z $REPAIR_SOCKS_PORT && -z $REPAIR_SOCKS_PASSWORD &&
-   $REPAIR_PRESERVED_PORT == 1080 && $REPAIR_PRESERVED_KEY == "$ss_password" ]] ||
+   -z $REPAIR_SOCKS_PORT && -z $REPAIR_SOCKS_PASSWORD ]] ||
   fail "extracted repair values are incorrect"
+# A config that still carries the retired entry must be classified as carrying a
+# removed protocol, otherwise repair would call it healthy and keep it alive.
+expect_success "a config with the retired SS-2022 entry counts as a removed protocol" \
+  config_contains_removed_protocol "$SB_CONFIG"
 pass "managed server extraction preserves node values"
 
 canonical="$TEMP_DIR/canonical.json"
 expect_success "canonical repair config is rendered" render_repair_config "$canonical"
-jq -e --arg uuid "$uuid" --arg password "$ss_password" '
+jq -e --arg uuid "$uuid" '
   any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid) and
-  any(.inbounds[]; .tag == "ss-sb" and .method == "2022-blake3-aes-256-gcm" and .password == $password)
-' "$canonical" >/dev/null || fail "canonical repair changed node credentials"
+  ([.inbounds[] | select(.tag == "ss-sb")] | length) == 0
+' "$canonical" >/dev/null || fail "canonical repair changed node credentials or kept the retired entry"
 if jq -e '[.inbounds[] | select(.tag == "socks5-sb")] | length > 0' "$canonical" >/dev/null; then
   fail "canonical repair invented the optional SOCKS5 entry"
 fi
-pass "canonical repair keeps protocol credentials and invents no entry"
+pass "canonical repair keeps node credentials, drops the retired entry and invents none"
 
 jq '(.inbounds[] | select(.tag == "hy2-sb") | .users[0].password) = "not-a-uuid"' \
   "$SB_CONFIG" > "$TEMP_DIR/mismatched.json"
@@ -833,8 +845,8 @@ expect_success "a legacy VLESS config is migrated and keeps its node values" \
   legacy_vless_config_is_migrated
 expect_success "a SOCKS5 entry config round-trips with its credentials intact" \
   socks5_entry_config_round_trips
-expect_success "a pre-4.0.0 SS-2022 entry is preserved verbatim through a rewrite" \
-  preserved_ss_inbound_is_preserved_verbatim
+expect_success "a pre-4.0.0 SS-2022 entry is rewritten away by repair" \
+  retired_ss_inbound_is_rewritten_away
 expect_success "a hysteria2-only config keeps no optional inbound" \
   hysteria2_only_config_is_preserved
 expect_success "interrupt restores only the in-flight ACME recovery point" \

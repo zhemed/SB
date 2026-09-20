@@ -7,9 +7,6 @@ load_repair_config_values(){
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
   REPAIR_SOCKS_ENABLED=0
-  REPAIR_PRESERVED_INBOUND=
-  REPAIR_PRESERVED_PORT=
-  REPAIR_PRESERVED_KEY=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
   REPAIR_KEY_PATH=
@@ -24,22 +21,15 @@ load_repair_config_values(){
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  # The optional TCP entry (SOCKS5 since 4.0.0) and a pre-4.0.0 Shadowsocks-2022
-  # entry are both valid, and may even coexist during a transition:
-  #   socks5-sb -> keep port and password
-  #   ss-sb     -> preserved verbatim (operator decision 2026-09-20: never
-  #                converted, never dropped behind their back)
-  #   neither   -> stays that way, never auto-added
+  # The optional TCP entry (SOCKS5 since 4.0.0) is read here so a rewrite keeps
+  # its port and password; "no entry" stays that way and is never auto-added.
+  # A pre-4.0.0 ss-sb inbound is accepted by the gate below only so the config can
+  # still be read and rebuilt from its node parameters — 5.0.0 no longer carries
+  # it over, and config_contains_removed_protocol makes the rewrite explicit.
   if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
     REPAIR_SOCKS_ENABLED=1
     REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
     REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password | select(type == "string")' "$source") || return 1
-  fi
-  if jq -e '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_PRESERVED_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
-    REPAIR_PRESERVED_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_PRESERVED_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
-    [[ -n $REPAIR_PRESERVED_INBOUND ]] || return 1
   fi
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
@@ -49,10 +39,6 @@ load_repair_config_values(){
   if [[ $REPAIR_SOCKS_ENABLED -eq 1 ]]; then
     valid_port "$REPAIR_SOCKS_PORT" || return 1
     valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
-  fi
-  if [[ -n $REPAIR_PRESERVED_INBOUND ]]; then
-    valid_port "$REPAIR_PRESERVED_PORT" || return 1
-    valid_ss_password "$REPAIR_PRESERVED_KEY" || return 1
   fi
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -73,8 +59,6 @@ render_repair_config(){
   local socks_entry_enabled=$REPAIR_SOCKS_ENABLED
   # shellcheck disable=SC2034
   local port_socks5=$REPAIR_SOCKS_PORT socks_password=$REPAIR_SOCKS_PASSWORD
-  # shellcheck disable=SC2034
-  local preserved_entry_inbound=$REPAIR_PRESERVED_INBOUND
   local ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
@@ -213,12 +197,15 @@ install_repair_config(){
   fi
 }
 
-# True when the config still carries a protocol this version no longer ships —
-# only the VLESS inbound removed in 2.0.0. The legacy Shadowsocks-2022 entry is
-# deliberately *not* listed: 4.0.0 preserves it verbatim instead of rewriting it.
+# True when the config still carries a protocol this version no longer ships: the
+# VLESS inbound removed in 2.0.0, and a Shadowsocks-2022 entry created before
+# 4.0.0 (support removed in 5.0.0, after being preserved for one release). Such a
+# config must be rewritten rather than declared healthy, otherwise the retired
+# inbound would live on unnoticed.
 config_contains_removed_protocol(){
   local source=$1
-  jq -e '[.inbounds[]? | select(.type == "vless")] | length > 0' "$source" >/dev/null 2>&1
+  jq -e '[.inbounds[]? | select(.type == "vless" or (.type == "shadowsocks" and .tag == "ss-sb"))] | length > 0' \
+    "$source" >/dev/null 2>&1
 }
 
 try_repair_config_source(){
@@ -231,15 +218,12 @@ try_repair_config_source(){
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
   fi
-  # A config that still carries the removed VLESS inbound, or the SOCKS5 inbound
-  # that 3.0.0 replaced, must be rewritten rather than left untouched: sing-box
-  # still accepts both, so the version check alone would classify them as
-  # healthy and keep the old protocol alive.
+  # A config that still carries a removed protocol (VLESS, or a pre-4.0.0
+  # Shadowsocks-2022 entry) must be rewritten rather than left untouched:
+  # sing-box still accepts both, so the version check alone would classify them
+  # as healthy and keep the retired inbound alive.
   if config_contains_removed_protocol "$source"; then
-    label+="，并移除已废弃的 VLESS inbound"
-  fi
-  if [[ -n $REPAIR_PRESERVED_INBOUND ]]; then
-    label+="，并保留原有的 Shadowsocks-2022 入口"
+    label+="，并移除已废弃的 inbound（VLESS / Shadowsocks-2022 入口）"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
@@ -313,9 +297,6 @@ rebuild_config_in_place(){
   REPAIR_SOCKS_ENABLED=0
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
-  REPAIR_PRESERVED_INBOUND=
-  REPAIR_PRESERVED_PORT=
-  REPAIR_PRESERVED_KEY=
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
   candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1

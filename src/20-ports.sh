@@ -152,5 +152,5 @@ insport(){
     return 1
   fi
   blue "Hysteria2 UUID（密码）：${uuid}"
-  yellow "Shadowsocks-2022 入口默认不安装，需要时在菜单[8]可选功能里启用"
+  yellow "TCP 备用入口（SOCKS5，明文）默认不安装，需要时在菜单[8]可选功能里启用"
 }

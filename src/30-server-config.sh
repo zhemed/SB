@@ -1,7 +1,7 @@
 # sb-module: 30-server-config
 # Generate server config JSON
 render_server_config(){
-  local output=$1 listen_addr relay_outbound_suffix route_final
+  local output=$1 listen_addr relay_outbound_suffix route_final retired_ss_port
   local entry_inbounds=
   local entry_rules=
   [[ -n $output ]] || return 1
@@ -17,13 +17,13 @@ render_server_config(){
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
-  # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is preserved verbatim instead
-  # of being converted or dropped (operator decision 2026-09-20): the raw inbound
-  # object comes from the source config and is re-emitted unchanged.
-  if [[ -n ${preserved_entry_inbound:-} ]]; then
-    entry_inbounds+=$(printf ',\n    %s' "$preserved_entry_inbound") || return 1
-    entry_inbounds+=$'\n'
-    entry_rules+=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
+  # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is no longer supported as of
+  # 5.0.0: the rewrite below does not carry it over, so say it out loud instead
+  # of letting the entry disappear silently. People still connecting through it
+  # will be cut off, and that is the operator's call to make.
+  if retired_ss_port=$(retired_ss_entry_port); then
+    yellow "当前配置里还有 4.0.0 之前的 Shadowsocks-2022 入口（端口 ${retired_ss_port}），本版本已不再支持它"
+    yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请改用菜单[8]里的 SOCKS5"
   fi
   # The optional upstream is re-read from relay.conf on every render, so a
   # rewritten config keeps the relay instead of silently falling back to a

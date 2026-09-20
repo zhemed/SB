@@ -94,17 +94,8 @@ result(){
   else
     socks_password=
   fi
-  # A Shadowsocks-2022 entry created before 4.0.0 is left untouched by design, so
-  # it keeps its share link and client entries while it exists.
-  ss_enabled=0
-  ss_port=
-  ss_password=
-  if ss_password=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' "$SB_CONFIG" 2>/dev/null); then
-    ss_enabled=1
-    ss_port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  else
-    ss_password=
-  fi
+  # A Shadowsocks-2022 entry created before 4.0.0 is no longer supported (5.0.0):
+  # it has no share link and no client entry any more.
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
@@ -114,11 +105,6 @@ result(){
   if [[ $socks_enabled -eq 1 ]] &&
      { ! valid_port "$socks_port" || ! valid_socks_password "$socks_password"; }; then
     red "服务端配置中的 SOCKS5 节点参数无效"
-    return 1
-  fi
-  if [[ $ss_enabled -eq 1 ]] &&
-     { ! valid_port "$ss_port" || ! valid_ss_password "$ss_password"; }; then
-    red "服务端配置中的旧 Shadowsocks-2022 节点参数无效"
     return 1
   fi
   hy2_certificate_json=
@@ -187,29 +173,9 @@ ressocks5(){
   echo
 }
 
-resss(){
-  local output=${1:-$SB_DIR/ss.txt}
-  echo
-  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  # SIP002 puts base64("method:password") in the userinfo. The raw SS-2022 key
-  # contains + / and =, which clients percent-decode inconsistently, so the
-  # plain "ss://method:password@host" form must never be emitted.
-  ss_link="ss://$(printf '%s:%s' "$RELAY_METHOD" "$ss_password" | base64 | tr -d '\r\n')@$server_ip:$ss_port#ss-$hostname"
-  printf '%s\n' "$ss_link" > "$output" || return 1
-  red "🚀【 Shadowsocks-2022 】节点信息如下：" && sleep 2
-  echo
-  echo "分享链接【sing-box、mihomo(Clash)、Shadowrocket、Nekobox】"
-  echo -e "${yellow}$ss_link${plain}"
-  echo
-  echo "二维码"
-  qrencode -o - -t ANSIUTF8 "$ss_link" || return 1
-  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
-  echo
-}
-
-# After enabling or changing the optional Shadowsocks-2022 entry the operator
+# After enabling or changing the optional SOCKS5 entry the operator
 # needs exactly two things: the share link (sbshare has already written it) and
-# the server-side key. Printing only the port read as "no link and no key".
+# the server-side credentials. Printing only the port read as "no link and no key".
 print_socks_entry_share(){
   local password=$1 path="$SB_DIR/socks5.txt" link=
   echo
@@ -232,18 +198,14 @@ sb_client(){
   local socks_selector_member=
   local socks_clash_proxy=
   local socks_clash_member=
-  local ss_outbound_field=
-  local ss_selector_member=
-  local ss_clash_proxy=
-  local ss_clash_member=
+  local socks_clash_member=
   sbox_candidate=$(mktemp "$SB_DIR/.sbox.json.XXXXXX") || return 1
   clash_candidate=$(mktemp "$SB_DIR/.clash.yaml.XXXXXX") || { rm -f "$sbox_candidate"; return 1; }
   if [[ -n $hy2_certificate_json ]]; then
     hy2_certificate_field=$(printf ',\n        "certificate": %s' "$hy2_certificate_json")
   fi
   # Client pieces are emitted per inbound that actually exists on the server:
-  # the optional SOCKS5 entry, and/or a Shadowsocks-2022 entry created before
-  # 4.0.0 that is deliberately left in place. Order: SOCKS5, SS-2022, Hysteria2.
+  # the optional SOCKS5 entry, then Hysteria2.
   if [[ $socks_enabled -eq 1 ]]; then
     socks_outbound_field=$(printf '    {\n      "type": "socks",\n      "tag": "socks5-%s",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
@@ -258,18 +220,6 @@ sb_client(){
     socks_selector_member+=$'\n'
     socks_clash_proxy+=$'\n\n'
     socks_clash_member+=$'\n'
-  fi
-  if [[ $ss_enabled -eq 1 ]]; then
-    ss_outbound_field=$(printf '    {\n      "type": "shadowsocks",\n      "tag": "ss-%s",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
-      "$hostname" "$server_ipcl" "$ss_port" "$RELAY_METHOD" "$ss_password") || return 1
-    ss_selector_member=$(printf '        "ss-%s",\n' "$hostname") || return 1
-    ss_clash_proxy=$(printf -- '- name: ss-%s\n  type: ss\n  server: %s\n  port: %s\n  cipher: %s\n  password: %s\n  udp: false\n\n' \
-      "$hostname" "$server_ipcl" "$ss_port" "$RELAY_METHOD" "$ss_password") || return 1
-    ss_clash_member=$(printf '    - ss-%s\n' "$hostname") || return 1
-    ss_outbound_field+=$'\n'
-    ss_selector_member+=$'\n'
-    ss_clash_proxy+=$'\n\n'
-    ss_clash_member+=$'\n'
   fi
   if ! cat > "$sbox_candidate" <<EOF
 {
@@ -398,7 +348,7 @@ sb_client(){
     "auto_detect_interface": true
   },
   "outbounds": [
-${socks_outbound_field}${ss_outbound_field}    {
+${socks_outbound_field}    {
       "type": "hysteria2",
       "tag": "hy2-$hostname",
       "server": "$cl_hy2_ip",
@@ -420,7 +370,7 @@ ${socks_outbound_field}${ss_outbound_field}    {
       "type": "selector",
       "default": "hy2-$hostname",
       "outbounds": [
-${socks_selector_member}${ss_selector_member}        "hy2-$hostname"
+${socks_selector_member}        "hy2-$hostname"
       ]
     },
     {
@@ -479,7 +429,7 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-${socks_clash_proxy}${ss_clash_proxy}- name: hysteria2-$hostname
+${socks_clash_proxy}- name: hysteria2-$hostname
   type: hysteria2
   server: $cl_hy2_ip
   port: $hy2_port
@@ -496,7 +446,7 @@ proxy-groups:
   type: select
   proxies:
     - hysteria2-$hostname
-${socks_clash_member}${ss_clash_member}    - DIRECT
+${socks_clash_member}    - DIRECT
 
 rules:
   - GEOIP,LAN,DIRECT
@@ -531,12 +481,11 @@ remove_saved_socks_link(){
 
 sbshare(){
   local aggregate_tmp hy2_tmp socks_tmp=
-  local ss_tmp=
   if ! result; then
     return 1
   fi
   # Share files follow what the server actually runs, in the same order as the
-  # client configuration: SOCKS5 entry, preserved SS-2022 entry, Hysteria2.
+  # client configuration: SOCKS5 entry, then Hysteria2.
   if [[ $socks_enabled -eq 1 ]]; then
     socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
     if ! ressocks5 "$socks_tmp"; then
@@ -544,53 +493,43 @@ sbshare(){
       return 1
     fi
   fi
-  if [[ $ss_enabled -eq 1 ]]; then
-    ss_tmp=$(mktemp "$SB_DIR/.ss.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
-    if ! resss "$ss_tmp"; then
-      rm -f "$ss_tmp" ${socks_tmp:+"$socks_tmp"}
-      return 1
-    fi
-  fi
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}; return 1; }
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
   if ! reshy2 "$hy2_tmp"; then
-    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"}
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
-    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"}
     return 1
   }
   if ! {
     [[ -z $socks_tmp ]] || cat "$socks_tmp"
-    [[ -z $ss_tmp ]] || cat "$ss_tmp"
     cat "$hy2_tmp"
   } > "$aggregate_tmp"; then
-    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} "$aggregate_tmp"
     return 1
   fi
-  if ! chmod 600 "$hy2_tmp" "$aggregate_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}; then
-    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+  if ! chmod 600 "$hy2_tmp" "$aggregate_tmp" ${socks_tmp:+"$socks_tmp"}; then
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} "$aggregate_tmp"
     return 1
   fi
   if ! sb_client; then
-    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} "$aggregate_tmp"
     return 1
   fi
   if [[ -n $socks_tmp ]]; then
     mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || {
-      rm -f "$socks_tmp" "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+      rm -f "$socks_tmp" "$hy2_tmp" "$aggregate_tmp"
       return 1
     }
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
-  if [[ -n $ss_tmp ]]; then
-    mv -fT -- "$ss_tmp" "$SB_DIR/ss.txt" || {
-      rm -f "$ss_tmp" "$hy2_tmp" "$aggregate_tmp"
-      return 1
-    }
-  elif ! remove_saved_ss_link; then
-    yellow "旧的 Shadowsocks-2022 入口不存在，但遗留的 $SB_DIR/ss.txt 无法删除，请手动检查"
+  # ss.txt belongs to the Shadowsocks-2022 entry that 5.0.0 no longer supports:
+  # nothing writes it any more, and a leftover file from an older release is a
+  # managed asset, so clean it up and say so if that fails.
+  if ! remove_saved_ss_link; then
+    yellow "本版本已不再生成 $SB_DIR/ss.txt，但遗留文件无法删除，请手动检查"
   fi
   mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }

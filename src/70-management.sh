@@ -752,7 +752,7 @@ change_credentials(){
     green "凭据管理"
     green "1：更改Hysteria2 UUID（密码）"
     green "0：返回主菜单"
-    yellow "Shadowsocks-2022 的密钥在菜单[8]可选功能里管理"
+    yellow "上游中转的 Shadowsocks-2022 密钥在菜单[8]第2项里管理"
     readp "请选择【0-1】：" choice || return 1
     case "$choice" in
       1) changeuuid ;;
@@ -973,18 +973,17 @@ socks_entry_password(){
     "$SB_CONFIG" 2>/dev/null
 }
 
-# The Shadowsocks-2022 entry that 3.0.0-3.1.4 created is never converted and
-# never dropped by the script. It stays visible here so the operator can remove
-# it themselves once they have switched to SOCKS5.
-preserved_ss_entry_is_enabled(){
-  [[ -s $SB_CONFIG ]] &&
-    jq -e '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) == 1' \
-      "$SB_CONFIG" >/dev/null 2>&1
-}
-
-preserved_ss_entry_port(){
-  jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' \
-    "$SB_CONFIG" 2>/dev/null
+# A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is no longer supported as of
+# 5.0.0: nothing preserves it any more, and the next rewrite drops it. This probe
+# only *reports* what is still there so the menus and the render can warn instead
+# of letting the entry vanish silently. It is read-only on purpose — there is no
+# conversion and no removal action left in the script.
+retired_ss_entry_port(){
+  local port
+  [[ -s $SB_CONFIG ]] || return 1
+  port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$SB_CONFIG" 2>/dev/null) || return 1
+  valid_port "$port" || return 1
+  printf '%s\n' "$port"
 }
 
 # Candidate builders for the optional entry. Both are idempotent: the inbound and
@@ -1021,17 +1020,6 @@ socks_entry_candidate_without_inbound(){
   ' "$SB_CONFIG" > "$output" || return 1
   jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 0 and
          ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 0' \
-    "$output" >/dev/null
-}
-
-preserved_ss_candidate_without_inbound(){
-  local output=$1
-  jq '
-    .inbounds = [.inbounds[] | select(.tag != "ss-sb")] |
-    .route.rules = [.route.rules[]? | select(((.inbound // []) | index("ss-sb")) == null)]
-  ' "$SB_CONFIG" > "$output" || return 1
-  jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
-         ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0' \
     "$output" >/dev/null
 }
 
@@ -1212,56 +1200,8 @@ change_socks_port(){
   done
 }
 
-remove_preserved_ss_entry(){
-  local candidate commit_status current
-  if ! sbactive; then
-    readp "按回车返回可选功能..."
-    return 1
-  fi
-  if ! current=$(preserved_ss_entry_port); then
-    yellow "当前没有旧的 Shadowsocks-2022 入口"
-    readp "按回车返回可选功能..."
-    return 0
-  fi
-  echo
-  yellow "这是 4.0.0 之前创建、已停止维护的 Shadowsocks-2022 入口（端口 ${current}/tcp）"
-  yellow "移除后使用它的客户端会立即连不上；如果还没切到 SOCKS5，请先启用 SOCKS5 入口"
-  if ! confirm_yes "确认移除旧的 Shadowsocks-2022 入口？[回车/y 确认，n 取消]："; then
-    yellow "已取消，未做任何修改"
-    readp "按回车返回可选功能..."
-    return 0
-  fi
-  if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-    red "创建候选配置失败，原配置未修改"
-    readp "按回车返回可选功能..."
-    return 1
-  fi
-  if ! preserved_ss_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
-    rm -f "$candidate"
-    red "生成候选配置失败，原配置未修改"
-    readp "按回车返回可选功能..."
-    return 1
-  fi
-  if commit_config "$candidate"; then
-    refresh_share_files_after_change || true
-    green "旧的 Shadowsocks-2022 入口已移除"
-    readp "按回车返回可选功能..."
-    return 0
-  else
-    commit_status=$?
-  fi
-  if [[ $commit_status -eq 2 ]]; then
-    red "移除失败且自动回滚失败，请先检查服务和备份配置"
-    readp "按回车返回可选功能..."
-    return 2
-  fi
-  red "移除失败，原配置未修改或已恢复"
-  readp "按回车返回可选功能..."
-  return 1
-}
-
 manage_socks_entry(){
-  local choice port preserved_port
+  local choice port
   while true; do
     echo
     green "SOCKS5 入口"
@@ -1271,30 +1211,25 @@ manage_socks_entry(){
       green "当前状态：${yellow}未启用${green}"
     fi
     yellow "这是一个可选的 TCP 备用入口（明文，见 README 的协议说明）；启用后需自行放行其 TCP 端口"
-    if preserved_port=$(preserved_ss_entry_port); then
-      yellow "另有一个旧的 Shadowsocks-2022 入口在运行（端口 ${preserved_port}），4.0.0 起不再维护，可用【5】移除"
-    fi
     green "1：启用（默认随机端口，可选自定义）"
     green "2：停用"
     green "3：更改端口"
     green "4：更改密码"
-    green "5：移除旧的 Shadowsocks-2022 入口"
     green "0：返回可选功能"
-    readp "请选择【0-5】：" choice || return 1
+    readp "请选择【0-4】：" choice || return 1
     case "$choice" in
       1) enable_socks_entry ;;
       2) disable_socks_entry ;;
       3) change_socks_port ;;
       4) change_socks_password ;;
-      5) remove_preserved_ss_entry ;;
       ""|0) return 0 ;;
-      *) red "请输入0、1、2、3、4或5" ;;
+      *) red "请输入0、1、2、3、4" ;;
     esac
   done
 }
 
 manage_optional_features(){
-  local choice port preserved_port
+  local choice port retired_port
   while true; do
     echo
     green "可选功能"
@@ -1303,8 +1238,9 @@ manage_optional_features(){
     else
       green "1：SOCKS5 入口 ${yellow}未启用${plain}"
     fi
-    if preserved_port=$(preserved_ss_entry_port); then
-      yellow "   旧的 Shadowsocks-2022 入口仍在运行（端口 $preserved_port）"
+    if retired_port=$(retired_ss_entry_port); then
+      yellow "   警告：配置里还有 4.0.0 之前的 Shadowsocks-2022 入口（端口 $retired_port），本版本已不再支持"
+      yellow "   下次重写配置（改端口/凭据、修复）会移除它，仍在用它连接的人会断开"
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"

@@ -45,6 +45,8 @@ expect_failure(){
 # shellcheck source=/dev/null
 source "$ROOT_DIR/src/20-ports.sh"
 # shellcheck source=/dev/null
+source "$ROOT_DIR/src/30-server-config.sh"
+# shellcheck source=/dev/null
 source "$ROOT_DIR/src/10-acme.sh"
 # shellcheck source=/dev/null
 source "$ROOT_DIR/src/60-cron.sh"
@@ -544,29 +546,63 @@ socks_entry_candidate_builders(){
 expect_success "optional SOCKS5 entry candidates add, repeat and remove the inbound idempotently" \
   socks_entry_candidate_builders
 
-# The pre-4.0.0 Shadowsocks-2022 entry is preserved, not converted: the only
-# operation it gets is removal, and that must touch nothing else in the config.
-preserved_ss_candidate_removes_only_that_entry(){
+# 5.0.0 removed the Shadowsocks-2022 entry, but a host that still runs one must be
+# told so: the probe reports the port so both the menus and the render can warn
+# instead of letting the entry vanish silently on the next rewrite.
+retired_ss_entry_probe_reports_the_port(){
   (
-    local dir="$relay_roundtrip/preserved-ss"
+    local dir="$relay_roundtrip/retired-ss"
     mkdir -p "$dir"
     # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
     SB_CONFIG="$dir/sb.json"
-    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="},{"type":"socks","sniff":true,"tag":"socks5-sb","listen":"::","listen_port":443,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"inbound":["socks5-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
-    preserved_ss_entry_is_enabled || return 1
-    preserved_ss_candidate_without_inbound "$dir/without.json" || return 1
-    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
-           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
-           ([.inbounds[] | select(.tag == "socks5-sb")] | length) == 1 and
-           ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1 and
-           ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1 and
-           ([.route.rules[]? | select(.protocol != null)] | length) == 1 and
-           .route.final == "direct"' "$dir/without.json" >/dev/null || return 1
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
+    [[ $(retired_ss_entry_port) == 10086 ]] || return 1
+    # A config without one reports nothing at all, so the menus stay quiet.
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
+    retired_ss_entry_port && return 1
     return 0
   )
 }
-expect_success "removing the preserved SS entry leaves the SOCKS5 entry and the rest alone" \
-  preserved_ss_candidate_removes_only_that_entry
+expect_success "the retired SS-2022 entry is reported (and only reported) by the probe" \
+  retired_ss_entry_probe_reports_the_port
+
+# Rewriting a config that still has the retired entry must drop it *and* say so.
+retired_ss_entry_is_dropped_with_a_warning(){
+  (
+    local dir="$relay_roundtrip/retired-ss-render" messages
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
+    # These are read through dynamic scope by render_server_config, not here.
+    # shellcheck disable=SC2034,SC2031
+    local uuid='11111111-2222-3333-4444-555555555555' port_hy2=8443 ipv=prefer_ipv4
+    # shellcheck disable=SC2034,SC2031
+    local certificatec_hy2="$SB_DIR/cert.pem" certificatep_hy2="$SB_DIR/private.key"
+    # shellcheck disable=SC2034  # read through dynamic scope by render_server_config
+    local socks_entry_enabled=0
+    # server_listen_address lives in 00-bootstrap.sh, which this harness does not
+    # source; the renderer only needs *a* listen address here.
+    # shellcheck disable=SC2317
+    server_listen_address(){ printf '::\n'; }
+    # The renderer reports through the colour helpers; capture them as plain text.
+    # shellcheck disable=SC2317
+    green(){ printf '%s\n' "$1"; }
+    # shellcheck disable=SC2317
+    yellow(){ printf '%s\n' "$1"; }
+    # shellcheck disable=SC2317
+    red(){ printf '%s\n' "$1"; }
+    messages=$(render_server_config "$dir/rendered.json" 2>&1) || return 1
+    [[ $messages == *'本版本已不再支持它'* && $messages == *'本次重写会移除该入口'* ]] || return 1
+    jq -e '([.inbounds[] | select(.type == "shadowsocks")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
+           ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1 and
+           ([.route.rules[]? | select(.protocol != null)] | length) == 1' "$dir/rendered.json" >/dev/null || return 1
+    return 0
+  )
+}
+expect_success "rewriting a config with the retired SS-2022 entry drops it and warns" \
+  retired_ss_entry_is_dropped_with_a_warning
 
 # Generated client files are line-oriented YAML/JSON: a fragment whose trailing
 # newline was eaten by $( ) silently glues two entries together (3.1.0 shipped
@@ -605,30 +641,23 @@ client_files_keep_line_structure(){
     socks_port=18443
     # shellcheck disable=SC2034
     socks_password="$socks_password_symbols"
-    # A pre-4.0.0 Shadowsocks-2022 entry still exists on this host and must be
-    # emitted too, after the SOCKS5 entry and before Hysteria2.
-    # shellcheck disable=SC2034
-    ss_enabled=1
-    # shellcheck disable=SC2034
-    ss_port=18444
-    # shellcheck disable=SC2034
-    ss_password="$ss_key_valid"
     sb_client || return 1
     # every Clash proxy group member sits on its own line
     group=$(awk '/^proxy-groups:/{f=1} f&&/^  proxies:/{g=1;next} g&&/^    - /{print} g&&!/^    - /{exit}' \
       "$SB_DIR/clash.yaml")
-    [[ $(printf '%s\n' "$group" | wc -l) -eq 4 ]] || return 1
-    [[ $group == *'    - DIRECT'* && $group == *'    - ss-testhost'* &&
-       $group == *'    - socks5-testhost'* ]] || return 1
+    [[ $(printf '%s\n' "$group" | wc -l) -eq 3 ]] || return 1
+    [[ $group == *'    - DIRECT'* && $group == *'    - socks5-testhost'* ]] || return 1
     # the group mirrors the selector: Hysteria2 (the default) first, then the
-    # optional entries in SOCKS5 -> SS-2022 order, then DIRECT
+    # optional SOCKS5 entry, then DIRECT
     clash_hy2_off=$(printf '%s\n' "$group" | grep -bo 'hysteria2-testhost' | head -1 | cut -d: -f1 || true)
     clash_socks_off=$(printf '%s\n' "$group" | grep -bo 'socks5-testhost' | head -1 | cut -d: -f1 || true)
-    clash_ss_off=$(printf '%s\n' "$group" | grep -bo 'ss-testhost' | head -1 | cut -d: -f1 || true)
     clash_direct_off=$(printf '%s\n' "$group" | grep -bo 'DIRECT' | head -1 | cut -d: -f1 || true)
-    [[ -n $clash_hy2_off && -n $clash_socks_off && -n $clash_ss_off && -n $clash_direct_off ]] || return 1
-    [[ $clash_hy2_off -lt $clash_socks_off && $clash_socks_off -lt $clash_ss_off &&
-       $clash_ss_off -lt $clash_direct_off ]] || return 1
+    [[ -n $clash_hy2_off && -n $clash_socks_off && -n $clash_direct_off ]] || return 1
+    [[ $clash_hy2_off -lt $clash_socks_off && $clash_socks_off -lt $clash_direct_off ]] || return 1
+    # the retired SS-2022 entry must not come back through the client files
+    if grep -Fq -- 'ss-' "$SB_DIR/clash.yaml" || grep -Fq -- '"shadowsocks"' "$SB_DIR/sbox.json"; then
+      return 1
+    fi
     # the optional proxy blocks are not glued onto the next proxy
     grep -q '^  udp: false$' "$SB_DIR/clash.yaml" || return 1
     grep -q '^  type: socks5$' "$SB_DIR/clash.yaml" || return 1
@@ -636,12 +665,11 @@ client_files_keep_line_structure(){
     # the sing-box selector lists one member per line, Hysteria2 last
     selector=$(awk '/"default": "hy2-testhost"/{f=1;next} f&&/^        "/{print} f&&/^      \]/{exit}' \
       "$SB_DIR/sbox.json")
-    [[ $(printf '%s\n' "$selector" | wc -l) -eq 3 ]] || return 1
+    [[ $(printf '%s\n' "$selector" | wc -l) -eq 2 ]] || return 1
     socks_member_off=$(printf '%s\n' "$selector" | grep -bo 'socks5-testhost' | head -1 | cut -d: -f1 || true)
-    ss_member_off=$(printf '%s\n' "$selector" | grep -bo 'ss-testhost' | head -1 | cut -d: -f1 || true)
     hy2_member_off=$(printf '%s\n' "$selector" | grep -bo 'hy2-testhost' | head -1 | cut -d: -f1 || true)
-    [[ -n $socks_member_off && -n $ss_member_off && -n $hy2_member_off ]] || return 1
-    [[ $socks_member_off -lt $ss_member_off && $ss_member_off -lt $hy2_member_off ]] || return 1
+    [[ -n $socks_member_off && -n $hy2_member_off ]] || return 1
+    [[ $socks_member_off -lt $hy2_member_off ]] || return 1
     return 0
   )
 }
@@ -1982,7 +2010,7 @@ pass "credential menu dispatches the UUID flow exactly once"
 pass "credential menu reports invalid choices"
 [[ $FLOW_MESSAGES == *'菜单[8]'* ]] ||
   fail "credential menu does not point at the optional-features menu"
-pass "credential menu points at menu [8] for the Shadowsocks key"
+pass "credential menu points at menu [8] for the upstream Shadowsocks key"
 unset -f changeuuid
 
 SS_MENU_CALLS=
@@ -1995,21 +2023,21 @@ disable_socks_entry(){ SS_MENU_CALLS+="disable "; }
 change_socks_port(){ SS_MENU_CALLS+="port "; }
 # shellcheck disable=SC2317
 change_socks_password(){ SS_MENU_CALLS+="key "; }
-# shellcheck disable=SC2317
-remove_preserved_ss_entry(){ SS_MENU_CALLS+="remove "; }
-FLOW_RESPONSES=(1 3 4 2 5 9 0)
+FLOW_RESPONSES=(1 3 4 2 9 0)
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 expect_success "optional SOCKS5 entry submenu dispatches every action" manage_socks_entry
-[[ $SS_MENU_CALLS == 'enable port key disable remove ' ]] ||
+[[ $SS_MENU_CALLS == 'enable port key disable ' ]] ||
   fail "optional SOCKS5 entry submenu dispatched the wrong actions: $SS_MENU_CALLS"
 pass "optional SOCKS5 entry submenu dispatches every action"
-[[ $FLOW_MESSAGES == *'请输入0、1、2、3、4或5'* ]] ||
+[[ $FLOW_MESSAGES == *'请输入0、1、2、3、4'* ]] ||
   fail "optional SOCKS5 entry submenu invalid choice was not shown"
 pass "optional SOCKS5 entry submenu reports invalid choices"
-unset -f enable_socks_entry disable_socks_entry change_socks_port change_socks_password \
-  remove_preserved_ss_entry
+[[ $FLOW_MESSAGES == *'5：移除'* ]] &&
+  fail "the removed fifth menu item is still offered"
+pass "the removed fifth menu item is gone"
+unset -f enable_socks_entry disable_socks_entry change_socks_port change_socks_password
 
 OPTIONAL_CALLS=
 # Called indirectly by the sourced optional-features menu.
