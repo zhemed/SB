@@ -160,21 +160,28 @@ if grep -Eq '^(ss_entry_is_enabled|ss_entry_candidate_with_inbound|ss_entry_cand
 fi
 for removed_pattern in \
   'REPAIR_SS_ENABLED' \
+  'REPAIR_SS_PASSWORD' \
   'ss_entry_enabled' \
   '"network": "udp,tcp"'; do
   if grep -Fq -- "$removed_pattern" "$ROOT_DIR/sb.sh"; then
     fail "retired integration remains: $removed_pattern"
   fi
 done
+# The repair renderer must not pull the retired SS-2022 entry password into
+# render_server_config: the preserved inbound carries its own key as raw JSON.
+# shellcheck disable=SC2016
+grep -Fq -- 'local ipv=$REPAIR_STRATEGY' "$ROOT_DIR/sb.sh" ||
+  fail "repair render no longer reads the IP strategy through dynamic scope"
 grep -Fq -- '请选择【0-1】' "$ROOT_DIR/sb.sh" ||
   fail "port management menu is missing"
-# The install path must not create the optional inbound: only hysteria2.
+# The install path must not create an optional inbound: only hysteria2. Both the
+# 4.0.0 SOCKS5 entry and the pre-4.0.0 Shadowsocks-2022 one are menu [8] features.
 install_function=$(awk '/^insport\(\)\{/{inside=1} /^render_server_config\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $install_function ]] || fail "cannot extract insport"
-for optional_pattern in 'socks_password' 'port_socks5' 'socks5-sb' 'generate_socks_password'; do
+for optional_pattern in 'socks_password' 'port_socks5' 'socks5-sb' 'generate_socks_password' 'ss-sb'; do
   if printf '%s\n' "$install_function" | grep -Fq -- "$optional_pattern"; then
-    fail "install flow still creates the optional SOCKS5 entry: $optional_pattern"
+    fail "install flow still creates an optional entry: $optional_pattern"
   fi
 done
 grep -Fq -- 'choose_socks_port()' "$ROOT_DIR/sb.sh" ||
@@ -210,20 +217,35 @@ share_function=$(awk '/^sbshare\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
 # Compare byte offsets: the two generators sit on the same source line, so
 # line numbers would compare equal and silently pass.
 # `|| true` keeps `set -o pipefail` from aborting before the guard can report.
+# The uniform presentation order is SOCKS5 -> pre-4.0.0 SS-2022 -> Hysteria2.
+socks_share_off=$(printf '%s\n' "$share_function" | grep -bo 'ressocks5 ' | head -1 | cut -d: -f1 || true)
 ss_share_off=$(printf '%s\n' "$share_function" | grep -bo 'resss ' | head -1 | cut -d: -f1 || true)
 hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | cut -d: -f1 || true)
-[[ -n $ss_share_off && -n $hy2_share_off ]] ||
+[[ -n $socks_share_off && -n $ss_share_off && -n $hy2_share_off ]] ||
   fail "cannot locate share generators in sbshare"
-[[ $ss_share_off -lt $hy2_share_off ]] ||
-  fail "share output lists Hysteria2 before Shadowsocks-2022"
-# The optional entry is emitted through a printf fragment, so the SS-2022 tag is
-# the literal `ss-%s` here while Hysteria2 keeps its inline `hy2-$hostname`.
+[[ $socks_share_off -lt $ss_share_off && $ss_share_off -lt $hy2_share_off ]] ||
+  fail "share output does not list SOCKS5, then Shadowsocks-2022, then Hysteria2"
+# The optional entries are emitted through printf fragments, so their tags are the
+# literals `socks5-%s` / `ss-%s` here while Hysteria2 keeps its inline `hy2-$hostname`.
+# shellcheck disable=SC2016
+socks_out_off=$(printf '%s\n' "$client_function" | grep -bo 'socks5-%s' | head -1 | cut -d: -f1 || true)
 # shellcheck disable=SC2016
 ss_out_off=$(printf '%s\n' "$client_function" | grep -bo 'ss-%s' | head -1 | cut -d: -f1 || true)
 # shellcheck disable=SC2016
 hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1 || true)
-[[ -n $ss_out_off && -n $hy2_out_off && $ss_out_off -lt $hy2_out_off ]] ||
-  fail "client configuration lists Hysteria2 before Shadowsocks-2022"
+[[ -n $socks_out_off && -n $ss_out_off && -n $hy2_out_off ]] ||
+  fail "cannot locate client entry fragments in sb_client"
+[[ $socks_out_off -lt $ss_out_off && $ss_out_off -lt $hy2_out_off ]] ||
+  fail "client configuration does not list SOCKS5, then Shadowsocks-2022, then Hysteria2"
+# Offsets locate where the fragments are *built*; a fragment built early could
+# still be emitted after Hysteria2. Pin the emission sites too: these two
+# interpolations are the only places the optional entries enter the document.
+# shellcheck disable=SC2016
+grep -Fq -- '${socks_outbound_field}${ss_outbound_field}' "$ROOT_DIR/sb.sh" ||
+  fail "client configuration emits the optional outbounds in a different order"
+# shellcheck disable=SC2016
+grep -Fq -- '${socks_selector_member}${ss_selector_member}' "$ROOT_DIR/sb.sh" ||
+  fail "client configuration emits the optional selector members in a different order"
 
 # Ordering must never be bought by making the TCP fallback entry the default.
 # shellcheck disable=SC2016
@@ -257,8 +279,15 @@ if grep -Fq -- '"insecure": true' "$ROOT_DIR/sb.sh" ||
   fail "insecure Hysteria2 client setting remains"
 fi
 
-grep -Fq -- '"network": "udp"' "$ROOT_DIR/sb.sh" ||
-  fail "Shadowsocks-2022 UDP blocking route is missing"
+# Hysteria2 owns 443/udp, so an optional entry that also binds UDP fails at start
+# time while `check` still passes: every entry type must block inbound UDP.
+# The `\n` below is literal backslash-n text inside the printf fragments.
+for udp_block_pattern in \
+  '"socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"' \
+  '"ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"'; do
+  grep -Fq -- "$udp_block_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "optional-entry UDP blocking route is missing: $udp_block_pattern"
+done
 grep -Fq -- 'Shadowsocks-2022 入口默认不安装' "$ROOT_DIR/sb.sh" ||
   fail "install does not state that the Shadowsocks-2022 entry is optional"
 grep -Fq -- '密钥不可推导' "$ROOT_DIR/sb.sh" ||

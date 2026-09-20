@@ -546,15 +546,15 @@ expect_success "optional SOCKS5 entry candidates add, repeat and remove the inbo
 
 # The pre-4.0.0 Shadowsocks-2022 entry is preserved, not converted: the only
 # operation it gets is removal, and that must touch nothing else in the config.
-legacy_ss_candidate_removes_only_that_entry(){
+preserved_ss_candidate_removes_only_that_entry(){
   (
-    local dir="$relay_roundtrip/legacy-ss"
+    local dir="$relay_roundtrip/preserved-ss"
     mkdir -p "$dir"
     # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
     SB_CONFIG="$dir/sb.json"
     printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="},{"type":"socks","sniff":true,"tag":"socks5-sb","listen":"::","listen_port":443,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"inbound":["socks5-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
-    legacy_ss_entry_is_enabled || return 1
-    legacy_ss_candidate_without_inbound "$dir/without.json" || return 1
+    preserved_ss_entry_is_enabled || return 1
+    preserved_ss_candidate_without_inbound "$dir/without.json" || return 1
     jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
            ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
            ([.inbounds[] | select(.tag == "socks5-sb")] | length) == 1 and
@@ -565,8 +565,8 @@ legacy_ss_candidate_removes_only_that_entry(){
     return 0
   )
 }
-expect_success "removing the legacy SS entry leaves the SOCKS5 entry and the rest alone" \
-  legacy_ss_candidate_removes_only_that_entry
+expect_success "removing the preserved SS entry leaves the SOCKS5 entry and the rest alone" \
+  preserved_ss_candidate_removes_only_that_entry
 
 # Generated client files are line-oriented YAML/JSON: a fragment whose trailing
 # newline was eaten by $( ) silently glues two entries together (3.1.0 shipped
@@ -600,6 +600,14 @@ client_files_keep_line_structure(){
     # shellcheck disable=SC2034
     hy2_clash_ca=
     # shellcheck disable=SC2034
+    socks_enabled=1
+    # shellcheck disable=SC2034
+    socks_port=18443
+    # shellcheck disable=SC2034
+    socks_password="$socks_password_symbols"
+    # A pre-4.0.0 Shadowsocks-2022 entry still exists on this host and must be
+    # emitted too, after the SOCKS5 entry and before Hysteria2.
+    # shellcheck disable=SC2034
     ss_enabled=1
     # shellcheck disable=SC2034
     ss_port=18444
@@ -609,15 +617,31 @@ client_files_keep_line_structure(){
     # every Clash proxy group member sits on its own line
     group=$(awk '/^proxy-groups:/{f=1} f&&/^  proxies:/{g=1;next} g&&/^    - /{print} g&&!/^    - /{exit}' \
       "$SB_DIR/clash.yaml")
-    [[ $(printf '%s\n' "$group" | wc -l) -eq 3 ]] || return 1
-    [[ $group == *'    - DIRECT'* && $group == *'    - ss-testhost'* ]] || return 1
-    # the optional proxy block is not glued onto the next proxy
+    [[ $(printf '%s\n' "$group" | wc -l) -eq 4 ]] || return 1
+    [[ $group == *'    - DIRECT'* && $group == *'    - ss-testhost'* &&
+       $group == *'    - socks5-testhost'* ]] || return 1
+    # the group mirrors the selector: Hysteria2 (the default) first, then the
+    # optional entries in SOCKS5 -> SS-2022 order, then DIRECT
+    clash_hy2_off=$(printf '%s\n' "$group" | grep -bo 'hysteria2-testhost' | head -1 | cut -d: -f1 || true)
+    clash_socks_off=$(printf '%s\n' "$group" | grep -bo 'socks5-testhost' | head -1 | cut -d: -f1 || true)
+    clash_ss_off=$(printf '%s\n' "$group" | grep -bo 'ss-testhost' | head -1 | cut -d: -f1 || true)
+    clash_direct_off=$(printf '%s\n' "$group" | grep -bo 'DIRECT' | head -1 | cut -d: -f1 || true)
+    [[ -n $clash_hy2_off && -n $clash_socks_off && -n $clash_ss_off && -n $clash_direct_off ]] || return 1
+    [[ $clash_hy2_off -lt $clash_socks_off && $clash_socks_off -lt $clash_ss_off &&
+       $clash_ss_off -lt $clash_direct_off ]] || return 1
+    # the optional proxy blocks are not glued onto the next proxy
     grep -q '^  udp: false$' "$SB_DIR/clash.yaml" || return 1
+    grep -q '^  type: socks5$' "$SB_DIR/clash.yaml" || return 1
     grep -q '^- name: hysteria2-testhost$' "$SB_DIR/clash.yaml" || return 1
-    # the sing-box selector lists one member per line
+    # the sing-box selector lists one member per line, Hysteria2 last
     selector=$(awk '/"default": "hy2-testhost"/{f=1;next} f&&/^        "/{print} f&&/^      \]/{exit}' \
       "$SB_DIR/sbox.json")
-    [[ $(printf '%s\n' "$selector" | wc -l) -eq 2 ]] || return 1
+    [[ $(printf '%s\n' "$selector" | wc -l) -eq 3 ]] || return 1
+    socks_member_off=$(printf '%s\n' "$selector" | grep -bo 'socks5-testhost' | head -1 | cut -d: -f1 || true)
+    ss_member_off=$(printf '%s\n' "$selector" | grep -bo 'ss-testhost' | head -1 | cut -d: -f1 || true)
+    hy2_member_off=$(printf '%s\n' "$selector" | grep -bo 'hy2-testhost' | head -1 | cut -d: -f1 || true)
+    [[ -n $socks_member_off && -n $ss_member_off && -n $hy2_member_off ]] || return 1
+    [[ $socks_member_off -lt $ss_member_off && $ss_member_off -lt $hy2_member_off ]] || return 1
     return 0
   )
 }
@@ -1757,9 +1781,9 @@ pass "daily restart setup preserves ACME cron"
 UUID_ONE=11111111-1111-4111-8111-111111111111
 UUID_TWO=22222222-2222-4222-8222-222222222222
 UUID_ORIGINAL=aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa
-SS_KEY_ORIGINAL='AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA='
-SS_KEY_ONE='KCkqKywtLi8wMTIzNDU2Nzg5Ojs8PT4/QEFCQ0RFRkc='
-SS_KEY_TWO='UFFSU1RVVldYWVpbXF1eX2BhYmNkZWZnaGlqa2xtbm8='
+SOCKS_PASSWORD_ORIGINAL='Socks.Pass_Two-7890~X'
+SOCKS_PASSWORD_ONE='Socks.Pass_Three-7890'
+SOCKS_PASSWORD_TWO='Socks.Pass_Four-7890X'
 FLOW_RESPONSES=()
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
@@ -1768,8 +1792,8 @@ COMMIT_RESULTS=()
 COMMIT_INDEX=0
 LAST_GENERATED_UUID=
 LAST_UUID_FILTER=
-LAST_SS_KEY=
-LAST_SS_FILTER=
+LAST_SOCKS_PASSWORD=
+LAST_SOCKS_FILTER=
 LAST_COMMITTED_CANDIDATE=
 
 # Called indirectly by the sourced management functions.
@@ -1800,14 +1824,18 @@ blue(){ FLOW_MESSAGES+="blue:$1"$'\n'; }
 sbactive(){ return 0; }
 # shellcheck disable=SC2317
 sbshare(){ return 0; }
+# change_socks_password finishes by printing the share link and the new password.
+# The real print_socks_entry_share has its own case above; this records the call.
+# shellcheck disable=SC2317
+print_socks_entry_share(){ FLOW_MESSAGES+="share:${1-}"$'\n'; }
 # shellcheck disable=SC2317
 jq(){
   local filter
   case ${1-} in
     -er)
       filter=${2-}
-      if [[ $filter == *'shadowsocks'* ]]; then
-        printf '%s\n' "$SS_KEY_ORIGINAL"
+      if [[ $filter == *'socks5-sb'* ]]; then
+        printf '%s\n' "$SOCKS_PASSWORD_ORIGINAL"
       else
         printf '%s\n' "$UUID_ORIGINAL"
       fi
@@ -1817,14 +1845,14 @@ jq(){
         uuid)
           LAST_GENERATED_UUID=${3-}
           LAST_UUID_FILTER=${4-}
-          printf '{"candidate":true,"uuid":"%s","ss_password":"%s"}\n' \
-            "$LAST_GENERATED_UUID" "$SS_KEY_ORIGINAL"
+          printf '{"candidate":true,"uuid":"%s","socks_password":"%s"}\n' \
+            "$LAST_GENERATED_UUID" "$SOCKS_PASSWORD_ORIGINAL"
           ;;
         password)
-          LAST_SS_KEY=${3-}
-          LAST_SS_FILTER=${4-}
-          printf '{"candidate":true,"uuid":"%s","ss_password":"%s"}\n' \
-            "$UUID_ORIGINAL" "$LAST_SS_KEY"
+          LAST_SOCKS_PASSWORD=${3-}
+          LAST_SOCKS_FILTER=${4-}
+          printf '{"candidate":true,"uuid":"%s","socks_password":"%s"}\n' \
+            "$UUID_ORIGINAL" "$LAST_SOCKS_PASSWORD"
           ;;
         *) return 2 ;;
       esac
@@ -1861,12 +1889,12 @@ expect_success "UUID flow retries failures and then succeeds" changeuuid
 pass "UUID flow retries the failed commit"
 [[ $LAST_GENERATED_UUID == "$UUID_TWO" ]] || fail "UUID flow did not commit the final value"
 pass "UUID flow commits the final value"
-[[ $LAST_UUID_FILTER != *'shadowsocks'* ]] ||
-  fail "UUID flow unexpectedly targets the Shadowsocks-2022 inbound"
-pass "UUID flow does not target the Shadowsocks-2022 inbound"
-[[ $LAST_COMMITTED_CANDIDATE == *"\"ss_password\":\"$SS_KEY_ORIGINAL\""* ]] ||
-  fail "UUID flow changed the Shadowsocks-2022 key"
-pass "UUID flow preserves the Shadowsocks-2022 key"
+[[ $LAST_UUID_FILTER != *'socks5-sb'* ]] ||
+  fail "UUID flow unexpectedly targets the SOCKS5 inbound"
+pass "UUID flow does not target the SOCKS5 inbound"
+[[ $LAST_COMMITTED_CANDIDATE == *"\"socks_password\":\"$SOCKS_PASSWORD_ORIGINAL\""* ]] ||
+  fail "UUID flow changed the SOCKS5 password"
+pass "UUID flow preserves the SOCKS5 password"
 [[ $FLOW_MESSAGES == *'UUID格式错误'* ]] || fail "UUID format failure was not shown"
 pass "UUID format failure is shown"
 [[ $FLOW_MESSAGES == *'UUID修改失败，原配置未修改或已恢复'* ]] ||
@@ -1890,50 +1918,53 @@ pass "UUID rollback failure is shown"
 [[ $FLOW_RESPONSE_INDEX -eq 2 ]] || fail "UUID rollback failure did not wait before returning"
 pass "UUID rollback failure waits before returning"
 
-FLOW_RESPONSES=('bad password value' "$SS_KEY_ONE" '' "$SS_KEY_TWO" '')
+FLOW_RESPONSES=('bad password value' "$SOCKS_PASSWORD_ONE" '' "$SOCKS_PASSWORD_TWO" '')
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 COMMIT_RESULTS=(1 0)
 COMMIT_INDEX=0
-expect_success "SS-2022 key flow retries failures and then succeeds" change_ss_password
-[[ $COMMIT_INDEX -eq 2 ]] || fail "SS-2022 key flow did not retry the failed commit"
-pass "SS-2022 key flow retries the failed commit"
-[[ $LAST_SS_KEY == "$SS_KEY_TWO" ]] ||
-  fail "SS-2022 key flow did not commit the final value"
-pass "SS-2022 key flow commits the final value"
-[[ $LAST_SS_FILTER != *'hy2-sb'* ]] ||
-  fail "SS-2022 key flow unexpectedly targets UUID protocols"
-pass "SS-2022 key flow does not target UUID protocols"
+expect_success "SOCKS5 password flow retries failures and then succeeds" change_socks_password
+[[ $COMMIT_INDEX -eq 2 ]] || fail "SOCKS5 password flow did not retry the failed commit"
+pass "SOCKS5 password flow retries the failed commit"
+[[ $LAST_SOCKS_PASSWORD == "$SOCKS_PASSWORD_TWO" ]] ||
+  fail "SOCKS5 password flow did not commit the final value"
+pass "SOCKS5 password flow commits the final value"
+[[ $LAST_SOCKS_FILTER != *'hy2-sb'* ]] ||
+  fail "SOCKS5 password flow unexpectedly targets UUID protocols"
+pass "SOCKS5 password flow does not target UUID protocols"
 [[ $LAST_COMMITTED_CANDIDATE == *"\"uuid\":\"$UUID_ORIGINAL\""* ]] ||
-  fail "SS-2022 key flow changed the Hysteria2 UUID"
-pass "SS-2022 key flow preserves the Hysteria2 UUID"
-[[ $FLOW_MESSAGES == *'Shadowsocks-2022密钥必须是44位标准base64'* ]] ||
-  fail "SS-2022 key format failure was not shown"
-pass "SS-2022 key format failure is shown"
-[[ $FLOW_MESSAGES == *'Shadowsocks-2022密钥修改失败，原配置未修改或已恢复'* ]] ||
-  fail "SS-2022 key commit failure was not shown"
-pass "SS-2022 key commit failure is shown"
-[[ $FLOW_MESSAGES == *"Shadowsocks-2022密钥修改成功：$SS_KEY_TWO"* ]] ||
-  fail "SS-2022 key success was not shown"
-pass "SS-2022 key success is shown"
+  fail "SOCKS5 password flow changed the Hysteria2 UUID"
+pass "SOCKS5 password flow preserves the Hysteria2 UUID"
+[[ $FLOW_MESSAGES == *'SOCKS5密码必须为16-128位'* ]] ||
+  fail "SOCKS5 password format failure was not shown"
+pass "SOCKS5 password format failure is shown"
+[[ $FLOW_MESSAGES == *'SOCKS5密码修改失败，原配置未修改或已恢复'* ]] ||
+  fail "SOCKS5 password commit failure was not shown"
+pass "SOCKS5 password commit failure is shown"
+[[ $FLOW_MESSAGES == *"SOCKS5密码修改成功：$SOCKS_PASSWORD_TWO"* ]] ||
+  fail "SOCKS5 password success was not shown"
+pass "SOCKS5 password success is shown"
+[[ $FLOW_MESSAGES == *"share:$SOCKS_PASSWORD_TWO"* ]] ||
+  fail "SOCKS5 password success did not print the share link"
+pass "SOCKS5 password success prints the share link"
 [[ $FLOW_PROMPTS == *'按回车返回可选功能...'* ]] ||
-  fail "SS-2022 key success did not wait for return"
-pass "SS-2022 key success waits before returning"
+  fail "SOCKS5 password success did not wait for return"
+pass "SOCKS5 password success waits before returning"
 
-FLOW_RESPONSES=("$SS_KEY_ONE" '')
+FLOW_RESPONSES=("$SOCKS_PASSWORD_ONE" '')
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 COMMIT_RESULTS=(2)
 COMMIT_INDEX=0
-expect_failure "SS-2022 key flow stops when automatic rollback fails" change_ss_password
+expect_failure "SOCKS5 password flow stops when automatic rollback fails" change_socks_password
 [[ $FLOW_MESSAGES == *'自动回滚失败'* ]] ||
-  fail "SS-2022 key rollback failure was not shown"
-pass "SS-2022 key rollback failure is shown"
+  fail "SOCKS5 password rollback failure was not shown"
+pass "SOCKS5 password rollback failure is shown"
 [[ $FLOW_RESPONSE_INDEX -eq 2 ]] ||
-  fail "SS-2022 key rollback failure did not wait before returning"
-pass "SS-2022 key rollback failure waits before returning"
+  fail "SOCKS5 password rollback failure did not wait before returning"
+pass "SOCKS5 password rollback failure waits before returning"
 
 CREDENTIAL_UUID_CALLS=0
 # Called indirectly by the sourced credential menu.
@@ -1957,30 +1988,33 @@ unset -f changeuuid
 SS_MENU_CALLS=
 # Called indirectly by the sourced optional-features submenu.
 # shellcheck disable=SC2317
-enable_ss_entry(){ SS_MENU_CALLS+="enable "; }
+enable_socks_entry(){ SS_MENU_CALLS+="enable "; }
 # shellcheck disable=SC2317
-disable_ss_entry(){ SS_MENU_CALLS+="disable "; }
+disable_socks_entry(){ SS_MENU_CALLS+="disable "; }
 # shellcheck disable=SC2317
-change_ss_port(){ SS_MENU_CALLS+="port "; }
+change_socks_port(){ SS_MENU_CALLS+="port "; }
 # shellcheck disable=SC2317
-change_ss_password(){ SS_MENU_CALLS+="key "; }
-FLOW_RESPONSES=(1 3 4 2 9 0)
+change_socks_password(){ SS_MENU_CALLS+="key "; }
+# shellcheck disable=SC2317
+remove_preserved_ss_entry(){ SS_MENU_CALLS+="remove "; }
+FLOW_RESPONSES=(1 3 4 2 5 9 0)
 FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
-expect_success "optional SS entry submenu dispatches every action" manage_ss_entry
-[[ $SS_MENU_CALLS == 'enable port key disable ' ]] ||
-  fail "optional SS entry submenu dispatched the wrong actions: $SS_MENU_CALLS"
-pass "optional SS entry submenu dispatches every action"
-[[ $FLOW_MESSAGES == *'请输入0、1、2、3或4'* ]] ||
-  fail "optional SS entry submenu invalid choice was not shown"
-pass "optional SS entry submenu reports invalid choices"
-unset -f enable_ss_entry disable_ss_entry change_ss_port change_ss_password
+expect_success "optional SOCKS5 entry submenu dispatches every action" manage_socks_entry
+[[ $SS_MENU_CALLS == 'enable port key disable remove ' ]] ||
+  fail "optional SOCKS5 entry submenu dispatched the wrong actions: $SS_MENU_CALLS"
+pass "optional SOCKS5 entry submenu dispatches every action"
+[[ $FLOW_MESSAGES == *'请输入0、1、2、3、4或5'* ]] ||
+  fail "optional SOCKS5 entry submenu invalid choice was not shown"
+pass "optional SOCKS5 entry submenu reports invalid choices"
+unset -f enable_socks_entry disable_socks_entry change_socks_port change_socks_password \
+  remove_preserved_ss_entry
 
 OPTIONAL_CALLS=
 # Called indirectly by the sourced optional-features menu.
 # shellcheck disable=SC2317
-manage_ss_entry(){ OPTIONAL_CALLS+="ss "; }
+manage_socks_entry(){ OPTIONAL_CALLS+="socks "; }
 # shellcheck disable=SC2317
 manage_relay(){ OPTIONAL_CALLS+="relay "; }
 FLOW_RESPONSES=(1 2 9 0)
@@ -1988,13 +2022,13 @@ FLOW_RESPONSE_INDEX=0
 FLOW_MESSAGES=
 FLOW_PROMPTS=
 expect_success "optional-features menu dispatches both entries" manage_optional_features
-[[ $OPTIONAL_CALLS == 'ss relay ' ]] ||
+[[ $OPTIONAL_CALLS == 'socks relay ' ]] ||
   fail "optional-features menu dispatched the wrong entries: $OPTIONAL_CALLS"
 pass "optional-features menu dispatches both entries exactly once"
 [[ $FLOW_MESSAGES == *'请输入0、1或2'* ]] ||
   fail "optional-features menu invalid choice was not shown"
 pass "optional-features menu reports invalid choices"
-unset -f manage_ss_entry manage_relay
+unset -f manage_socks_entry manage_relay
 
 LIFECYCLE_ROOT="$TEMP_DIR/lifecycle"
 export SB_DIR="$LIFECYCLE_ROOT/sb"
