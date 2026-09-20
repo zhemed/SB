@@ -27,15 +27,25 @@ v3.0.0 做了 socks → SS-2022，v3.1.0 把入口改成"可选、默认不装"�
 | `resss` / `ss.txt` | `ressocks5` / `socks5.txt` |
 | `REPAIR_SS_ENABLED` / `REPAIR_SS_PORT` / `REPAIR_SS_PASSWORD` | `REPAIR_SOCKS_ENTRY_*`（沿用旧的 `REPAIR_SOCKS_INBOUND` 语义则拆成"入口存在"与"旧 SS 形态"两个标记） |
 
-## 3. 修复的三形态（与 v3.0.0 对称）
+## 3. 修复的形态（用户定调：**保留原样不动**）
 
 | 源配置 | 处理 |
 |---|---|
-| 有 `socks5-sb` | 端口/用户名/密码原样提取 |
-| 有 `ss-sb`（v3.0.0–v3.1.4） | 视为已移除协议 → 重写为 socks 形态、**重新生成密码**、label 提示旧客户端失效 |
-| 都没有 | 保持没有 |
+| 有 `socks5-sb` | 端口/用户名/密码原样提取，重写后仍是 SOCKS5 |
+| 有 `ss-sb`（v3.0.0–v3.1.4 建的） | **不转换、不删除**：原样提取整段 inbound（JSON 原样带入重写），label 注明"旧的 Shadowsocks-2022 入口已保留" |
+| 都没有 | 保持没有，不自动补 |
 
-`config_contains_removed_protocol` 的识别对象从 `socks5-sb` 改成 `ss-sb`（vless 照旧）。
+用户 2026-09-20 明确选了"保留原样不动"而不是"迁移"。因此：
+
+- `config_contains_removed_protocol` **不再**把 `ss-sb` 当作已移除协议（vless 照旧）；
+  `load_repair_config_values` 也不因它失败——`ss-sb` 是"旧形态但合法"。
+- 重写时必须把它**原样带过去**（原始 JSON 片段 + 它的 UDP 阻断规则），否则一次证书变更就会
+  把用户还在用的入口悄悄删掉——那正是"保留"要防的事。
+- 客户端产物：`ss-sb` 存在时**继续生成 `ss.txt`**（`resss` 已经在代码里，不删它），
+  `socks5-sb` 存在时生成 `socks5.txt`；两个都在就都生成。顺序统一：socks5 → ss → hy2。
+- 菜单【8】：检测到旧 `ss-sb` 时显示一行"旧的 Shadowsocks-2022 入口（已停止维护）：
+  已启用，端口 N"，只给**停用（移除）**动作——用户要"手动切"就得先能把它停掉。
+  新建/启用一律产出 SOCKS5，不再提供"选引擎"。
 
 ## 4. 真实 SOCKS5 握手验证（这次比上次好验）
 
