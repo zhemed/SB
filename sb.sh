@@ -3094,7 +3094,7 @@ proxy-groups:
   type: select
   proxies:
     - hysteria2-$hostname
-${ss_clash_member}${socks_clash_member}    - DIRECT
+${socks_clash_member}${ss_clash_member}    - DIRECT
 
 rules:
   - GEOIP,LAN,DIRECT
