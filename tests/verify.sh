@@ -43,8 +43,10 @@ grep -Fq -- 'https://codeload.github.com/acmesh-official/acme.sh/tar.gz/refs/tag
 if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
   fail "unverified acme.sh online installer remains"
 fi
-[[ $(grep -Fxc 'SS_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
+[[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "SOCKS5 username is not fixed to sb"
+[[ $(grep -Fxc 'RELAY_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "upstream Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
 [[ $(grep -Fxc 'sb_version="v4.0.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "script version is not 4.0.0"
 [[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '4.0.0' ]] ||
@@ -65,11 +67,12 @@ for lifecycle_pattern in \
   'green " 9. 卸载"' \
   'readp "请输入数字 [0-9]: " Input' \
   'manage_optional_features()' \
-  'manage_ss_entry()' \
-  'enable_ss_entry()' \
-  'disable_ss_entry()' \
-  'change_ss_port()' \
-  '请选择【0-4】'; do
+  'manage_socks_entry()' \
+  'enable_socks_entry()' \
+  'disable_socks_entry()' \
+  'change_socks_port()' \
+  'remove_preserved_ss_entry()' \
+  '请选择【0-5】'; do
   grep -Fq -- "$lifecycle_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing installation lifecycle behavior: $lifecycle_pattern"
 done
@@ -89,26 +92,32 @@ fi
 for success_message in \
   '证书模式切换成功' \
   'Hysteria2主端口修改成功' \
-  'Shadowsocks-2022端口修改成功' \
+  'SOCKS5端口修改成功' \
   'IP优先级修改成功' \
   'Hysteria2 UUID（密码）修改成功' \
-  'Shadowsocks-2022密钥修改成功'; do
+  'SOCKS5密码修改成功'; do
   grep -Fq -- "$success_message" "$ROOT_DIR/sb.sh" ||
     fail "missing modification success message: $success_message"
 done
 # The dollar-prefixed strings below are literal generated-configuration text.
 # shellcheck disable=SC2016
-for ss_pattern in \
-  'SS_METHOD="2022-blake3-aes-256-gcm"' \
-  '"type": "shadowsocks"' \
-  '"tag": "ss-sb"' \
-  '"listen": "${listen_addr}"' \
-  '"network": "tcp"' \
-  '"method": "%s"' \
-  'ss_entry_is_enabled()' \
-  'ss_entry_candidate_with_inbound()' \
-  'ss_entry_candidate_without_inbound()' \
-  'ss_entry_enabled' \
+for socks_pattern in \
+  'SOCKS_USERNAME="sb"' \
+  'RELAY_METHOD="2022-blake3-aes-256-gcm"' \
+  '"type": "socks"' \
+  '"tag": "socks5-sb"' \
+  '"username": "%s"' \
+  'socks_entry_is_enabled()' \
+  'socks_entry_candidate_with_inbound()' \
+  'socks_entry_candidate_without_inbound()' \
+  'preserved_ss_entry_is_enabled()' \
+  'preserved_ss_candidate_without_inbound()' \
+  'preserved_entry_inbound' \
+  'socks_entry_enabled' \
+  'choose_socks_port()' \
+  'generate_socks_password()' \
+  'valid_socks_password()' \
+  'valid_ss_password()' \
   'server_listen_address()' \
   'IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"' \
   'local root=$1 disabled=' \
@@ -119,45 +128,42 @@ for ss_pattern in \
   '"tag": "relay"' \
   '"final": "${route_final}"' \
   'relay.conf' \
-  'resss()' \
-  'change_ss_password()' \
-  'valid_ss_password()' \
-  'generate_ss_password()' \
-  'ss://$(printf' \
-  "base64 | tr -d '\\r\\n')@" \
-  'ss.txt' \
-  '"tag": "ss-%s"' \
-  'type: ss' \
-  'cipher: %s' \
+  'ressocks5()' \
+  '"tag": "socks5-%s"' \
+  'type: socks5' \
   'udp: false' \
+  '"version": "5"' \
+  'socks5.txt' \
+  'remove_saved_socks_link()' \
+  'print_socks_entry_share()' \
+  '用户名/密码：' \
+  'resss()' \
+  'ss.txt' \
+  'remove_saved_ss_link()' \
   'manage_relay()' \
   '当前配置里有一条上游出站，但' \
   'set_relay_upstream()' \
   'clear_relay_upstream()' \
-  'Shadowsocks-2022 入口默认不安装' \
   '本次只安装 Hysteria2' \
-  'remove_saved_ss_link()' \
-  'print_ss_entry_share()' \
-  '分享链接（客户端导入用' \
-  '服务端密钥（Shadowsocks-2022 PSK）' \
+  'SOCKS5 不加密' \
   '输入0取消' \
   '已取消，端口未修改'; do
-  grep -Fq -- "$ss_pattern" "$ROOT_DIR/sb.sh" ||
-    fail "missing Shadowsocks-2022 integration: $ss_pattern"
+  grep -Fq -- "$socks_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "missing SOCKS5 integration: $socks_pattern"
 done
-# The plaintext SOCKS5 inbound and the dead comma-joined route rule are gone.
+# The entry is optional: nothing may *create* a Shadowsocks-2022 entry any more,
+# and the dead comma-joined route rule must stay gone. The legacy ss-sb inbound
+# itself is still supported (preserved), so only the producers are banned.
+if grep -Eq '^(ss_entry_is_enabled|ss_entry_candidate_with_inbound|ss_entry_candidate_without_inbound|enable_ss_entry|disable_ss_entry|change_ss_password|change_ss_port|choose_ss_port|generate_ss_password|print_ss_entry_share)\(\)\{' \
+  "$ROOT_DIR/sb.sh"; then
+  fail "a retired Shadowsocks-2022-entry function is still defined"
+fi
 for removed_pattern in \
-  '"tag": "socks5-sb"' \
-  '"type": "socks"' \
-  'type: socks5' \
-  'SOCKS_USERNAME' \
-  'valid_socks_password' \
-  'change_socks_password' \
-  'ressocks5' \
-  'socks5.txt' \
+  'REPAIR_SS_ENABLED' \
+  'ss_entry_enabled' \
   '"network": "udp,tcp"'; do
   if grep -Fq -- "$removed_pattern" "$ROOT_DIR/sb.sh"; then
-    fail "retired SOCKS5 integration remains: $removed_pattern"
+    fail "retired integration remains: $removed_pattern"
   fi
 done
 grep -Fq -- '请选择【0-1】' "$ROOT_DIR/sb.sh" ||
@@ -166,21 +172,21 @@ grep -Fq -- '请选择【0-1】' "$ROOT_DIR/sb.sh" ||
 install_function=$(awk '/^insport\(\)\{/{inside=1} /^render_server_config\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $install_function ]] || fail "cannot extract insport"
-for optional_pattern in 'ss_password' 'port_ss' 'ss-sb' 'generate_ss_password'; do
+for optional_pattern in 'socks_password' 'port_socks5' 'socks5-sb' 'generate_socks_password'; do
   if printf '%s\n' "$install_function" | grep -Fq -- "$optional_pattern"; then
-    fail "install flow still creates the optional Shadowsocks-2022 entry: $optional_pattern"
+    fail "install flow still creates the optional SOCKS5 entry: $optional_pattern"
   fi
 done
-grep -Fq -- 'choose_ss_port()' "$ROOT_DIR/sb.sh" ||
+grep -Fq -- 'choose_socks_port()' "$ROOT_DIR/sb.sh" ||
   fail "optional entry port selection is missing"
 [[ $(grep -Fc -- '按回车返回主菜单...' "$ROOT_DIR/sb.sh" || true) -ge 5 ]] ||
   fail "modification flows do not consistently wait before returning"
 
-uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_ss_password\(\)\{/{inside=0} inside' \
+uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_socks_password\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $uuid_function ]] || fail "cannot extract UUID management function"
-if printf '%s\n' "$uuid_function" | grep -Fq -- 'ss-sb'; then
-  fail "UUID management still touches the Shadowsocks-2022 inbound"
+if printf '%s\n' "$uuid_function" | grep -Fq -- 'socks5-sb'; then
+  fail "UUID management still touches the optional SOCKS5 entry"
 fi
 
 client_function=$(awk '/^sb_client\(\)\{/{inside=1} /^sbshare\(\)\{/{inside=0} inside' \

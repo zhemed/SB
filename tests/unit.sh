@@ -71,7 +71,8 @@ valid_ipv6(){ return 1; }
 # The colour variables are read by interpolated menu text (the matching colour
 # *functions* are replaced per test); without them `set -u` trips on ${yellow}.
 export red='' green='' yellow='' blue='' bblue='' plain=''
-export SS_METHOD="2022-blake3-aes-256-gcm"
+export SOCKS_USERNAME=sb
+export RELAY_METHOD="2022-blake3-aes-256-gcm"
 export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
 export SB_DIR=/etc/sb
 export SB_CONFIG="$SB_DIR/sb.json"
@@ -84,16 +85,16 @@ export ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"
 export ACME_CRON_MARKER="# sb-managed-acme"
 export RESTART_CRON_MARKER="# sb-managed-restart"
 
-generated_ss_key_is_valid(){
-  local key
-  key=$(generate_ss_password) || return 1
-  valid_ss_password "$key"
+generated_socks_password_is_valid(){
+  local password
+  password=$(generate_socks_password) || return 1
+  valid_socks_password "$password"
 }
 
-generated_ss_keys_differ(){
+generated_socks_passwords_differ(){
   local first second
-  first=$(generate_ss_password) || return 1
-  second=$(generate_ss_password) || return 1
+  first=$(generate_socks_password) || return 1
+  second=$(generate_socks_password) || return 1
   [[ $first != "$second" ]]
 }
 
@@ -120,8 +121,21 @@ expect_failure "44 key characters without padding are invalid" valid_ss_password
 expect_failure "45-character base64 key is invalid" valid_ss_password "$(printf 'A%.0s' {1..44})="
 expect_failure "SS-2022 key with a space is invalid" valid_ss_password 'bad password value'
 expect_failure "SS-2022 key with a colon is invalid" valid_ss_password 'bad:password:value'
-expect_success "generated SS-2022 key is valid" generated_ss_key_is_valid
-expect_success "generated SS-2022 keys differ" generated_ss_keys_differ
+# The client-facing entry credential since 4.0.0: 16-128 characters of
+# [A-Za-z0-9._~-]. The SS-2022 key above is still the *upstream* hop's secret.
+socks_password_valid="$(printf 'A%.0s' {1..16})"
+socks_password_symbols='Socks.Pass_Two-7890~X'
+expect_success "16-character SOCKS5 password is valid" valid_socks_password "$socks_password_valid"
+expect_success "SOCKS5 password using every allowed symbol is valid" \
+  valid_socks_password "$socks_password_symbols"
+expect_success "128-character SOCKS5 password is valid" valid_socks_password "$(printf 'A%.0s' {1..128})"
+expect_failure "15-character SOCKS5 password is invalid" valid_socks_password "$(printf 'A%.0s' {1..15})"
+expect_failure "129-character SOCKS5 password is invalid" valid_socks_password "$(printf 'A%.0s' {1..129})"
+expect_failure "SOCKS5 password with a colon is invalid" valid_socks_password 'bad:password:value'
+expect_failure "SOCKS5 password with a space is invalid" valid_socks_password 'bad password value'
+expect_failure "empty SOCKS5 password is invalid" valid_socks_password ''
+expect_success "generated SOCKS5 password is valid" generated_socks_password_is_valid
+expect_success "generated SOCKS5 passwords differ" generated_socks_passwords_differ
 
 # server_listen_address lives in src/00-bootstrap.sh, which this file does not
 # source: extract the single function and drive it with a fixture sysctl tree.
@@ -229,11 +243,11 @@ expect_success "n cancels a destructive action" confirm_rejects n
 expect_success "NO cancels a destructive action" confirm_rejects NO
 expect_success "unrelated text cancels a destructive action" confirm_rejects YESPLEASE
 
-# print_ss_entry_share is what makes "enabled but no link and no key" impossible:
-# it echoes the link sbshare wrote and always prints the server-side key.
-ss_share_printing(){
+# print_socks_entry_share is what makes "enabled but no link and no password"
+# impossible: it echoes the link sbshare wrote and always prints the credentials.
+socks_share_printing(){
   (
-    local dir="$relay_roundtrip/ss-print" key="$ss_key_valid" out
+    local dir="$relay_roundtrip/socks-print" key="$socks_password_symbols" out
     mkdir -p "$dir"
     # shellcheck disable=SC2030  # the subshell owns SB_DIR
     SB_DIR="$dir"
@@ -242,26 +256,26 @@ ss_share_printing(){
     green(){ FLOW_MESSAGES+="green:$1"$'\n'; }
     # shellcheck disable=SC2317
     yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
-    # No share file yet: it must say so instead of pretending, and still show the key.
+    # No share file yet: it must say so instead of pretending, and still show the password.
     FLOW_MESSAGES=
-    print_ss_entry_share "$key" > "$out" || return 1
+    print_socks_entry_share "$key" > "$out" || return 1
     [[ $FLOW_MESSAGES == *'分享文件暂不可用'* ]] || return 1
-    [[ $FLOW_MESSAGES == *"服务端密钥（Shadowsocks-2022 PSK）：$key"* ]] || return 1
+    [[ $FLOW_MESSAGES == *"用户名/密码：$SOCKS_USERNAME / $key"* ]] || return 1
     # With the file present the link itself is echoed for the operator to copy.
-    printf '%s\n' 'ss://BASE64@1.2.3.4:443#ss-host' > "$SB_DIR/ss.txt"
-    chmod 600 "$SB_DIR/ss.txt"
+    printf '%s\n' 'socks5://sb:Socks.Pass_Two-7890~X@1.2.3.4:443#socks5-host' > "$SB_DIR/socks5.txt"
+    chmod 600 "$SB_DIR/socks5.txt"
     FLOW_MESSAGES=
-    print_ss_entry_share "$key" > "$out" || return 1
-    grep -q 'ss://BASE64@1.2.3.4:443#ss-host' "$out" || return 1
-    [[ $FLOW_MESSAGES == *"$SB_DIR/ss.txt"* ]] || return 1
+    print_socks_entry_share "$key" > "$out" || return 1
+    grep -q 'socks5://sb:Socks.Pass_Two-7890~X@1.2.3.4:443#socks5-host' "$out" || return 1
+    [[ $FLOW_MESSAGES == *"$SB_DIR/socks5.txt"* ]] || return 1
     return 0
   )
 }
-expect_success "the optional entry reports its link and key after a change" ss_share_printing
+expect_success "the optional entry reports its link and password after a change" socks_share_printing
 
 # A prompt that precedes a live change must have a way out; pressing Enter at the
 # port prompt means "random", so a cancel has to be an explicit key.
-ss_port_change_can_cancel(){
+socks_port_change_can_cancel(){
   (
     local dir="$relay_roundtrip/port-cancel"
     mkdir -p "$dir"
@@ -269,12 +283,13 @@ ss_port_change_can_cancel(){
     SB_DIR="$dir"
     # shellcheck disable=SC2030
     SB_CONFIG="$dir/sb.json"
-    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"socks","sniff":true,"sniff_override_destination":true,"tag":"socks5-sb","listen":"::","listen_port":10086,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["socks5-sb"],"network":"udp","outbound":"block"}]}}' > "$SB_CONFIG"
     local before
     before=$(sha256sum "$SB_CONFIG" | awk '{print $1}')
     FLOW_RESPONSES=('0' '')
     FLOW_RESPONSE_INDEX=0
     FLOW_MESSAGES=
+    FLOW_PROMPTS=
     # Called indirectly by the sourced management flows.
     # shellcheck disable=SC2317
     readp(){
@@ -303,11 +318,10 @@ ss_port_change_can_cancel(){
     sbactive(){ return 0; }
     # shellcheck disable=SC2317
     # shellcheck disable=SC2030  # the subshell owns this counter
-    # shellcheck disable=SC2317
     # shellcheck disable=SC2030,SC2031  # the counter is deliberately subshell-local
     commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }
     COMMIT_INDEX=0
-    change_ss_port || return 1
+    change_socks_port || return 1
     [[ $COMMIT_INDEX -eq 0 ]] || return 1
     [[ $FLOW_MESSAGES == *'已取消，端口未修改'* ]] || return 1
     [[ $(sha256sum "$SB_CONFIG" | awk '{print $1}') == "$before" ]] || return 1
@@ -316,11 +330,11 @@ ss_port_change_can_cancel(){
   )
 }
 expect_success "the port-change prompt can be cancelled without touching the config" \
-  ss_port_change_can_cancel
+  socks_port_change_can_cancel
 
-# choose_ss_port reports cancellation with a distinct status so enable_ss_entry
-# can abort instead of minting a key and a random port behind the operator's back.
-choose_ss_port_cancel_status(){
+# choose_socks_port reports cancellation with a distinct status so enable_socks_entry
+# can abort instead of minting a password and a random port behind the operator's back.
+choose_socks_port_cancel_status(){
   (
     # shellcheck disable=SC2317
     readp(){ printf -v "$2" '%s' "$CANNED"; }
@@ -329,12 +343,12 @@ choose_ss_port_cancel_status(){
     # shellcheck disable=SC2317
     red(){ :; }
     CANNED=0
-    choose_ss_port
+    choose_socks_port
     [[ $? -eq 2 ]]
   )
 }
 expect_success "cancelling the port question is distinct from a random port" \
-  choose_ss_port_cancel_status
+  choose_socks_port_cancel_status
 unset -f readp
 
 # The caller must also *say* that nothing happened: the original bug was a
@@ -347,7 +361,7 @@ cancelled_disable_is_reported(){
     SB_DIR="$dir"
     # shellcheck disable=SC2030
     SB_CONFIG="$dir/sb.json"
-    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":443,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"socks","sniff":true,"tag":"socks5-sb","listen":"::","listen_port":443,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
     # the answer is "no", so the flow must stop before any commit
     FLOW_RESPONSES=('no' '')
     FLOW_RESPONSE_INDEX=0
@@ -383,10 +397,10 @@ cancelled_disable_is_reported(){
     # shellcheck disable=SC2030,SC2031  # the counter is deliberately subshell-local
     commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }
     COMMIT_INDEX=0
-    disable_ss_entry || return 1
+    disable_socks_entry || return 1
     [[ $COMMIT_INDEX -eq 0 ]] || return 1
     [[ $FLOW_MESSAGES == *'已取消，未做任何修改'* ]] || return 1
-    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 1' "$SB_CONFIG" >/dev/null || return 1
+    jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 1' "$SB_CONFIG" >/dev/null || return 1
     return 0
   )
 }
@@ -401,7 +415,7 @@ empty_answer_disables_the_entry(){
     SB_DIR="$dir"
     # shellcheck disable=SC2030
     SB_CONFIG="$dir/sb.json"
-    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":443,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"}]}}' > "$SB_CONFIG"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"socks","sniff":true,"tag":"socks5-sb","listen":"::","listen_port":443,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["socks5-sb"],"network":"udp","outbound":"block"}]}}' > "$SB_CONFIG"
     FLOW_RESPONSES=('' '')
     FLOW_RESPONSE_INDEX=0
     FLOW_MESSAGES=
@@ -444,12 +458,12 @@ empty_answer_disables_the_entry(){
       return 0
     }
     COMMIT_INDEX=0
-    disable_ss_entry || return 1
+    disable_socks_entry || return 1
     [[ $COMMIT_INDEX -eq 1 ]] || return 1
-    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
-           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0' \
+    jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 0' \
       "$SB_CONFIG" >/dev/null || return 1
-    [[ $FLOW_MESSAGES == *'Shadowsocks-2022 入口已停用'* ]] || return 1
+    [[ $FLOW_MESSAGES == *'SOCKS5 入口已停用'* ]] || return 1
     return 0
   )
 }
@@ -487,47 +501,72 @@ relay_candidate_builders(){
 }
 expect_success "relay candidates add, repeat and remove the upstream idempotently" relay_candidate_builders
 
-ss_entry_candidate_builders(){
+socks_entry_candidate_builders(){
   (
-    local dir="$relay_roundtrip/ss-entry" key="$ss_key_valid"
+    local dir="$relay_roundtrip/socks-entry" key="$socks_password_symbols"
     mkdir -p "$dir"
     # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
     SB_CONFIG="$dir/sb.json"
     printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
-    ss_entry_candidate_with_inbound "$dir/with.json" 443 "$key" "::" || return 1
-    jq -e --arg key "$key" '
-      ([.inbounds[] | select(.tag == "ss-sb" and .type == "shadowsocks" and .network == "tcp" and
-                             .listen == "::" and .listen_port == 443 and .password == $key)] | length) == 1 and
-      ([.route.rules[] | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 1 and
+    socks_entry_candidate_with_inbound "$dir/with.json" 443 "$key" "::" || return 1
+    jq -e --arg password "$key" --arg username "$SOCKS_USERNAME" '
+      ([.inbounds[] | select(.tag == "socks5-sb" and .type == "socks" and
+                             .listen == "::" and .listen_port == 443 and
+                             .users[0].username == $username and .users[0].password == $password)] | length) == 1 and
+      ([.route.rules[] | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1 and
       .route.final == "direct"
     ' "$dir/with.json" >/dev/null || return 1
     # the UDP block rule must come first, like the renderer emits it
-    [[ $(jq -r '.route.rules[0].inbound[0]' "$dir/with.json") == ss-sb ]] || return 1
+    [[ $(jq -r '.route.rules[0].inbound[0]' "$dir/with.json") == socks5-sb ]] || return 1
     # applying it twice is a no-op, not a duplicate
     cp -- "$dir/with.json" "$SB_CONFIG"
-    ss_entry_candidate_with_inbound "$dir/with-again.json" 443 "$key" "::" || return 1
-    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 1 and
-           ([.route.rules[] | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 1' \
+    socks_entry_candidate_with_inbound "$dir/with-again.json" 443 "$key" "::" || return 1
+    jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 1 and
+           ([.route.rules[] | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1' \
       "$dir/with-again.json" >/dev/null || return 1
     cmp -s -- "$dir/with.json" "$dir/with-again.json" || return 1
     # an existing relay final survives enabling the entry
     jq '.route.final = "relay"' "$dir/with.json" > "$SB_CONFIG"
-    ss_entry_candidate_with_inbound "$dir/with-relay.json" 8443 "$key" "::" || return 1
+    socks_entry_candidate_with_inbound "$dir/with-relay.json" 8443 "$key" "::" || return 1
     [[ $(jq -r '.route.final' "$dir/with-relay.json") == relay ]] || return 1
     # removing it takes the inbound and its rule away and keeps the rest
     cp -- "$dir/with.json" "$SB_CONFIG"
-    ss_entry_candidate_without_inbound "$dir/without.json" || return 1
-    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
-           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
+    socks_entry_candidate_without_inbound "$dir/without.json" || return 1
+    jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 0 and
            ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1' "$dir/without.json" >/dev/null || return 1
     # a duplicated inbound is refused instead of silently collapsed
-    jq '.inbounds += [.inbounds[] | select(.tag == "ss-sb")]' "$dir/with.json" > "$SB_CONFIG"
-    ss_entry_candidate_with_inbound "$dir/dup.json" 443 "$key" "::" 2>/dev/null && return 1
+    jq '.inbounds += [.inbounds[] | select(.tag == "socks5-sb")]' "$dir/with.json" > "$SB_CONFIG"
+    socks_entry_candidate_with_inbound "$dir/dup.json" 443 "$key" "::" 2>/dev/null && return 1
     return 0
   )
 }
-expect_success "optional SS entry candidates add, repeat and remove the inbound idempotently" \
-  ss_entry_candidate_builders
+expect_success "optional SOCKS5 entry candidates add, repeat and remove the inbound idempotently" \
+  socks_entry_candidate_builders
+
+# The pre-4.0.0 Shadowsocks-2022 entry is preserved, not converted: the only
+# operation it gets is removal, and that must touch nothing else in the config.
+legacy_ss_candidate_removes_only_that_entry(){
+  (
+    local dir="$relay_roundtrip/legacy-ss"
+    mkdir -p "$dir"
+    # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
+    SB_CONFIG="$dir/sb.json"
+    printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="},{"type":"socks","sniff":true,"tag":"socks5-sb","listen":"::","listen_port":443,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"inbound":["socks5-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
+    legacy_ss_entry_is_enabled || return 1
+    legacy_ss_candidate_without_inbound "$dir/without.json" || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
+           ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
+           ([.inbounds[] | select(.tag == "socks5-sb")] | length) == 1 and
+           ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1 and
+           ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1 and
+           ([.route.rules[]? | select(.protocol != null)] | length) == 1 and
+           .route.final == "direct"' "$dir/without.json" >/dev/null || return 1
+    return 0
+  )
+}
+expect_success "removing the legacy SS entry leaves the SOCKS5 entry and the rest alone" \
+  legacy_ss_candidate_removes_only_that_entry
 
 # Generated client files are line-oriented YAML/JSON: a fragment whose trailing
 # newline was eaten by $( ) silently glues two entries together (3.1.0 shipped

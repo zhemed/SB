@@ -20,8 +20,8 @@ render_server_config(){
   # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is preserved verbatim instead
   # of being converted or dropped (operator decision 2026-09-20): the raw inbound
   # object comes from the source config and is re-emitted unchanged.
-  if [[ -n ${legacy_entry_inbound:-} ]]; then
-    entry_inbounds+=$(printf ',\n    %s' "$legacy_entry_inbound") || return 1
+  if [[ -n ${preserved_entry_inbound:-} ]]; then
+    entry_inbounds+=$(printf ',\n    %s' "$preserved_entry_inbound") || return 1
     entry_inbounds+=$'\n'
     entry_rules+=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi

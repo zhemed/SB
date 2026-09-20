@@ -1966,8 +1966,8 @@ render_server_config(){
   # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is preserved verbatim instead
   # of being converted or dropped (operator decision 2026-09-20): the raw inbound
   # object comes from the source config and is re-emitted unchanged.
-  if [[ -n ${legacy_entry_inbound:-} ]]; then
-    entry_inbounds+=$(printf ',\n    %s' "$legacy_entry_inbound") || return 1
+  if [[ -n ${preserved_entry_inbound:-} ]]; then
+    entry_inbounds+=$(printf ',\n    %s' "$preserved_entry_inbound") || return 1
     entry_inbounds+=$'\n'
     entry_rules+=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
@@ -4708,6 +4708,7 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
+        yellow "这一跳仍是 Shadowsocks-2022：密钥不可推导，两端都需要 NTP 正常（协议用时间戳抗重放）"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -4823,13 +4824,13 @@ socks_entry_password(){
 # The Shadowsocks-2022 entry that 3.0.0-3.1.4 created is never converted and
 # never dropped by the script. It stays visible here so the operator can remove
 # it themselves once they have switched to SOCKS5.
-legacy_ss_entry_is_enabled(){
+preserved_ss_entry_is_enabled(){
   [[ -s $SB_CONFIG ]] &&
     jq -e '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) == 1' \
       "$SB_CONFIG" >/dev/null 2>&1
 }
 
-legacy_ss_entry_port(){
+preserved_ss_entry_port(){
   jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' \
     "$SB_CONFIG" 2>/dev/null
 }
@@ -4871,7 +4872,7 @@ socks_entry_candidate_without_inbound(){
     "$output" >/dev/null
 }
 
-legacy_ss_candidate_without_inbound(){
+preserved_ss_candidate_without_inbound(){
   local output=$1
   jq '
     .inbounds = [.inbounds[] | select(.tag != "ss-sb")] |
@@ -5059,13 +5060,13 @@ change_socks_port(){
   done
 }
 
-disable_legacy_ss_entry(){
+remove_preserved_ss_entry(){
   local candidate commit_status current
   if ! sbactive; then
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! current=$(legacy_ss_entry_port); then
+  if ! current=$(preserved_ss_entry_port); then
     yellow "当前没有旧的 Shadowsocks-2022 入口"
     readp "按回车返回可选功能..."
     return 0
@@ -5083,7 +5084,7 @@ disable_legacy_ss_entry(){
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! legacy_ss_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
+  if ! preserved_ss_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
     rm -f "$candidate"
     red "生成候选配置失败，原配置未修改"
     readp "按回车返回可选功能..."
@@ -5108,7 +5109,7 @@ disable_legacy_ss_entry(){
 }
 
 manage_socks_entry(){
-  local choice port legacy_port
+  local choice port preserved_port
   while true; do
     echo
     green "SOCKS5 入口"
@@ -5118,8 +5119,8 @@ manage_socks_entry(){
       green "当前状态：${yellow}未启用${green}"
     fi
     yellow "这是一个可选的 TCP 备用入口（明文，见 README 的协议说明）；启用后需自行放行其 TCP 端口"
-    if legacy_port=$(legacy_ss_entry_port); then
-      yellow "另有一个旧的 Shadowsocks-2022 入口在运行（端口 ${legacy_port}），4.0.0 起不再维护，可用【5】移除"
+    if preserved_port=$(preserved_ss_entry_port); then
+      yellow "另有一个旧的 Shadowsocks-2022 入口在运行（端口 ${preserved_port}），4.0.0 起不再维护，可用【5】移除"
     fi
     green "1：启用（默认随机端口，可选自定义）"
     green "2：停用"
@@ -5133,7 +5134,7 @@ manage_socks_entry(){
       2) disable_socks_entry ;;
       3) change_socks_port ;;
       4) change_socks_password ;;
-      5) disable_legacy_ss_entry ;;
+      5) remove_preserved_ss_entry ;;
       ""|0) return 0 ;;
       *) red "请输入0、1、2、3、4或5" ;;
     esac
@@ -5141,7 +5142,7 @@ manage_socks_entry(){
 }
 
 manage_optional_features(){
-  local choice port legacy_port
+  local choice port preserved_port
   while true; do
     echo
     green "可选功能"
@@ -5150,8 +5151,8 @@ manage_optional_features(){
     else
       green "1：SOCKS5 入口 ${yellow}未启用${plain}"
     fi
-    if legacy_port=$(legacy_ss_entry_port); then
-      yellow "   旧的 Shadowsocks-2022 入口仍在运行（端口 $legacy_port）"
+    if preserved_port=$(preserved_ss_entry_port); then
+      yellow "   旧的 Shadowsocks-2022 入口仍在运行（端口 $preserved_port）"
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"
@@ -5562,9 +5563,9 @@ load_repair_config_values(){
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
   REPAIR_SOCKS_ENABLED=0
-  REPAIR_LEGACY_INBOUND=
-  REPAIR_LEGACY_PORT=
-  REPAIR_LEGACY_KEY=
+  REPAIR_PRESERVED_INBOUND=
+  REPAIR_PRESERVED_PORT=
+  REPAIR_PRESERVED_KEY=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
   REPAIR_KEY_PATH=
@@ -5591,10 +5592,10 @@ load_repair_config_values(){
     REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   fi
   if jq -e '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_LEGACY_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
-    REPAIR_LEGACY_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_LEGACY_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
-    [[ -n $REPAIR_LEGACY_INBOUND ]] || return 1
+    REPAIR_PRESERVED_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
+    REPAIR_PRESERVED_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
+    REPAIR_PRESERVED_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
+    [[ -n $REPAIR_PRESERVED_INBOUND ]] || return 1
   fi
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
@@ -5605,9 +5606,9 @@ load_repair_config_values(){
     valid_port "$REPAIR_SOCKS_PORT" || return 1
     valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
   fi
-  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
-    valid_port "$REPAIR_LEGACY_PORT" || return 1
-    valid_ss_password "$REPAIR_LEGACY_KEY" || return 1
+  if [[ -n $REPAIR_PRESERVED_INBOUND ]]; then
+    valid_port "$REPAIR_PRESERVED_PORT" || return 1
+    valid_ss_password "$REPAIR_PRESERVED_KEY" || return 1
   fi
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -5629,7 +5630,7 @@ render_repair_config(){
   # shellcheck disable=SC2034
   local port_socks5=$REPAIR_SOCKS_PORT socks_password=$REPAIR_SOCKS_PASSWORD
   # shellcheck disable=SC2034
-  local legacy_entry_inbound=$REPAIR_LEGACY_INBOUND
+  local preserved_entry_inbound=$REPAIR_PRESERVED_INBOUND
   local ss_password=$REPAIR_SS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
@@ -5793,7 +5794,7 @@ try_repair_config_source(){
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 VLESS inbound"
   fi
-  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
+  if [[ -n $REPAIR_PRESERVED_INBOUND ]]; then
     label+="，并保留原有的 Shadowsocks-2022 入口"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
@@ -5868,9 +5869,9 @@ rebuild_config_in_place(){
   REPAIR_SOCKS_ENABLED=0
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
-  REPAIR_LEGACY_INBOUND=
-  REPAIR_LEGACY_PORT=
-  REPAIR_LEGACY_KEY=
+  REPAIR_PRESERVED_INBOUND=
+  REPAIR_PRESERVED_PORT=
+  REPAIR_PRESERVED_KEY=
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
   candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1

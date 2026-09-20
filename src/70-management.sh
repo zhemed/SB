@@ -860,6 +860,7 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
+        yellow "这一跳仍是 Shadowsocks-2022：密钥不可推导，两端都需要 NTP 正常（协议用时间戳抗重放）"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -975,13 +976,13 @@ socks_entry_password(){
 # The Shadowsocks-2022 entry that 3.0.0-3.1.4 created is never converted and
 # never dropped by the script. It stays visible here so the operator can remove
 # it themselves once they have switched to SOCKS5.
-legacy_ss_entry_is_enabled(){
+preserved_ss_entry_is_enabled(){
   [[ -s $SB_CONFIG ]] &&
     jq -e '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) == 1' \
       "$SB_CONFIG" >/dev/null 2>&1
 }
 
-legacy_ss_entry_port(){
+preserved_ss_entry_port(){
   jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' \
     "$SB_CONFIG" 2>/dev/null
 }
@@ -1023,7 +1024,7 @@ socks_entry_candidate_without_inbound(){
     "$output" >/dev/null
 }
 
-legacy_ss_candidate_without_inbound(){
+preserved_ss_candidate_without_inbound(){
   local output=$1
   jq '
     .inbounds = [.inbounds[] | select(.tag != "ss-sb")] |
@@ -1211,13 +1212,13 @@ change_socks_port(){
   done
 }
 
-disable_legacy_ss_entry(){
+remove_preserved_ss_entry(){
   local candidate commit_status current
   if ! sbactive; then
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! current=$(legacy_ss_entry_port); then
+  if ! current=$(preserved_ss_entry_port); then
     yellow "当前没有旧的 Shadowsocks-2022 入口"
     readp "按回车返回可选功能..."
     return 0
@@ -1235,7 +1236,7 @@ disable_legacy_ss_entry(){
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! legacy_ss_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
+  if ! preserved_ss_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
     rm -f "$candidate"
     red "生成候选配置失败，原配置未修改"
     readp "按回车返回可选功能..."
@@ -1260,7 +1261,7 @@ disable_legacy_ss_entry(){
 }
 
 manage_socks_entry(){
-  local choice port legacy_port
+  local choice port preserved_port
   while true; do
     echo
     green "SOCKS5 入口"
@@ -1270,8 +1271,8 @@ manage_socks_entry(){
       green "当前状态：${yellow}未启用${green}"
     fi
     yellow "这是一个可选的 TCP 备用入口（明文，见 README 的协议说明）；启用后需自行放行其 TCP 端口"
-    if legacy_port=$(legacy_ss_entry_port); then
-      yellow "另有一个旧的 Shadowsocks-2022 入口在运行（端口 ${legacy_port}），4.0.0 起不再维护，可用【5】移除"
+    if preserved_port=$(preserved_ss_entry_port); then
+      yellow "另有一个旧的 Shadowsocks-2022 入口在运行（端口 ${preserved_port}），4.0.0 起不再维护，可用【5】移除"
     fi
     green "1：启用（默认随机端口，可选自定义）"
     green "2：停用"
@@ -1285,7 +1286,7 @@ manage_socks_entry(){
       2) disable_socks_entry ;;
       3) change_socks_port ;;
       4) change_socks_password ;;
-      5) disable_legacy_ss_entry ;;
+      5) remove_preserved_ss_entry ;;
       ""|0) return 0 ;;
       *) red "请输入0、1、2、3、4或5" ;;
     esac
@@ -1293,7 +1294,7 @@ manage_socks_entry(){
 }
 
 manage_optional_features(){
-  local choice port legacy_port
+  local choice port preserved_port
   while true; do
     echo
     green "可选功能"
@@ -1302,8 +1303,8 @@ manage_optional_features(){
     else
       green "1：SOCKS5 入口 ${yellow}未启用${plain}"
     fi
-    if legacy_port=$(legacy_ss_entry_port); then
-      yellow "   旧的 Shadowsocks-2022 入口仍在运行（端口 $legacy_port）"
+    if preserved_port=$(preserved_ss_entry_port); then
+      yellow "   旧的 Shadowsocks-2022 入口仍在运行（端口 $preserved_port）"
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"

@@ -7,9 +7,9 @@ load_repair_config_values(){
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
   REPAIR_SOCKS_ENABLED=0
-  REPAIR_LEGACY_INBOUND=
-  REPAIR_LEGACY_PORT=
-  REPAIR_LEGACY_KEY=
+  REPAIR_PRESERVED_INBOUND=
+  REPAIR_PRESERVED_PORT=
+  REPAIR_PRESERVED_KEY=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
   REPAIR_KEY_PATH=
@@ -36,10 +36,10 @@ load_repair_config_values(){
     REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   fi
   if jq -e '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_LEGACY_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
-    REPAIR_LEGACY_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_LEGACY_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
-    [[ -n $REPAIR_LEGACY_INBOUND ]] || return 1
+    REPAIR_PRESERVED_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
+    REPAIR_PRESERVED_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
+    REPAIR_PRESERVED_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
+    [[ -n $REPAIR_PRESERVED_INBOUND ]] || return 1
   fi
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
@@ -50,9 +50,9 @@ load_repair_config_values(){
     valid_port "$REPAIR_SOCKS_PORT" || return 1
     valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
   fi
-  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
-    valid_port "$REPAIR_LEGACY_PORT" || return 1
-    valid_ss_password "$REPAIR_LEGACY_KEY" || return 1
+  if [[ -n $REPAIR_PRESERVED_INBOUND ]]; then
+    valid_port "$REPAIR_PRESERVED_PORT" || return 1
+    valid_ss_password "$REPAIR_PRESERVED_KEY" || return 1
   fi
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -74,7 +74,7 @@ render_repair_config(){
   # shellcheck disable=SC2034
   local port_socks5=$REPAIR_SOCKS_PORT socks_password=$REPAIR_SOCKS_PASSWORD
   # shellcheck disable=SC2034
-  local legacy_entry_inbound=$REPAIR_LEGACY_INBOUND
+  local preserved_entry_inbound=$REPAIR_PRESERVED_INBOUND
   local ss_password=$REPAIR_SS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
@@ -238,7 +238,7 @@ try_repair_config_source(){
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 VLESS inbound"
   fi
-  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
+  if [[ -n $REPAIR_PRESERVED_INBOUND ]]; then
     label+="，并保留原有的 Shadowsocks-2022 入口"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
@@ -313,9 +313,9 @@ rebuild_config_in_place(){
   REPAIR_SOCKS_ENABLED=0
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
-  REPAIR_LEGACY_INBOUND=
-  REPAIR_LEGACY_PORT=
-  REPAIR_LEGACY_KEY=
+  REPAIR_PRESERVED_INBOUND=
+  REPAIR_PRESERVED_PORT=
+  REPAIR_PRESERVED_KEY=
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
   candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1
