@@ -41,7 +41,7 @@ Six consumers plus a test pin. A rename touches all of them.
 
 Same exercise for the UUID: `insport` → `$uuid` → server config (`hysteria2` **password**) →
 client output (`result()` reads it back from that same inbound) → `changeuuid` (which must **not**
-touch Shadowsocks-2022, asserted at `tests/verify.sh:153-158`).
+touch the optional SOCKS5 entry, asserted at `tests/verify.sh:153-158`).
 
 Note how the last step changed when VLESS Reality was removed: the UUID used to be read back from
 the `vless` inbound, so deleting that protocol silently broke every share-link generation until the

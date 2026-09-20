@@ -44,7 +44,7 @@ Pick the colour by what the user must do, not by how the code feels. Observed di
 | Helper | Meaning | Typical use |
 |--------|---------|-------------|
 | `red` | **Stop.** Refusal, hard error, validation failure. The user must act. | `red "端口 $port/$network 已被占用"` (`src/20-ports.sh:63`) |
-| `yellow` | **Careful.** Warning, hint, or a degraded-but-continuing outcome. | `yellow "安全提示：本次只安装 Hysteria2；需要 Shadowsocks-2022 的 TCP 入口时，在菜单[8]可选功能里启用"` (`src/90-main.sh:47`) |
+| `yellow` | **Careful.** Warning, hint, or a degraded-but-continuing outcome. | `yellow "安全提示：本次只安装 Hysteria2；需要 TCP 备用入口时到菜单[8]启用（SOCKS5，明文，仅限可信链路）"` (`src/90-main.sh:47`) |
 | `green` | **Success**, or the name of an action being taken. | `green "证书模式切换成功"` (`src/70-management.sh:65`) |
 | `blue` | Neutral informational status. **Rare** — reserve for key confirmations. | `blue "确认的端口：$port"` (`src/20-ports.sh:69`) |
 | `white` | Banner framing only. | `src/90-main.sh:89` |
@@ -104,10 +104,10 @@ system is in now, and what the user should do.
 "修改成功" alone is not a finished success message when the thing that changed is what a **client**
 has to be configured with. Changing a port/key/cipher has to end by showing the resulting share link
 and the server-side key, otherwise the operator is left asking "where is my link?" — which is exactly
-what the 3.1.0 enable flow did (it printed only the port; the link existed in `ss.txt` and menu [3]
-but nobody was told). `print_ss_entry_share` (`src/50-client-output.sh`) is that ending for the
-optional Shadowsocks-2022 entry: the link, the file it was written to, menu [3] for the QR code, and
-the PSK. When the share file is missing it says so and points at menu [3] instead of silently
+what the 3.1.0 enable flow did (it printed only the port; the link existed in the share file and
+menu [3] but nobody was told). `print_socks_entry_share` (`src/50-client-output.sh`) is that ending
+for the optional SOCKS5 entry: the link, the file it was written to, menu [3] for the QR code, and
+the username/password — followed by the plaintext warning. When the share file is missing it says so and points at menu [3] instead of silently
 showing nothing.
 
 ---

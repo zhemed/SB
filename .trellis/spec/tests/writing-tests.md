@@ -79,7 +79,7 @@ a **neighbouring function's name** for the end:
 
 ```bash
 # tests/verify.sh:153-154
-uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_ss_password\(\)\{/{inside=0} inside' \
+uuid_function=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_socks_password\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 ```
 
@@ -116,7 +116,7 @@ exactly once), the HTTPS-only policy string, the verified acme.sh archive URL, a
 ### (d) User-visible messages
 
 Six modification success messages are required (`tests/verify.sh:83-93`), as are lifecycle strings
-(`:54-69`), Shadowsocks-2022 integration strings (`:95-129`), client security settings (`:211-225`),
+(`:54-69`), SOCKS5 integration strings (`:95-129`), client security settings (`:211-225`),
 the `insport` negative assertion that keeps the optional entry out of new installs (`:152-161`), and
 the key-loss / clock warnings (`:229-234`). `tests/unit.sh` pins `UUID格式错误` in the `changeuuid`
 flow.
@@ -183,9 +183,9 @@ Documented as-is; do not assume coverage that does not exist.
     proven valid here. The gate will pass on a config real sing-box would reject.
   - Treat any such change as requiring one real-host install before it is trusted. The VLESS Reality
     removal (2.0.0) was verified that way; until then the config's validity was an assumption, not a
-    tested fact. The Shadowsocks-2022 inbound swap (3.0.0) replaces the same surface — `"type"`,
-    `"tag"`, `"network"`, `"method"`, `"password"` — and the explicit `"route": {"final": ...}` is
-    equally invisible to the gate.
+    tested fact. The inbound swaps (SOCKS5 → Shadowsocks-2022 in 3.0.0, back to SOCKS5 in 4.0.0)
+    replace exactly this surface — `"type"`, `"tag"`, `"network"`, `"method"`, `"password"` — and the
+    explicit `"route": {"final": ...}` is equally invisible to the gate.
   - Prefer keeping the untouched remainder of the config byte-identical when editing it, so the
     unverifiable surface stays as small as possible.
 

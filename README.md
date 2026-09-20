@@ -27,12 +27,12 @@ bash <(curl -Ls https://raw.githubusercontent.com/zhemed/SB/main/sb.sh)
 | --- | --- |
 | `src/00-bootstrap.sh` | 常量、环境检查、网络信息与内核下载 |
 | `src/10-acme.sh` | 证书校验、官方 acme.sh 与 Cloudflare DNS API |
-| `src/20-ports.sh` | 输入校验、Hysteria2 UDP 与可选 Shadowsocks-2022 TCP 端口选择 |
+| `src/20-ports.sh` | 输入校验、Hysteria2 UDP 与可选 SOCKS5 TCP 端口选择 |
 | `src/30-server-config.sh` | Sing-box 服务端配置模板 |
 | `src/40-service.sh` | 托管目录、systemd/OpenRC 与配置提交 |
-| `src/50-client-output.sh` | Hysteria2 与 Shadowsocks-2022 分享链接及 Sing-box/Clash 客户端配置 |
+| `src/50-client-output.sh` | Hysteria2（以及可选的 SOCKS5 / 旧的 Shadowsocks-2022）分享链接与 Sing-box/Clash 客户端配置 |
 | `src/60-cron.sh` | ACME 续期与定时任务管理 |
-| `src/70-management.sh` | 证书、端口、协议凭据，以及可选功能（SS-2022 入口、上游/中转） |
+| `src/70-management.sh` | 证书、端口、协议凭据，以及可选功能（SOCKS5 入口、上游/中转、旧 SS 入口的移除） |
 | `src/80-lifecycle.sh` | 卸载、快捷命令、依赖与运行态准备 |
 | `src/85-repair.sh` | 内核、配置、证书、服务与维护任务的诊断恢复 |
 | `src/90-main.sh` | 安装流程、菜单和唯一入口 |
@@ -68,7 +68,7 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`3.1.4`。
+- 当前项目版本：`4.0.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
@@ -84,15 +84,19 @@ bash scripts/check-version-bump.sh
 - 证书更新后，运行中的 sb 服务会通过 reload hook 重启并加载新证书；服务未运行时不会被续期任务强制启动。
 - 修复、卸载、残缺安装清理、证书操作和自动续期共用 `/run/sb-acme.lock`，避免并发修改出半套状态。
 - **默认只安装 Hysteria2**（UUID 作为密码）。安装只询问 hy2 端口，只放行一个 UDP 端口。
-- **Shadowsocks-2022 是可选入口**，在菜单 [8] 可选功能里启用/停用：隧道与上游同样是
-  `2022-blake3-aes-256-gcm` 与 32 字节密钥（44 位标准 base64）。它只承载 TCP（UDP 由 Hysteria2
-  承担），协议用时间戳抗重放、需要服务器 NTP 正常；密钥不可推导，丢失只能重签。
-  停用后 `ss.txt` 与客户端配置里的对应条目会一起消失。
+- **可选 TCP 入口是 SOCKS5**（固定用户名 `sb` + 独立随机密码），在菜单 [8] 里按需启用：
+  启用后会打印 `socks5://` 链接、用户名/密码，并写入 `/etc/sb/socks5.txt`。
+  ⚠️ **SOCKS5 不加密**：口令与流量明文，握手特征明显、容易被识别与封锁，只应在可信链路上使用。
+  这是 4.0.0 按维护者要求换回来的形态（评估与代价见
+  `.trellis/tasks/archive/2026-09/09-20-socks5-vs-ss-eval/research.md`）。它只承载 TCP，UDP 由 Hysteria2 承担。
+- **3.0.0–3.1.4 创建的 Shadowsocks-2022 入口不会被自动改动**：升级后它照旧工作，
+  菜单 [8] 里会显示出来并可以移除；用它的时候 `ss.txt` 与客户端配置里的条目继续生成。
+  想切到 SOCKS5 就「启用 SOCKS5 →（确认不再需要后）移除旧的 SS 入口」。
 - 客户端配置不再生成负载均衡或自动测速分组；存在可选入口时，节点顺序固定为
-  Shadowsocks-2022 在前、Hysteria2 在后。
-- 菜单 [8] 里的「上游/中转」可把本机出网交给一台落地机（同样是 Shadowsocks-2022）：参数保存在
-  `/etc/sb/relay.conf`（600，受管文件），每次重写配置都会重新注入，改端口、改凭据、修复都不会丢。
-  **上游不可达等于断网**，清除上游即可立即恢复直连。
+  SOCKS5 →（旧 Shadowsocks-2022）→ Hysteria2，默认节点始终是加密的 Hysteria2。
+- 菜单 [8] 里的「上游/中转」可把本机出网交给一台落地机（这一跳仍是 Shadowsocks-2022，
+  服务器↔服务器）：参数保存在 `/etc/sb/relay.conf`（600，受管文件），每次重写配置都会重新注入，
+  改端口、改凭据、修复都不会丢。**上游不可达等于断网**，清除上游即可立即恢复直连。
 - 安装与修复已拆分为独立菜单。修复会补齐依赖与固定内核、恢复最后一次可用配置或从现有节点参数重建标准配置、修复证书与服务定义，并检查快捷命令和定时任务；只有关键节点参数完全无法恢复时，才会要求输入 `REBUILD` 原地生成新节点，不会默认删除 `/etc/sb`。
 - 核心修复以事务执行并备份原内核、配置和服务定义；启动失败或收到中断信号时优先恢复原可用服务，无法恢复时会保留修复后的节点配置副本并在报告中给出路径。
 - 首次安装中断或关键步骤失败时，会自动清理本次安装创建的服务、定时任务、目录和快捷命令。

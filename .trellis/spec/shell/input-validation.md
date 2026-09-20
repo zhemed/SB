@@ -26,14 +26,15 @@ The full family (all in `src/20-ports.sh` unless noted):
 |-----------|------|
 | `valid_port` | 1–65535, optional minimum via `$2` (`src/20-ports.sh:2-6`) |
 | `valid_uuid` | canonical 8-4-4-4-12 hex UUID |
-| `valid_ss_password` | exactly 44 characters: `^[A-Za-z0-9+/]{43}=$`, i.e. 32 raw bytes of padded base64 (`src/20-ports.sh:17-19`) |
+| `valid_socks_password` | 16-128 characters of `[A-Za-z0-9._~-]` — the optional entry credential |
+| `valid_ss_password` | exactly 44 characters: `^[A-Za-z0-9+/]{43}=$`, i.e. 32 raw bytes of padded base64; since 4.0.0 only the upstream/relay key uses this rule |
 | `valid_hostname` | ≤253 chars, ≥2 labels, per-label 1–63, no leading/trailing hyphen |
 | `valid_ipv4` | `src/00-bootstrap.sh:98-105`, octets ≤255 via `10#` |
 | `valid_ipv6` | `src/00-bootstrap.sh:107-127`, rejects `::1`, `FE80::/10`, `FC00::/7`, double `::` |
 
-`generate_ss_password` (`src/20-ports.sh:21-27`) is the producer for `valid_ss_password`: it asks
-`openssl rand -base64 32`, strips the wrapping newline, and re-validates its own output before
-printing it, so an unusable key can never leave this function.
+`generate_socks_password` is the producer for `valid_socks_password` (`openssl rand -hex 24`); like
+the older `generate_ss_password` it strips the wrapping newline and re-validates its own output
+before printing it, so an unusable credential can never leave the function.
 
 Notes that matter:
 
