@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 9
+- **Total Sessions**: 10
 - **Last Active**: 2026-09-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~235 | Active |
+| `journal-1.md` | ~271 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 10 | 2026-09-20 | v4.0.0：可选入口换回公网 SOCKS5（旧 ss-sb 原样保留） | `bd248c7`, `b84e6b9`, `dd44f80` | `main` |
 | 9 | 2026-09-20 | 评估：可选入口是否换回 SOCKS5（归档，不改代码） | `3b225b3` | `main` |
 | 8 | 2026-09-17 | 评估并否决：SS-2022 入口开 UDP（归档） | `49776e9` | `main` |
 | 7 | 2026-09-17 | v3.1.4：给每个取值提示补取消出口 | `5f1dbb1` | `main` |

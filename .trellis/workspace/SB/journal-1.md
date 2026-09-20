@@ -233,3 +233,39 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 10: v4.0.0：可选入口换回公网 SOCKS5（旧 ss-sb 原样保留）
+<!-- trellis-session: v=2 fp=dc69bab94639fb1b -->
+
+**Date**: 2026-09-20
+**Task**: v4.0.0：可选入口换回公网 SOCKS5（旧 ss-sb 原样保留）
+**Branch**: `main`
+
+### Summary
+
+把 pia 备用入口从 Shadowsocks-2022 换回公网 SOCKS5（用户接受明文与可指纹识别）；旧的 ss-sb 入口保留原样不动，只在菜单 [8] 暴露移除。门禁 364 例绿、真实内核三件套 + 客户端四形态验证，推送后 CI 绿。
+
+### Main Changes
+
+- src/ + sb.sh + tests/ + README + .trellis/spec：SOCKS5 入口、preserved_* 保留路径、钉死串双钉、修复用例重写
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `bd248c7` | [task:09-20-socks5-entry-restore] 清理修复渲染里残留的旧 SS 入口变量 |
+| `b84e6b9` | [task:09-20-socks5-entry-restore] 门禁与用例对齐 4.0.0：顺序钉到 SOCKS5、修复用例改成“原样保留” |
+| `dd44f80` | [task:09-20-socks5-entry-restore] 执行记录：补上“旧 SS 入口原样不动”的决定与各阶段结论 |
+
+### Testing
+
+- [OK] bash tests/verify.sh -> exit 0（unit 313 + repair 51，shellcheck 0.10.0）；真实内核：hy2-only 启动 / curl --socks5 真握手 / 旧 SS 原样启动 / 客户端 4 形态 check；CI run 35491292582 success
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 用户侧可选：旧 ss-sb 端口 62537 → 10086（菜单 [8] 第 3 项）；或启用 SOCKS5 后移除旧入口
