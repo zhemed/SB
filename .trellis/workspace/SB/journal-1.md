@@ -269,3 +269,35 @@
 ### Next Steps
 
 - 用户侧可选：旧 ss-sb 端口 62537 → 10086（菜单 [8] 第 3 项）；或启用 SOCKS5 后移除旧入口
+
+
+## Session 11: v4.0.0 上线结果：入口切换为 SOCKS5，旧 SS 入口已移除
+<!-- trellis-session: v=2 fp=ac66692aa55d25df -->
+
+**Date**: 2026-09-20
+**Task**: v4.0.0 上线结果：入口切换为 SOCKS5，旧 SS 入口已移除
+**Branch**: `main`
+
+### Summary
+
+用户在自己机器上更新到 v4.0.0，按 README 的切换路径启用 SOCKS5 并移除旧的 SS 入口，切换成功。只记录形态，不记录端口/地址等实例专有值。
+
+### Main Changes
+
+- 无代码改动（记录型任务）：归档上线结果 + journal
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- [OK] 无需重跑门禁；发布 tip 5995e52 已由 CI run 35491370339 验证绿
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 等用户发话；不要再指望 [8] 重建 SS 入口（生产者已退役）
