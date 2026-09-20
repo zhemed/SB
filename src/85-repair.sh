@@ -75,7 +75,7 @@ render_repair_config(){
   local port_socks5=$REPAIR_SOCKS_PORT socks_password=$REPAIR_SOCKS_PASSWORD
   # shellcheck disable=SC2034
   local preserved_entry_inbound=$REPAIR_PRESERVED_INBOUND
-  local ss_password=$REPAIR_SS_PASSWORD ipv=$REPAIR_STRATEGY
+  local ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
   render_server_config "$output"
