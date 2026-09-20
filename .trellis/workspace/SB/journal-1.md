@@ -302,3 +302,38 @@
 ### Next Steps
 
 - 等用户发话；不要再指望 [8] 重建 SS 入口（生产者已退役）
+
+
+## Session 12: 5.0.0：彻底移除旧 Shadowsocks-2022 入口的兼容层
+<!-- trellis-session: v=2 fp=14a72eab8aa41679 -->
+
+**Date**: 2026-09-20
+**Task**: 5.0.0：彻底移除旧 Shadowsocks-2022 入口的兼容层
+**Branch**: `main`
+
+### Summary
+
+用户先报菜单 [8] 多出一个无意义的第 5 项，随后定调 ss 彻底移除：4.0.0 的'旧入口原样保留'兼容层整个拆掉，版本 5.0.0。保留上游中转的 SS-2022 与只读探针 + 两处警告（不静默丢配置）。
+
+### Main Changes
+
+- src/30、50、70、85 删除保留路径/移除流程/客户端 ss 产物/修复注入；新增 retired_ss_entry_port 探针与警告；ss-sb 重新计入已废弃协议；README+规范同步 5.0.0
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4b33571` | [task:09-20-drop-ss-entry-compat] 5.0.0：彻底移除 Shadowsocks-2022 入口的兼容层 |
+| `8667408` | [task:09-20-drop-ss-entry-compat] 文档：README 升级警示、规范与任务记录同步 5.0.0 |
+
+### Testing
+
+- [OK] 门禁 exit 0（unit 315 + repair 52，shellcheck 0.10.0）；真实内核：hy2-only 启动 / curl --socks5 真握手 / 旧 ss-sb 配置重写后入口消失+警告+真启动 / 客户端两形态 check；变异 E/F/G 全被抓住；CI run 35492722401 success
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 无；若还想有 TCP 备用入口就用菜单 [8] 第 1 项启用 SOCKS5（不存在重建 SS 入口的路）
