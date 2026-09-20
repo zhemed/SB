@@ -29,9 +29,10 @@ Defined once in `src/00-bootstrap.sh:16-32`. Use the constants; do not re-type p
 
 `socks5.txt` exists only while the optional SOCKS5 entry is enabled: `sbshare` writes it when the
 inbound is present and removes it (through `remove_saved_socks_link`) when it is not, so a stale
-share link cannot outlive the listener it points at. `ss.txt` follows the same rule for a
-**pre-4.0.0 Shadowsocks-2022** entry (`remove_saved_ss_link`), which 4.0.0 preserves rather than
-converting or dropping.
+share link cannot outlive the listener it points at. `ss.txt` belonged to the **pre-4.0.0
+Shadowsocks-2022** entry: 5.0.0 never writes it, and `sbshare` still removes a leftover file through
+`remove_saved_ss_link` (with a note if that fails), so a host that carried one across the upgrade
+does not keep a share link pointing at a listener that is gone.
 
 `relay.conf` is the optional upstream ("线路机 → 落地机") state file, mode 600. Exactly three
 `key=value` lines — `server=`, `port=`, `password=` — with no shell evaluation and no unknown-key

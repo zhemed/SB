@@ -1,6 +1,10 @@
 # Test Harness
 
-Sources: `tests/verify.sh` (326 lines), `tests/unit.sh` (1740), `tests/repair.sh` (784).
+Sources: `tests/verify.sh` (401 lines), `tests/unit.sh` (2252), `tests/repair.sh` (876).
+
+> The `file:line` references below were exact when they were written, but every test edit shifts
+> them. Treat them as **pointers, not proof**: locate the named fact with `grep` before relying on
+> a line number. (Re-verified for v5.0.0 only where this release changed the subject.)
 
 ---
 

@@ -27,8 +27,9 @@ Function names are `lower_snake_case`. Two naming eras coexist and both are acce
   `sbshare`, `changeuuid`, `sbactive`.
 
 Rename toward the descriptive form only when you are already rewriting the function; do not mass
-rename, because `tests/verify.sh` extracts function bodies by name
-(`tests/verify.sh:153-161`, `250-257`).
+rename, because `tests/verify.sh` extracts function bodies by name (see the `awk`-bracketed
+extractions around `tests/verify.sh:176`, `:189`, `:196` and the `changeuuid` /
+`change_socks_password` pair).
 
 ---
 

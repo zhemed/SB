@@ -14,9 +14,9 @@ Run `bash tests/verify.sh` after any change in this document's scope.
 
 | Location | Value form | Asserted by |
 |----------|-----------|-------------|
-| `VERSION` | `4.0.0` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
-| `src/00-bootstrap.sh:96` | `sb_version="v4.0.0"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
-| `README.md` "当前项目版本" line | `` 当前项目版本：`4.0.0` `` | `tests/verify.sh:52-53` |
+| `VERSION` | `5.0.0` (bare semver, single trailing newline) | `scripts/build.sh:67-68`, `tests/verify.sh:50-51` |
+| `src/00-bootstrap.sh:113` | `sb_version="v5.0.0"` | `scripts/build.sh:155-156`, `tests/verify.sh:48-49` |
+| `README.md` "当前项目版本" line | `` 当前项目版本：`5.0.0` `` | `tests/verify.sh:52-53` |
 
 The build derives the required literal from `VERSION` itself:
 
@@ -86,7 +86,7 @@ not one.
 `SOCKS_USERNAME="sb"` is asserted at `tests/verify.sh:46-47`: the SOCKS5 username is fixed and is
 **not** randomized, unlike its password. `RELAY_METHOD="2022-blake3-aes-256-gcm"` covers the
 *upstream* hop, which is still Shadowsocks-2022 (server-to-server); the client-facing entry became
-SOCKS5 in 4.0.0. `IPV6_SYSCTL_ROOT` is pinned inside the integration list, so the sysctl root the
+SOCKS5 in 4.0.0 and is the only optional entry since 5.0.0. `IPV6_SYSCTL_ROOT` is pinned inside the integration list, so the sysctl root the
 listen address is probed from is a gate-enforced literal too.
 
 ---
@@ -142,7 +142,8 @@ formatting is fine; weakening these values is a gate failure by design.
 - The **upstream/relay hop is still Shadowsocks-2022** (`RELAY_METHOD="2022-blake3-aes-256-gcm"`,
   a 44-character padded base64 key validated by `valid_ss_password`). That is a server-to-server
   link with no client-compatibility constraint, which is why it kept the AEAD-2022 cipher when the
-  client-facing entry went back to SOCKS5 in 4.0.0.
+  client-facing entry went back to SOCKS5 in 4.0.0 — and why it is the one place `valid_ss_password`
+  still applies after the entry itself was removed in 5.0.0.
 - `tests/verify.sh` extracts the `changeuuid()` body, bracketed by the neighbouring
   `change_socks_password()`, and fails if it mentions `socks5-sb`, i.e. changing the UUID must not
   touch the entry's credentials.
@@ -163,13 +164,17 @@ formatting is fine; weakening these values is a gate failure by design.
   block route (`"network": "udp"` from the `socks5-sb` inbound) plus the plaintext warning
   (`SOCKS5 不加密`). Whether that inbound should also carry UDP was evaluated and **rejected** in
   2026-09 (see `.trellis/tasks/archive/2026-09/09-17-ss-entry-udp-eval/research.md`).
-- **4.0.0 preserves a pre-existing Shadowsocks-2022 entry**, by operator decision: `ss-sb` is not in
-  the "removed protocol" list, `load_repair_config_values` captures its raw JSON into
-  `REPAIR_LEGACY_INBOUND`, and `render_server_config` re-emits it verbatim through the
-  `legacy_entry_inbound` fragment. The gate pins `legacy_ss_entry_is_enabled()`,
-  `legacy_ss_candidate_without_inbound()` and `disable_legacy_ss_entry()` so the operator can still
-  remove it from menu [8]. The reasoning (and the cost of going back to plaintext) is recorded in
-  `.trellis/tasks/archive/2026-09/09-20-socks5-vs-ss-eval/research.md`.
+- **5.0.0 removed the Shadowsocks-2022 entry outright**: 4.0.0 had preserved a pre-existing `ss-sb`
+  inbound for one release as a transition, and that path (parsing, verbatim re-emission, and the
+  menu [8] removal flow) is gone. What remains is a **read-only probe** (`retired_ss_entry_port`)
+  plus two warnings — `render_server_config` says the entry it is about to drop is no longer
+  supported, and the menu [8] landing page repeats it — because silently cutting people off is not
+  acceptable. The gate bans the retired names (`preserved_entry_inbound`, `preserved_ss_*`,
+  `remove_preserved_ss_entry`, `resss`, `REPAIR_PRESERVED_*`) so the compatibility layer cannot
+  creep back, and `config_contains_removed_protocol` counts `ss-sb` as removed so repair rewrites
+  such a config instead of calling it healthy. Background:
+  `.trellis/tasks/archive/2026-09/09-20-socks5-vs-ss-eval/research.md` and
+  `.trellis/tasks/archive/2026-09/09-20-drop-ss-entry-compat/design.md`.
 - The dead comma-joined route rule `"network": "udp,tcp"` must stay gone.
 - `tests/verify.sh` pins `SHORTCUT="/usr/bin/sb"` and requires the Cloudflare API Token prompt
   to be **visible** (`readp`), not hidden with `read -s`.

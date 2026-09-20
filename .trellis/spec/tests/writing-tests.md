@@ -185,7 +185,9 @@ Documented as-is; do not assume coverage that does not exist.
     removal (2.0.0) was verified that way; until then the config's validity was an assumption, not a
     tested fact. The inbound swaps (SOCKS5 → Shadowsocks-2022 in 3.0.0, back to SOCKS5 in 4.0.0)
     replace exactly this surface — `"type"`, `"tag"`, `"network"`, `"method"`, `"password"` — and the
-    explicit `"route": {"final": ...}` is equally invisible to the gate.
+    explicit `"route": {"final": ...}` is equally invisible to the gate. The 5.0.0 removal of the
+    Shadowsocks-2022 entry is the same story in reverse: a config that still carries `ss-sb` is only
+    proven to be dropped correctly by rendering it with the real binary and starting the result.
   - Prefer keeping the untouched remainder of the config byte-identical when editing it, so the
     unverifiable surface stays as small as possible.
 

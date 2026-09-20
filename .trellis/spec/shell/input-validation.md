@@ -27,7 +27,7 @@ The full family (all in `src/20-ports.sh` unless noted):
 | `valid_port` | 1–65535, optional minimum via `$2` (`src/20-ports.sh:2-6`) |
 | `valid_uuid` | canonical 8-4-4-4-12 hex UUID |
 | `valid_socks_password` | 16-128 characters of `[A-Za-z0-9._~-]` — the optional entry credential |
-| `valid_ss_password` | exactly 44 characters: `^[A-Za-z0-9+/]{43}=$`, i.e. 32 raw bytes of padded base64; since 4.0.0 only the upstream/relay key uses this rule |
+| `valid_ss_password` | exactly 44 characters: `^[A-Za-z0-9+/]{43}=$`, i.e. 32 raw bytes of padded base64; since 5.0.0 only the upstream/relay key uses this rule (the entry that used it is gone) |
 | `valid_hostname` | ≤253 chars, ≥2 labels, per-label 1–63, no leading/trailing hyphen |
 | `valid_ipv4` | `src/00-bootstrap.sh:98-105`, octets ≤255 via `10#` |
 | `valid_ipv6` | `src/00-bootstrap.sh:107-127`, rejects `::1`, `FE80::/10`, `FC00::/7`, double `::` |
@@ -176,9 +176,10 @@ than aborting:
 - `0|"") exit 0` — Enter also quits the main menu (`src/90-main.sh:166`).
 - The catch-all is `*) red "请输入正确数字"; sleep 1 ;;` (`src/90-main.sh:167`).
 - Sub-menus use explicit range prompts such as `请选择【0-2】` and
-  `请输入【1-2】` (`src/20-ports.sh:102`, `src/70-management.sh:961`);
-  `tests/verify.sh:146-149` asserts two of these strings still exist, so keep the prompt text when
-  adding options.
+  `请输入【1-2】` (`src/20-ports.sh:102`, `src/70-management.sh:1251`);
+  `tests/verify.sh:74` and `:179` assert two of these strings still exist, so keep the prompt text
+  when adding options. The prompt must match the options that are actually offered: menu [8]'s
+  SOCKS5 sub-menu is `请选择【0-4】` since 5.0.0 dropped its fifth item.
 
 ---
 

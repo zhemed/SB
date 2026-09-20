@@ -12,11 +12,11 @@ the one that is "closest" to the call site.
 | `src/20-ports.sh` | All `valid_*` validators, port conflict detection and selection, credential generation and validation (Hysteria2 UUID, SOCKS5 password, and the SS-2022 key still used by the upstream hop) |
 | `src/30-server-config.sh` | Server-side `sb.json` rendering (inbounds, the optional `relay` outbound, `route.final`) and its install-time candidate validation |
 | `src/40-service.sh` | Managed-path trust checks, atomic private writers, the optional-upstream state file (`relay.conf` load/save/clear), systemd/OpenRC unit rendering + ownership, `commit_config`, last-good config, service start/stop/state |
-| `src/50-client-output.sh` | Share links (Hysteria2, plus the optional SOCKS5 entry and any pre-4.0.0 Shadowsocks-2022 entry that still exists) and generated client files `sbox.json` / `clash.yaml` |
+| `src/50-client-output.sh` | Share links (Hysteria2 plus the optional SOCKS5 entry), the cleanup of a leftover `ss.txt` from the retired entry, and generated client files `sbox.json` / `clash.yaml` |
 | `src/60-cron.sh` | Crontab marker management, the `ACMERENEW` renewal runner, daily restart task, `with_acme_lock` |
-| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, and the optional features — the SOCKS5 entry (enable/disable/port/password), removing a pre-4.0.0 Shadowsocks-2022 entry, and the upstream/relay |
+| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, and the optional features — the SOCKS5 entry (enable/disable/port/password), the read-only probe for a retired Shadowsocks-2022 entry, and the upstream/relay |
 | `src/80-lifecycle.sh` | Dependency installation, `/usr/bin/sb` shortcut, `prepare_runtime_state`, uninstall |
-| `src/85-repair.sh` | Diagnosis and the repair transaction (including preserving a pre-4.0.0 Shadowsocks-2022 entry verbatim instead of rewriting it away) |
+| `src/85-repair.sh` | Diagnosis and the repair transaction (a config still carrying a pre-4.0.0 Shadowsocks-2022 entry counts as a removed protocol, so the rewrite drops it and says so) |
 | `src/90-main.sh` | Install flow, main menu, interrupt trap, the entrypoint |
 
 Practical consequences:
@@ -74,7 +74,7 @@ The final `menu` call is the last statement in the file (`src/90-main.sh:217`). 
 
 **Every other module contains function definitions only.** No stray `echo`, no module-level
 variable assignments, no `if` blocks at column 0. This is what makes concatenation order safe: by
-the time `menu` runs, all 263 functions exist.
+the time `menu` runs, all 259 functions exist.
 
 Global variables that persist across calls are therefore declared **only** in `00-bootstrap.sh`:
 
