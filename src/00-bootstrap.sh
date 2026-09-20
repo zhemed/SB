@@ -11,7 +11,10 @@ CORE_SHA256_AMD64="1951a0785c8b4e1e21e0640227a49528ca772aec3d680061652e3d6b687e0
 CORE_SHA256_ARM64="15b43a0a50b4e6962aca819d4f3055aaac75ca7481350d4aaebe93ed06b7af49"
 CORE_SHA256_ARMV7="691882d609c877f97bc8d6f8645b97d12de81b6f7b89651df66489ef11b4c5d0"
 ACME_ARCHIVE_SHA256="e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
-SS_METHOD="2022-blake3-aes-256-gcm"
+SOCKS_USERNAME="sb"
+# The upstream ("线路机 -> 落地机") hop is a server-to-server Shadowsocks-2022 link;
+# it is independent of the client-facing entry, which is SOCKS5 since 4.0.0.
+RELAY_METHOD="2022-blake3-aes-256-gcm"
 IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"
 SB_DIR="/etc/sb"
 SB_CONFIG="$SB_DIR/sb.json"
@@ -107,7 +110,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.1.4"
+sb_version="v4.0.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet

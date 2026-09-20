@@ -44,7 +44,7 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
-  yellow "安全提示：本次只安装 Hysteria2；需要 Shadowsocks-2022 的 TCP 入口时，在菜单[8]可选功能里启用"
+  yellow "安全提示：本次只安装 Hysteria2；需要 TCP 备用入口时到菜单[8]启用（SOCKS5，明文，仅限可信链路）"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"

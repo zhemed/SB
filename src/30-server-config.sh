@@ -2,24 +2,28 @@
 # Generate server config JSON
 render_server_config(){
   local output=$1 listen_addr relay_outbound_suffix route_final
-  local ss_inbound_suffix ss_udp_rule
+  local entry_inbounds=
+  local entry_rules=
   [[ -n $output ]] || return 1
   relay_outbound_suffix=
   route_final=direct
-  ss_inbound_suffix=
-  ss_udp_rule=
   listen_addr=$(server_listen_address "$IPV6_SYSCTL_ROOT") || return 1
   [[ -n $listen_addr ]] || return 1
-  # The Shadowsocks-2022 entry is optional and absent by default: a new install
-  # creates only hysteria2, and repair enables it iff the source config has it.
-  # Callers must set ss_entry_enabled=1 explicitly; "unset" means "do not emit".
-  if [[ ${ss_entry_enabled:-0} -eq 1 ]]; then
-    ss_inbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "ss-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "network": "tcp",\n      "method": "%s",\n      "password": "%s"\n    }' \
-      "$listen_addr" "$port_ss" "$SS_METHOD" "$ss_password") || return 1
-    ss_udp_rule=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n')
-    # Command substitution strips the trailing newline; put it back so the rule
-    # keeps its own line (JSON tolerates the merge, readers do not).
-    ss_udp_rule+=$'\n'
+  # The optional TCP entry is absent by default: a new install creates only
+  # hysteria2, and the operator enables the entry from menu [8].
+  if [[ ${socks_entry_enabled:-0} -eq 1 ]]; then
+    entry_inbounds=$(printf ',\n    {\n      "type": "socks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "socks5-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "users": [\n        {\n          "username": "%s",\n          "password": "%s"\n        }\n      ]\n    }' \
+      "$listen_addr" "${port_socks5:-}" "$SOCKS_USERNAME" "${socks_password:-}") || return 1
+    entry_inbounds+=$'\n'
+    entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
+  fi
+  # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is preserved verbatim instead
+  # of being converted or dropped (operator decision 2026-09-20): the raw inbound
+  # object comes from the source config and is re-emitted unchanged.
+  if [[ -n ${legacy_entry_inbound:-} ]]; then
+    entry_inbounds+=$(printf ',\n    %s' "$legacy_entry_inbound") || return 1
+    entry_inbounds+=$'\n'
+    entry_rules+=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
   # The optional upstream is re-read from relay.conf on every render, so a
   # rewritten config keeps the relay instead of silently falling back to a
@@ -28,7 +32,7 @@ render_server_config(){
     if load_relay_settings; then
       route_final=relay
       relay_outbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s"\n    }' \
-        "$relay_server" "$relay_port" "$SS_METHOD" "$relay_password") || return 1
+        "$relay_server" "$relay_port" "$RELAY_METHOD" "$relay_password") || return 1
     else
       red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
     fi
@@ -68,7 +72,7 @@ render_server_config(){
         "certificate_path": "${certificatec_hy2}",
         "key_path": "${certificatep_hy2}"
       }
-    }${ss_inbound_suffix}
+    }${entry_inbounds}
   ],
   "outbounds": [
     {
@@ -84,7 +88,7 @@ render_server_config(){
   "route": {
     "final": "${route_final}",
     "rules": [
-${ss_udp_rule}      {
+${entry_rules}      {
         "protocol": [
           "quic",
           "stun"

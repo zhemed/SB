@@ -3,11 +3,13 @@
 load_repair_config_values(){
   local source=$1
   REPAIR_UUID=
-  REPAIR_SS_PORT=
   REPAIR_HY2_PORT=
-  REPAIR_SS_PASSWORD=
-  REPAIR_SS_ENABLED=0
-  REPAIR_SOCKS_INBOUND=0
+  REPAIR_SOCKS_PORT=
+  REPAIR_SOCKS_PASSWORD=
+  REPAIR_SOCKS_ENABLED=0
+  REPAIR_LEGACY_INBOUND=
+  REPAIR_LEGACY_PORT=
+  REPAIR_LEGACY_KEY=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
   REPAIR_KEY_PATH=
@@ -16,37 +18,41 @@ load_repair_config_values(){
   jq -e '
     type == "object" and (.inbounds | type == "array") and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
-    ([.inbounds[] | select((.type == "shadowsocks" and .tag == "ss-sb") or
-                           (.type == "socks" and .tag == "socks5-sb"))] | length) <= 1 and
+    ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) <= 1 and
+    ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) <= 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  # The Shadowsocks-2022 entry is optional, so three shapes are all valid:
-  #   ss-sb present  -> keep port and key as they are
-  #   socks5-sb only -> pre-3.0.0 shape; rewritten as ss-sb with a fresh key
-  #                     (REPAIR_SOCKS_INBOUND=1, minted in try_repair_config_source)
-  #   neither        -> the 3.1.0 default; stays that way, never auto-added
+  # The optional TCP entry (SOCKS5 since 4.0.0) and a pre-4.0.0 Shadowsocks-2022
+  # entry are both valid, and may even coexist during a transition:
+  #   socks5-sb -> keep port and password
+  #   ss-sb     -> preserved verbatim (operator decision 2026-09-20: never
+  #                converted, never dropped behind their back)
+  #   neither   -> stays that way, never auto-added
+  if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
+    REPAIR_SOCKS_ENABLED=1
+    REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
+    REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password | select(type == "string")' "$source") || return 1
+  fi
   if jq -e '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_SS_ENABLED=1
-    REPAIR_SS_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_SS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
-  elif jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_SS_ENABLED=1
-    REPAIR_SOCKS_INBOUND=1
-    REPAIR_SS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_SS_PASSWORD=
+    REPAIR_LEGACY_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
+    REPAIR_LEGACY_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
+    REPAIR_LEGACY_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
+    [[ -n $REPAIR_LEGACY_INBOUND ]] || return 1
   fi
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
   REPAIR_KEY_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path | select(type == "string")' "$source") || return 1
   valid_uuid "$REPAIR_UUID" || return 1
   valid_port "$REPAIR_HY2_PORT" || return 1
-  if [[ $REPAIR_SS_ENABLED -eq 1 ]]; then
-    valid_port "$REPAIR_SS_PORT" || return 1
-    if [[ $REPAIR_SOCKS_INBOUND -eq 0 ]]; then
-      valid_ss_password "$REPAIR_SS_PASSWORD" || return 1
-    fi
+  if [[ $REPAIR_SOCKS_ENABLED -eq 1 ]]; then
+    valid_port "$REPAIR_SOCKS_PORT" || return 1
+    valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
+  fi
+  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
+    valid_port "$REPAIR_LEGACY_PORT" || return 1
+    valid_ss_password "$REPAIR_LEGACY_KEY" || return 1
   fi
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -60,12 +66,15 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  local uuid=$REPAIR_UUID port_ss=$REPAIR_SS_PORT
   # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
-  local port_hy2=$REPAIR_HY2_PORT
+  local uuid=$REPAIR_UUID port_hy2=$REPAIR_HY2_PORT
   # shellcheck disable=SC2034
-  local ss_entry_enabled=$REPAIR_SS_ENABLED
+  local socks_entry_enabled=$REPAIR_SOCKS_ENABLED
+  # shellcheck disable=SC2034
+  local port_socks5=$REPAIR_SOCKS_PORT socks_password=$REPAIR_SOCKS_PASSWORD
+  # shellcheck disable=SC2034
+  local legacy_entry_inbound=$REPAIR_LEGACY_INBOUND
   local ss_password=$REPAIR_SS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
@@ -204,13 +213,12 @@ install_repair_config(){
   fi
 }
 
-# True when the config still carries a protocol this version no longer ships:
-# the VLESS inbound removed in 2.0.0, or the plaintext SOCKS5 inbound that
-# 3.0.0 replaced with Shadowsocks-2022. Such a config is technically valid, so
-# repair must rewrite it instead of reporting it as healthy.
+# True when the config still carries a protocol this version no longer ships —
+# only the VLESS inbound removed in 2.0.0. The legacy Shadowsocks-2022 entry is
+# deliberately *not* listed: 4.0.0 preserves it verbatim instead of rewriting it.
 config_contains_removed_protocol(){
   local source=$1
-  jq -e '[.inbounds[]? | select(.type == "vless" or (.type == "socks" and .tag == "socks5-sb"))] | length > 0' "$source" >/dev/null 2>&1
+  jq -e '[.inbounds[]? | select(.type == "vless")] | length > 0' "$source" >/dev/null 2>&1
 }
 
 try_repair_config_source(){
@@ -230,9 +238,8 @@ try_repair_config_source(){
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 VLESS inbound"
   fi
-  if [[ $REPAIR_SOCKS_INBOUND -eq 1 ]]; then
-    REPAIR_SS_PASSWORD=$(generate_ss_password) || return 1
-    label+="，并把 SOCKS5 入站升级为 Shadowsocks-2022（密钥已重新生成，需更新客户端）"
+  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
+    label+="，并保留原有的 Shadowsocks-2022 入口"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
@@ -303,10 +310,12 @@ rebuild_config_in_place(){
   REPAIR_UUID=$uuid
   REPAIR_HY2_PORT=$port_hy2
   # 原地重建 = 全新节点，和新建安装一样只装 hysteria2（可选入口由用户在菜单[8]启用）
-  REPAIR_SS_ENABLED=0
-  REPAIR_SS_PORT=
-  REPAIR_SS_PASSWORD=
-  REPAIR_SOCKS_INBOUND=0
+  REPAIR_SOCKS_ENABLED=0
+  REPAIR_SOCKS_PORT=
+  REPAIR_SOCKS_PASSWORD=
+  REPAIR_LEGACY_INBOUND=
+  REPAIR_LEGACY_PORT=
+  REPAIR_LEGACY_KEY=
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
   candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1

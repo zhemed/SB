@@ -45,12 +45,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SS_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
-[[ $(grep -Fxc 'sb_version="v3.1.4"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 3.1.4"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '3.1.4' ]] ||
-  fail "VERSION file is not 3.1.4"
-grep -Fq -- "当前项目版本：\`3.1.4\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 3.1.4"
+[[ $(grep -Fxc 'sb_version="v4.0.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 4.0.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '4.0.0' ]] ||
+  fail "VERSION file is not 4.0.0"
+grep -Fq -- "当前项目版本：\`4.0.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 4.0.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \

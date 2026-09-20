@@ -11,7 +11,10 @@ CORE_SHA256_AMD64="1951a0785c8b4e1e21e0640227a49528ca772aec3d680061652e3d6b687e0
 CORE_SHA256_ARM64="15b43a0a50b4e6962aca819d4f3055aaac75ca7481350d4aaebe93ed06b7af49"
 CORE_SHA256_ARMV7="691882d609c877f97bc8d6f8645b97d12de81b6f7b89651df66489ef11b4c5d0"
 ACME_ARCHIVE_SHA256="e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
-SS_METHOD="2022-blake3-aes-256-gcm"
+SOCKS_USERNAME="sb"
+# The upstream ("线路机 -> 落地机") hop is a server-to-server Shadowsocks-2022 link;
+# it is independent of the client-facing entry, which is SOCKS5 since 4.0.0.
+RELAY_METHOD="2022-blake3-aes-256-gcm"
 IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"
 SB_DIR="/etc/sb"
 SB_CONFIG="$SB_DIR/sb.json"
@@ -107,7 +110,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v3.1.4"
+sb_version="v4.0.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1796,20 +1799,25 @@ valid_uuid(){
   [[ $1 =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-# Shadowsocks-2022 pre-shared key: exactly 44 base64 characters = 32 raw bytes
-# with padding. sing-box 1.10.7 rejects every other shape at load time
-# ("bad key" for a wrong length, "decode psk: illegal base64 data" for unpadded
-# base64), and clients are stricter still, so only the canonical form is
-# generated and accepted.
+# Shadowsocks-2022 pre-shared key: exactly 44 base64 characters = 32 raw bytes,
+# padded. Since 4.0.0 this is only used by the *upstream* hop (server-to-server),
+# which stays SS-2022; the client-facing entry is SOCKS5.
 valid_ss_password(){
   [[ $1 =~ ^[A-Za-z0-9+/]{43}=$ ]]
 }
 
-generate_ss_password(){
+# SOCKS5 password: 16-128 characters from a shell-safe set. This is a plain
+# shared secret and the protocol sends it in the clear — see the warning the
+# enable flow prints, and the note in README.
+valid_socks_password(){
+  [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
+}
+
+generate_socks_password(){
   local key
-  key=$(openssl rand -base64 32 2>/dev/null) || return 1
+  key=$(openssl rand -hex 24 2>/dev/null) || return 1
   key=${key//$'\n'/}
-  valid_ss_password "$key" || return 1
+  valid_socks_password "$key" || return 1
   printf '%s\n' "$key"
 }
 
@@ -1868,12 +1876,12 @@ random_available_port(){
   done
 }
 
-# Port selection for the optional Shadowsocks-2022 entry (menu [8]).
+# Port selection for the optional SOCKS5 entry (menu [8]).
 # Empty/1 = random, 2 = custom — the same shape the installer uses for its own
 # port question. The result is returned in the global `port`.
 # Returns 0 with `port` set, or 2 when the operator cancelled: a prompt that
 # precedes a live change must always offer a way out.
-choose_ss_port(){
+choose_socks_port(){
   local choice
   while true; do
     yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认"
@@ -1886,7 +1894,7 @@ choose_ss_port(){
         return 0
         ;;
       2)
-        readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535，输入0取消)：" port || return 1
+        readp "\n设置SOCKS5端口 (可输入1-65535，留空随机10000-65535，输入0取消)：" port || return 1
         [[ $port == 0 ]] && return 2
         chooseport tcp
         return $?
@@ -1940,24 +1948,28 @@ insport(){
 # Generate server config JSON
 render_server_config(){
   local output=$1 listen_addr relay_outbound_suffix route_final
-  local ss_inbound_suffix ss_udp_rule
+  local entry_inbounds=
+  local entry_rules=
   [[ -n $output ]] || return 1
   relay_outbound_suffix=
   route_final=direct
-  ss_inbound_suffix=
-  ss_udp_rule=
   listen_addr=$(server_listen_address "$IPV6_SYSCTL_ROOT") || return 1
   [[ -n $listen_addr ]] || return 1
-  # The Shadowsocks-2022 entry is optional and absent by default: a new install
-  # creates only hysteria2, and repair enables it iff the source config has it.
-  # Callers must set ss_entry_enabled=1 explicitly; "unset" means "do not emit".
-  if [[ ${ss_entry_enabled:-0} -eq 1 ]]; then
-    ss_inbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "ss-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "network": "tcp",\n      "method": "%s",\n      "password": "%s"\n    }' \
-      "$listen_addr" "$port_ss" "$SS_METHOD" "$ss_password") || return 1
-    ss_udp_rule=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n')
-    # Command substitution strips the trailing newline; put it back so the rule
-    # keeps its own line (JSON tolerates the merge, readers do not).
-    ss_udp_rule+=$'\n'
+  # The optional TCP entry is absent by default: a new install creates only
+  # hysteria2, and the operator enables the entry from menu [8].
+  if [[ ${socks_entry_enabled:-0} -eq 1 ]]; then
+    entry_inbounds=$(printf ',\n    {\n      "type": "socks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "socks5-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "users": [\n        {\n          "username": "%s",\n          "password": "%s"\n        }\n      ]\n    }' \
+      "$listen_addr" "${port_socks5:-}" "$SOCKS_USERNAME" "${socks_password:-}") || return 1
+    entry_inbounds+=$'\n'
+    entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
+  fi
+  # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is preserved verbatim instead
+  # of being converted or dropped (operator decision 2026-09-20): the raw inbound
+  # object comes from the source config and is re-emitted unchanged.
+  if [[ -n ${legacy_entry_inbound:-} ]]; then
+    entry_inbounds+=$(printf ',\n    %s' "$legacy_entry_inbound") || return 1
+    entry_inbounds+=$'\n'
+    entry_rules+=$(printf '      {\n        "inbound": [\n          "ss-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
   # The optional upstream is re-read from relay.conf on every render, so a
   # rewritten config keeps the relay instead of silently falling back to a
@@ -1966,7 +1978,7 @@ render_server_config(){
     if load_relay_settings; then
       route_final=relay
       relay_outbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s"\n    }' \
-        "$relay_server" "$relay_port" "$SS_METHOD" "$relay_password") || return 1
+        "$relay_server" "$relay_port" "$RELAY_METHOD" "$relay_password") || return 1
     else
       red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
     fi
@@ -2006,7 +2018,7 @@ render_server_config(){
         "certificate_path": "${certificatec_hy2}",
         "key_path": "${certificatep_hy2}"
       }
-    }${ss_inbound_suffix}
+    }${entry_inbounds}
   ],
   "outbounds": [
     {
@@ -2022,7 +2034,7 @@ render_server_config(){
   "route": {
     "final": "${route_final}",
     "rules": [
-${ss_udp_rule}      {
+${entry_rules}      {
         "protocol": [
           "quic",
           "stun"
@@ -2669,8 +2681,19 @@ result(){
     return 1
   fi
   uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
-  # The Shadowsocks-2022 entry is optional, so "no such inbound" is a normal
-  # state rather than a broken config: everything downstream keys off ss_enabled.
+  # The optional TCP entry is SOCKS5 since 4.0.0, and "no such inbound" is a
+  # normal state rather than a broken config: everything keys off socks_enabled.
+  socks_enabled=0
+  socks_port=
+  socks_password=
+  if socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
+    socks_enabled=1
+    socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
+  else
+    socks_password=
+  fi
+  # A Shadowsocks-2022 entry created before 4.0.0 is left untouched by design, so
+  # it keeps its share link and client entries while it exists.
   ss_enabled=0
   ss_port=
   ss_password=
@@ -2686,9 +2709,14 @@ result(){
     red "服务端配置中的节点参数不完整或格式无效"
     return 1
   fi
+  if [[ $socks_enabled -eq 1 ]] &&
+     { ! valid_port "$socks_port" || ! valid_socks_password "$socks_password"; }; then
+    red "服务端配置中的 SOCKS5 节点参数无效"
+    return 1
+  fi
   if [[ $ss_enabled -eq 1 ]] &&
      { ! valid_port "$ss_port" || ! valid_ss_password "$ss_password"; }; then
-    red "服务端配置中的 Shadowsocks-2022 节点参数无效"
+    red "服务端配置中的旧 Shadowsocks-2022 节点参数无效"
     return 1
   fi
   hy2_certificate_json=
@@ -2740,6 +2768,23 @@ reshy2(){
   echo
 }
 
+ressocks5(){
+  local output=${1:-$SB_DIR/socks5.txt}
+  echo
+  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  socks5_link="socks5://$SOCKS_USERNAME:$socks_password@$server_ip:$socks_port#socks5-$hostname"
+  printf '%s\n' "$socks5_link" > "$output" || return 1
+  red "🚀【 SOCKS5 】节点信息如下：" && sleep 2
+  echo
+  echo "分享链接【任意支持 SOCKS5 的程序】"
+  echo -e "${yellow}$socks5_link${plain}"
+  echo
+  echo "二维码"
+  qrencode -o - -t ANSIUTF8 "$socks5_link" || return 1
+  white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+  echo
+}
+
 resss(){
   local output=${1:-$SB_DIR/ss.txt}
   echo
@@ -2747,7 +2792,7 @@ resss(){
   # SIP002 puts base64("method:password") in the userinfo. The raw SS-2022 key
   # contains + / and =, which clients percent-decode inconsistently, so the
   # plain "ss://method:password@host" form must never be emitted.
-  ss_link="ss://$(printf '%s:%s' "$SS_METHOD" "$ss_password" | base64 | tr -d '\r\n')@$server_ip:$ss_port#ss-$hostname"
+  ss_link="ss://$(printf '%s:%s' "$RELAY_METHOD" "$ss_password" | base64 | tr -d '\r\n')@$server_ip:$ss_port#ss-$hostname"
   printf '%s\n' "$ss_link" > "$output" || return 1
   red "🚀【 Shadowsocks-2022 】节点信息如下：" && sleep 2
   echo
@@ -2763,10 +2808,10 @@ resss(){
 # After enabling or changing the optional Shadowsocks-2022 entry the operator
 # needs exactly two things: the share link (sbshare has already written it) and
 # the server-side key. Printing only the port read as "no link and no key".
-print_ss_entry_share(){
-  local password=$1 path="$SB_DIR/ss.txt" link=
+print_socks_entry_share(){
+  local password=$1 path="$SB_DIR/socks5.txt" link=
   echo
-  green "分享链接（客户端导入用；已写入 $path，菜单[3]可重看并出二维码）"
+  green "分享链接（已写入 $path，菜单[3]可重看并出二维码）"
   if managed_regular_file_is_trusted "$path" && [[ -s $path ]]; then
     link=$(cat "$path" 2>/dev/null) || link=
   fi
@@ -2775,12 +2820,16 @@ print_ss_entry_share(){
   else
     yellow "分享文件暂不可用，请用菜单[3]刷新节点配置后重试"
   fi
-  green "服务端密钥（Shadowsocks-2022 PSK）：$password"
+  green "用户名/密码：$SOCKS_USERNAME / $password"
 }
 
 # Client config generation (kept compatible with sing-box 1.10.7)
 sb_client(){
   local sbox_candidate clash_candidate hy2_certificate_field=
+  local socks_outbound_field=
+  local socks_selector_member=
+  local socks_clash_proxy=
+  local socks_clash_member=
   local ss_outbound_field=
   local ss_selector_member=
   local ss_clash_proxy=
@@ -2790,18 +2839,31 @@ sb_client(){
   if [[ -n $hy2_certificate_json ]]; then
     hy2_certificate_field=$(printf ',\n        "certificate": %s' "$hy2_certificate_json")
   fi
-  # Optional Shadowsocks-2022 entry: emit its client pieces only when the server
-  # actually runs that inbound. Order stays SS-2022 first, Hysteria2 second.
-  if [[ $ss_enabled -eq 1 ]]; then
-    ss_outbound_field=$(printf '    {\n      "type": "shadowsocks",\n      "tag": "ss-%s",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
-      "$hostname" "$server_ipcl" "$ss_port" "$SS_METHOD" "$ss_password") || return 1
-    ss_selector_member=$(printf '        "ss-%s",\n' "$hostname") || return 1
-    ss_clash_proxy=$(printf -- '- name: ss-%s\n  type: ss\n  server: %s\n  port: %s\n  cipher: %s\n  password: %s\n  udp: false\n\n' \
-      "$hostname" "$server_ipcl" "$ss_port" "$SS_METHOD" "$ss_password") || return 1
-    ss_clash_member=$(printf '    - ss-%s\n' "$hostname") || return 1
+  # Client pieces are emitted per inbound that actually exists on the server:
+  # the optional SOCKS5 entry, and/or a Shadowsocks-2022 entry created before
+  # 4.0.0 that is deliberately left in place. Order: SOCKS5, SS-2022, Hysteria2.
+  if [[ $socks_enabled -eq 1 ]]; then
+    socks_outbound_field=$(printf '    {\n      "type": "socks",\n      "tag": "socks5-%s",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
+      "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
+    socks_selector_member=$(printf '        "socks5-%s",\n' "$hostname") || return 1
+    socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: %s\n  password: %s\n  udp: false\n\n' \
+      "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
+    socks_clash_member=$(printf '    - socks5-%s\n' "$hostname") || return 1
     # Command substitution eats every trailing newline, so the line breaks the
     # template relies on have to be put back explicitly. Without this the Clash
     # proxies and the group members run into the next line.
+    socks_outbound_field+=$'\n'
+    socks_selector_member+=$'\n'
+    socks_clash_proxy+=$'\n\n'
+    socks_clash_member+=$'\n'
+  fi
+  if [[ $ss_enabled -eq 1 ]]; then
+    ss_outbound_field=$(printf '    {\n      "type": "shadowsocks",\n      "tag": "ss-%s",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
+      "$hostname" "$server_ipcl" "$ss_port" "$RELAY_METHOD" "$ss_password") || return 1
+    ss_selector_member=$(printf '        "ss-%s",\n' "$hostname") || return 1
+    ss_clash_proxy=$(printf -- '- name: ss-%s\n  type: ss\n  server: %s\n  port: %s\n  cipher: %s\n  password: %s\n  udp: false\n\n' \
+      "$hostname" "$server_ipcl" "$ss_port" "$RELAY_METHOD" "$ss_password") || return 1
+    ss_clash_member=$(printf '    - ss-%s\n' "$hostname") || return 1
     ss_outbound_field+=$'\n'
     ss_selector_member+=$'\n'
     ss_clash_proxy+=$'\n\n'
@@ -2934,7 +2996,7 @@ sb_client(){
     "auto_detect_interface": true
   },
   "outbounds": [
-${ss_outbound_field}    {
+${socks_outbound_field}${ss_outbound_field}    {
       "type": "hysteria2",
       "tag": "hy2-$hostname",
       "server": "$cl_hy2_ip",
@@ -2956,7 +3018,7 @@ ${ss_outbound_field}    {
       "type": "selector",
       "default": "hy2-$hostname",
       "outbounds": [
-${ss_selector_member}        "hy2-$hostname"
+${socks_selector_member}${ss_selector_member}        "hy2-$hostname"
       ]
     },
     {
@@ -3015,7 +3077,7 @@ dns:
     - "https://doh.pub/dns-query"
 
 proxies:
-${ss_clash_proxy}- name: hysteria2-$hostname
+${socks_clash_proxy}${ss_clash_proxy}- name: hysteria2-$hostname
   type: hysteria2
   server: $cl_hy2_ip
   port: $hy2_port
@@ -3032,7 +3094,7 @@ proxy-groups:
   type: select
   proxies:
     - hysteria2-$hostname
-${ss_clash_member}    - DIRECT
+${ss_clash_member}${socks_clash_member}    - DIRECT
 
 rules:
   - GEOIP,LAN,DIRECT
@@ -3058,43 +3120,67 @@ remove_saved_ss_link(){
   rm -f -- "$path"
 }
 
+remove_saved_socks_link(){
+  local path="$SB_DIR/socks5.txt"
+  [[ -e $path || -L $path ]] || return 0
+  managed_regular_file_is_trusted "$path" || return 1
+  rm -f -- "$path"
+}
+
 sbshare(){
-  local aggregate_tmp hy2_tmp ss_tmp=
+  local aggregate_tmp hy2_tmp socks_tmp=
+  local ss_tmp=
   if ! result; then
     return 1
   fi
-  # Shadowsocks-2022 is emitted first when it exists, matching the client
-  # configuration order; the optional entry is simply skipped when it is off.
-  if [[ $ss_enabled -eq 1 ]]; then
-    ss_tmp=$(mktemp "$SB_DIR/.ss.XXXXXX") || return 1
-    if ! resss "$ss_tmp"; then
-      rm -f "$ss_tmp"
+  # Share files follow what the server actually runs, in the same order as the
+  # client configuration: SOCKS5 entry, preserved SS-2022 entry, Hysteria2.
+  if [[ $socks_enabled -eq 1 ]]; then
+    socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
+    if ! ressocks5 "$socks_tmp"; then
+      rm -f "$socks_tmp"
       return 1
     fi
   fi
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${ss_tmp:+"$ss_tmp"}; return 1; }
+  if [[ $ss_enabled -eq 1 ]]; then
+    ss_tmp=$(mktemp "$SB_DIR/.ss.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
+    if ! resss "$ss_tmp"; then
+      rm -f "$ss_tmp" ${socks_tmp:+"$socks_tmp"}
+      return 1
+    fi
+  fi
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}; return 1; }
   if ! reshy2 "$hy2_tmp"; then
-    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"}
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}
     return 1
   fi
   aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
-    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"}
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}
     return 1
   }
   if ! {
+    [[ -z $socks_tmp ]] || cat "$socks_tmp"
     [[ -z $ss_tmp ]] || cat "$ss_tmp"
     cat "$hy2_tmp"
   } > "$aggregate_tmp"; then
-    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
     return 1
   fi
-  if ! chmod 600 "$hy2_tmp" "$aggregate_tmp" ${ss_tmp:+"$ss_tmp"}; then
-    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+  if ! chmod 600 "$hy2_tmp" "$aggregate_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"}; then
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
     return 1
   fi
   if ! sb_client; then
-    rm -f "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+    rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"} ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
     return 1
+  fi
+  if [[ -n $socks_tmp ]]; then
+    mv -fT -- "$socks_tmp" "$SB_DIR/socks5.txt" || {
+      rm -f "$socks_tmp" "$hy2_tmp" ${ss_tmp:+"$ss_tmp"} "$aggregate_tmp"
+      return 1
+    }
+  elif ! remove_saved_socks_link; then
+    yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
   if [[ -n $ss_tmp ]]; then
     mv -fT -- "$ss_tmp" "$SB_DIR/ss.txt" || {
@@ -3102,7 +3188,7 @@ sbshare(){
       return 1
     }
   elif ! remove_saved_ss_link; then
-    yellow "Shadowsocks-2022 入口未启用，但遗留的 $SB_DIR/ss.txt 无法删除，请手动检查"
+    yellow "旧的 Shadowsocks-2022 入口不存在，但遗留的 $SB_DIR/ss.txt 无法删除，请手动检查"
   fi
   mv -fT -- "$hy2_tmp" "$SB_DIR/hy2.txt" || { rm -f "$hy2_tmp" "$aggregate_tmp"; return 1; }
   mv -fT -- "$aggregate_tmp" "$SB_DIR/jhdy.txt" || { rm -f "$aggregate_tmp"; return 1; }
@@ -4438,71 +4524,72 @@ changeuuid(){
   done
 }
 
-change_ss_password(){
+change_socks_password(){
   local current_password new_password candidate choice retry commit_status
   if ! sbactive; then
     readp "按回车返回主菜单..."
     return 1
   fi
-  if ! current_password=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前Shadowsocks-2022密钥失败，配置未修改"
+  if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
+    red "读取当前SOCKS5密码失败，配置未修改"
     readp "按回车返回主菜单..."
     return 1
   fi
   echo
-  green "当前Shadowsocks-2022密钥：$current_password"
-  yellow "密钥不可推导：改完必须同步更新所有客户端，否则会全部连不上"
+  green "当前SOCKS5用户名/密码：$SOCKS_USERNAME / $current_password"
+  yellow "改完必须同步更新所有客户端，否则会全部连不上"
   while true; do
-    readp "输入新密钥（44位标准base64，回车随机生成，输入0取消）：" choice || return 1
+    readp "输入新密码（16-128位安全字符，回车随机生成，输入0取消）：" choice || return 1
     if [[ $choice == 0 ]]; then
-      yellow "已取消，密钥未修改"
+      yellow "已取消，密码未修改"
       readp "按回车返回可选功能..."
       return 0
     fi
     if [[ -z $choice ]]; then
-      new_password=$(generate_ss_password) || new_password=
+      new_password=$(generate_socks_password) || new_password=
     else
       new_password=$choice
     fi
-    if ! valid_ss_password "$new_password"; then
-      red "Shadowsocks-2022密钥必须是44位标准base64（32字节密钥，末尾一个=号）"
+    if ! valid_socks_password "$new_password"; then
+      red "SOCKS5密码必须为16-128位，仅可使用字母、数字、点、下划线、波浪号和连字符"
       continue
     fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建Shadowsocks-2022密钥候选配置失败，原配置未修改"
-      readp "按回车重试，输入0返回凭据菜单：" retry || return 1
+      red "创建SOCKS5密码候选配置失败，原配置未修改"
+      readp "按回车重试，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
-    if ! jq --arg password "$new_password" '
-      if ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) != 1
-      then error("ss inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password) = $password
+    if ! jq --arg password "$new_password" --arg username "$SOCKS_USERNAME" '
+      if ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) != 1
+      then error("socks5 inbound missing or duplicated")
+      else (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].username) = $username |
+           (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password) = $password
       end
     ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg password "$new_password" '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .password == $password)] | length) == 1' "$candidate" >/dev/null; then
+      ! jq -e --arg password "$new_password" --arg username "$SOCKS_USERNAME" '([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .users[0].username == $username and .users[0].password == $password)] | length) == 1' "$candidate" >/dev/null; then
       rm -f "$candidate"
-      red "生成Shadowsocks-2022密钥候选配置失败，原配置未修改"
-      readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
+      red "生成SOCKS5密码候选配置失败，原配置未修改"
+      readp "按回车重新输入，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
-      green "Shadowsocks-2022密钥修改成功：${new_password}"
-      print_ss_entry_share "$new_password" || true
+      green "SOCKS5密码修改成功：${new_password}"
+      print_socks_entry_share "$new_password" || true
       readp "按回车返回可选功能..."
       return 0
     else
       commit_status=$?
     fi
     if [[ $commit_status -eq 2 ]]; then
-      red "Shadowsocks-2022密钥修改失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回凭据菜单..."
+      red "SOCKS5密码修改失败且自动回滚失败，请先检查服务和备份配置"
+      readp "按回车返回可选功能..."
       return 2
     fi
-    red "Shadowsocks-2022密钥修改失败，原配置未修改或已恢复"
-    readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
+    red "SOCKS5密码修改失败，原配置未修改或已恢复"
+    readp "按回车重新输入，输入0取消：" retry || return 1
     [[ $retry == 0 ]] && return 1
   done
 }
@@ -4533,7 +4620,7 @@ relay_upstream_reachable(){
 
 relay_candidate_with_upstream(){
   local output=$1 server=$2 port=$3 password=$4
-  jq --arg server "$server" --argjson port "$port" --arg password "$password" --arg method "$SS_METHOD" '
+  jq --arg server "$server" --argjson port "$port" --arg password "$password" --arg method "$RELAY_METHOD" '
     if ([.outbounds[] | select(.tag == "relay")] | length) > 1 then
       error("duplicated relay outbound")
     else
@@ -4698,7 +4785,7 @@ manage_relay(){
     if ! relay_settings_present; then
       green "当前上游：${yellow}未配置${green}（全部直连出网）"
     elif load_relay_settings; then
-      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（$SS_METHOD）"
+      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（$RELAY_METHOD）"
     else
       red "上游状态文件存在但无法解析：$(relay_config_path)"
     fi
@@ -4717,19 +4804,33 @@ manage_relay(){
 }
 
 # Optional features (menu [8])
-ss_entry_is_enabled(){
+socks_entry_is_enabled(){
+  [[ -s $SB_CONFIG ]] &&
+    jq -e '([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1' \
+      "$SB_CONFIG" >/dev/null 2>&1
+}
+
+socks_entry_port(){
+  jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' \
+    "$SB_CONFIG" 2>/dev/null
+}
+
+socks_entry_password(){
+  jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' \
+    "$SB_CONFIG" 2>/dev/null
+}
+
+# The Shadowsocks-2022 entry that 3.0.0-3.1.4 created is never converted and
+# never dropped by the script. It stays visible here so the operator can remove
+# it themselves once they have switched to SOCKS5.
+legacy_ss_entry_is_enabled(){
   [[ -s $SB_CONFIG ]] &&
     jq -e '([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) == 1' \
       "$SB_CONFIG" >/dev/null 2>&1
 }
 
-ss_entry_port(){
+legacy_ss_entry_port(){
   jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port' \
-    "$SB_CONFIG" 2>/dev/null
-}
-
-ss_entry_password(){
-  jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password' \
     "$SB_CONFIG" 2>/dev/null
 }
 
@@ -4737,29 +4838,40 @@ ss_entry_password(){
 # its UDP-block rule are removed before being (re)inserted, so applying them twice
 # yields the same configuration. They patch the live config with jq rather than
 # re-rendering, because a render would need every dynamic-scope node parameter.
-ss_entry_candidate_with_inbound(){
+socks_entry_candidate_with_inbound(){
   local output=$1 port=$2 password=$3 listen=$4
-  jq --argjson port "$port" --arg password "$password" --arg method "$SS_METHOD" --arg listen "$listen" '
-    if ([.inbounds[] | select(.tag == "ss-sb")] | length) > 1 then
-      error("duplicated ss-sb inbound")
+  jq --argjson port "$port" --arg password "$password" --arg username "$SOCKS_USERNAME" --arg listen "$listen" '
+    if ([.inbounds[] | select(.tag == "socks5-sb")] | length) > 1 then
+      error("duplicated socks5-sb inbound")
     else
-      .inbounds = ([.inbounds[] | select(.tag != "ss-sb")] +
-        [{type: "shadowsocks", sniff: true, sniff_override_destination: true, tag: "ss-sb",
-          listen: $listen, listen_port: $port, network: "tcp",
-          method: $method, password: $password}]) |
-      .route.rules = ([{inbound: ["ss-sb"], network: "udp", outbound: "block"}] +
-        [.route.rules[]? | select(((.inbound // []) | index("ss-sb")) == null)]) |
+      .inbounds = ([.inbounds[] | select(.tag != "socks5-sb")] +
+        [{type: "socks", sniff: true, sniff_override_destination: true, tag: "socks5-sb",
+          listen: $listen, listen_port: $port,
+          users: [{username: $username, password: $password}]}]) |
+      .route.rules = ([{inbound: ["socks5-sb"], network: "udp", outbound: "block"}] +
+        [.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) == null)]) |
       .route.final = (.route.final // "direct")
     end
   ' "$SB_CONFIG" > "$output" || return 1
-  jq -e --argjson port "$port" --arg password "$password" '
-    ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .network == "tcp" and
-                           .listen_port == $port and .password == $password)] | length) == 1 and
-    ([.route.rules[] | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 1
+  jq -e --argjson port "$port" --arg password "$password" --arg username "$SOCKS_USERNAME" '
+    ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .listen_port == $port and
+                           .users[0].username == $username and .users[0].password == $password)] | length) == 1 and
+    ([.route.rules[] | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1
   ' "$output" >/dev/null
 }
 
-ss_entry_candidate_without_inbound(){
+socks_entry_candidate_without_inbound(){
+  local output=$1
+  jq '
+    .inbounds = [.inbounds[] | select(.tag != "socks5-sb")] |
+    .route.rules = [.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) == null)]
+  ' "$SB_CONFIG" > "$output" || return 1
+  jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 0 and
+         ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 0' \
+    "$output" >/dev/null
+}
+
+legacy_ss_candidate_without_inbound(){
   local output=$1
   jq '
     .inbounds = [.inbounds[] | select(.tag != "ss-sb")] |
@@ -4770,14 +4882,14 @@ ss_entry_candidate_without_inbound(){
     "$output" >/dev/null
 }
 
-enable_ss_entry(){
+enable_socks_entry(){
   local port password listen_addr candidate commit_status retry
   if ! sbactive; then
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ss_entry_is_enabled; then
-    yellow "Shadowsocks-2022 入口已经启用；改端口用【3】，改密钥用【4】"
+  if socks_entry_is_enabled; then
+    yellow "SOCKS5 入口已经启用；改端口用【3】，改密码用【4】"
     readp "按回车返回可选功能..."
     return 0
   fi
@@ -4787,9 +4899,10 @@ enable_ss_entry(){
     return 1
   fi
   echo
-  green "启用 Shadowsocks-2022 入口（TCP 备用入口，需自行放行其 TCP 端口）"
+  green "启用 SOCKS5 入口（TCP 备用入口，需自行放行其 TCP 端口）"
+  yellow "注意：SOCKS5 不加密——口令与流量明文，握手特征明显、容易被识别与封锁，只应在可信链路上使用"
   while true; do
-    choose_ss_port
+    choose_socks_port
     case $? in
       0) : ;;
       2)
@@ -4799,9 +4912,9 @@ enable_ss_entry(){
         ;;
       *) return 1 ;;
     esac
-    password=$(generate_ss_password) || password=
-    if ! valid_ss_password "$password"; then
-      red "生成Shadowsocks-2022密钥失败"
+    password=$(generate_socks_password) || password=
+    if ! valid_socks_password "$password"; then
+      red "生成SOCKS5密码失败"
       readp "按回车返回可选功能..."
       return 1
     fi
@@ -4810,19 +4923,18 @@ enable_ss_entry(){
       readp "按回车返回可选功能..."
       return 1
     fi
-    if ! ss_entry_candidate_with_inbound "$candidate" "$port" "$password" "$listen_addr" ||
+    if ! socks_entry_candidate_with_inbound "$candidate" "$port" "$password" "$listen_addr" ||
        ! chmod 600 "$candidate"; then
       rm -f "$candidate"
       red "生成候选配置失败，原配置未修改"
-      readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+      readp "按回车重新输入，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
-      green "Shadowsocks-2022 入口已启用：端口 ${port}/tcp"
-      print_ss_entry_share "$password"
-      yellow "密钥不可推导，丢失只能重签；协议用时间戳抗重放，请确保本机 NTP 正常"
+      green "SOCKS5 入口已启用：端口 ${port}/tcp"
+      print_socks_entry_share "$password"
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
       readp "按回车返回可选功能..."
       return 0
@@ -4835,25 +4947,25 @@ enable_ss_entry(){
       return 2
     fi
     red "启用失败，原配置未修改或已恢复"
-    readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+    readp "按回车重新输入，输入0取消：" retry || return 1
     [[ $retry == 0 ]] && return 1
   done
 }
 
-disable_ss_entry(){
+disable_socks_entry(){
   local candidate commit_status
   if ! sbactive; then
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! ss_entry_is_enabled; then
-    yellow "Shadowsocks-2022 入口当前未启用，无需停用"
+  if ! socks_entry_is_enabled; then
+    yellow "SOCKS5 入口当前未启用，无需停用"
     readp "按回车返回可选功能..."
     return 0
   fi
   echo
   yellow "停用后使用这个入口的客户端会立即连不上，分享文件与客户端配置也会去掉它"
-  if ! confirm_yes "确认停用 Shadowsocks-2022 入口？[回车/y 确认，n 取消]："; then
+  if ! confirm_yes "确认停用 SOCKS5 入口？[回车/y 确认，n 取消]："; then
     yellow "已取消，未做任何修改"
     readp "按回车返回可选功能..."
     return 0
@@ -4863,7 +4975,7 @@ disable_ss_entry(){
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! ss_entry_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
+  if ! socks_entry_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
     rm -f "$candidate"
     red "生成候选配置失败，原配置未修改"
     readp "按回车返回可选功能..."
@@ -4871,7 +4983,7 @@ disable_ss_entry(){
   fi
   if commit_config "$candidate"; then
     refresh_share_files_after_change || true
-    green "Shadowsocks-2022 入口已停用"
+    green "SOCKS5 入口已停用"
     readp "按回车返回可选功能..."
     return 0
   else
@@ -4887,21 +4999,21 @@ disable_ss_entry(){
   return 1
 }
 
-change_ss_port(){
+change_socks_port(){
   local current nport port candidate retry commit_status
   if ! sbactive; then
     readp "按回车返回可选功能..."
     return 1
   fi
-  if ! current=$(ss_entry_port); then
-    yellow "Shadowsocks-2022 入口当前未启用，请先用【1】启用"
+  if ! current=$(socks_entry_port); then
+    yellow "SOCKS5 入口当前未启用，请先用【1】启用"
     readp "按回车返回可选功能..."
     return 0
   fi
   echo
-  green "当前 Shadowsocks-2022 端口：$current/tcp"
+  green "当前 SOCKS5 端口：$current/tcp"
   while true; do
-    readp "请输入新Shadowsocks-2022端口 (1-65535，留空随机10000-65535，输入0取消): " nport || return 1
+    readp "请输入新SOCKS5端口 (1-65535，留空随机10000-65535，输入0取消): " nport || return 1
     if [[ $nport == 0 ]]; then
       yellow "已取消，端口未修改"
       readp "按回车返回可选功能..."
@@ -4915,21 +5027,21 @@ change_ss_port(){
       return 1
     fi
     if ! jq --argjson p "$port" '
-      if ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) != 1
-      then error("ss-sb inbound missing or duplicated")
-      else (.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port) = $p end
+      if ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) != 1
+      then error("socks5 inbound missing or duplicated")
+      else (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port) = $p end
     ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
+      ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
       rm -f "$candidate"
       red "生成端口候选配置失败，原配置未修改"
-      readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+      readp "按回车重新输入，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
     if commit_config "$candidate"; then
       refresh_share_files_after_change || true
-      green "Shadowsocks-2022端口修改成功：$port"
-      print_ss_entry_share "$(ss_entry_password)" || true
+      green "SOCKS5端口修改成功：$port"
+      print_socks_entry_share "$(socks_entry_password)" || true
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
       readp "按回车返回可选功能..."
       return 0
@@ -4942,48 +5054,104 @@ change_ss_port(){
       return 2
     fi
     red "端口修改失败，原配置未修改或已恢复"
-    readp "按回车重新输入，输入0返回可选功能：" retry || return 1
+    readp "按回车重新输入，输入0取消：" retry || return 1
     [[ $retry == 0 ]] && return 1
   done
 }
 
-manage_ss_entry(){
-  local choice port
+disable_legacy_ss_entry(){
+  local candidate commit_status current
+  if ! sbactive; then
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if ! current=$(legacy_ss_entry_port); then
+    yellow "当前没有旧的 Shadowsocks-2022 入口"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
+  echo
+  yellow "这是 4.0.0 之前创建、已停止维护的 Shadowsocks-2022 入口（端口 ${current}/tcp）"
+  yellow "移除后使用它的客户端会立即连不上；如果还没切到 SOCKS5，请先启用 SOCKS5 入口"
+  if ! confirm_yes "确认移除旧的 Shadowsocks-2022 入口？[回车/y 确认，n 取消]："; then
+    yellow "已取消，未做任何修改"
+    readp "按回车返回可选功能..."
+    return 0
+  fi
+  if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
+    red "创建候选配置失败，原配置未修改"
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if ! legacy_ss_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
+    rm -f "$candidate"
+    red "生成候选配置失败，原配置未修改"
+    readp "按回车返回可选功能..."
+    return 1
+  fi
+  if commit_config "$candidate"; then
+    refresh_share_files_after_change || true
+    green "旧的 Shadowsocks-2022 入口已移除"
+    readp "按回车返回可选功能..."
+    return 0
+  else
+    commit_status=$?
+  fi
+  if [[ $commit_status -eq 2 ]]; then
+    red "移除失败且自动回滚失败，请先检查服务和备份配置"
+    readp "按回车返回可选功能..."
+    return 2
+  fi
+  red "移除失败，原配置未修改或已恢复"
+  readp "按回车返回可选功能..."
+  return 1
+}
+
+manage_socks_entry(){
+  local choice port legacy_port
   while true; do
     echo
-    green "Shadowsocks-2022 入口"
-    if port=$(ss_entry_port); then
+    green "SOCKS5 入口"
+    if port=$(socks_entry_port); then
       green "当前状态：${yellow}已启用${green}（TCP 端口 ${port}）"
     else
       green "当前状态：${yellow}未启用${green}"
     fi
-    yellow "这是一个可选的 TCP 备用入口；默认不安装，启用后需自行放行其 TCP 端口"
+    yellow "这是一个可选的 TCP 备用入口（明文，见 README 的协议说明）；启用后需自行放行其 TCP 端口"
+    if legacy_port=$(legacy_ss_entry_port); then
+      yellow "另有一个旧的 Shadowsocks-2022 入口在运行（端口 ${legacy_port}），4.0.0 起不再维护，可用【5】移除"
+    fi
     green "1：启用（默认随机端口，可选自定义）"
     green "2：停用"
     green "3：更改端口"
-    green "4：更改密钥"
+    green "4：更改密码"
+    green "5：移除旧的 Shadowsocks-2022 入口"
     green "0：返回可选功能"
-    readp "请选择【0-4】：" choice || return 1
+    readp "请选择【0-5】：" choice || return 1
     case "$choice" in
-      1) enable_ss_entry ;;
-      2) disable_ss_entry ;;
-      3) change_ss_port ;;
-      4) change_ss_password ;;
+      1) enable_socks_entry ;;
+      2) disable_socks_entry ;;
+      3) change_socks_port ;;
+      4) change_socks_password ;;
+      5) disable_legacy_ss_entry ;;
       ""|0) return 0 ;;
-      *) red "请输入0、1、2、3或4" ;;
+      *) red "请输入0、1、2、3、4或5" ;;
     esac
   done
 }
 
 manage_optional_features(){
-  local choice port
+  local choice port legacy_port
   while true; do
     echo
     green "可选功能"
-    if port=$(ss_entry_port); then
-      green "1：Shadowsocks-2022 入口 ${yellow}已启用（端口 $port）${plain}"
+    if port=$(socks_entry_port); then
+      green "1：SOCKS5 入口 ${yellow}已启用（端口 $port）${plain}"
     else
-      green "1：Shadowsocks-2022 入口 ${yellow}未启用${plain}"
+      green "1：SOCKS5 入口 ${yellow}未启用${plain}"
+    fi
+    if legacy_port=$(legacy_ss_entry_port); then
+      yellow "   旧的 Shadowsocks-2022 入口仍在运行（端口 $legacy_port）"
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"
@@ -4993,7 +5161,7 @@ manage_optional_features(){
     green "0：返回主菜单"
     readp "请选择【0-2】：" choice || return 1
     case "$choice" in
-      1) manage_ss_entry ;;
+      1) manage_socks_entry ;;
       2) manage_relay ;;
       ""|0) return 0 ;;
       *) red "请输入0、1或2" ;;
@@ -5390,11 +5558,13 @@ install_dependencies(){
 load_repair_config_values(){
   local source=$1
   REPAIR_UUID=
-  REPAIR_SS_PORT=
   REPAIR_HY2_PORT=
-  REPAIR_SS_PASSWORD=
-  REPAIR_SS_ENABLED=0
-  REPAIR_SOCKS_INBOUND=0
+  REPAIR_SOCKS_PORT=
+  REPAIR_SOCKS_PASSWORD=
+  REPAIR_SOCKS_ENABLED=0
+  REPAIR_LEGACY_INBOUND=
+  REPAIR_LEGACY_PORT=
+  REPAIR_LEGACY_KEY=
   REPAIR_STRATEGY=
   REPAIR_CERT_PATH=
   REPAIR_KEY_PATH=
@@ -5403,37 +5573,41 @@ load_repair_config_values(){
   jq -e '
     type == "object" and (.inbounds | type == "array") and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
-    ([.inbounds[] | select((.type == "shadowsocks" and .tag == "ss-sb") or
-                           (.type == "socks" and .tag == "socks5-sb"))] | length) <= 1 and
+    ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) <= 1 and
+    ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) <= 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  # The Shadowsocks-2022 entry is optional, so three shapes are all valid:
-  #   ss-sb present  -> keep port and key as they are
-  #   socks5-sb only -> pre-3.0.0 shape; rewritten as ss-sb with a fresh key
-  #                     (REPAIR_SOCKS_INBOUND=1, minted in try_repair_config_source)
-  #   neither        -> the 3.1.0 default; stays that way, never auto-added
+  # The optional TCP entry (SOCKS5 since 4.0.0) and a pre-4.0.0 Shadowsocks-2022
+  # entry are both valid, and may even coexist during a transition:
+  #   socks5-sb -> keep port and password
+  #   ss-sb     -> preserved verbatim (operator decision 2026-09-20: never
+  #                converted, never dropped behind their back)
+  #   neither   -> stays that way, never auto-added
+  if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
+    REPAIR_SOCKS_ENABLED=1
+    REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
+    REPAIR_SOCKS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password | select(type == "string")' "$source") || return 1
+  fi
   if jq -e '[.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_SS_ENABLED=1
-    REPAIR_SS_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_SS_PASSWORD=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
-  elif jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
-    REPAIR_SS_ENABLED=1
-    REPAIR_SOCKS_INBOUND=1
-    REPAIR_SS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
-    REPAIR_SS_PASSWORD=
+    REPAIR_LEGACY_INBOUND=$(jq -c '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")' "$source") || return 1
+    REPAIR_LEGACY_PORT=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$source") || return 1
+    REPAIR_LEGACY_KEY=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .password | select(type == "string")' "$source") || return 1
+    [[ -n $REPAIR_LEGACY_INBOUND ]] || return 1
   fi
   REPAIR_STRATEGY=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy | select(type == "string")' "$source") || return 1
   REPAIR_CERT_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path | select(type == "string")' "$source") || return 1
   REPAIR_KEY_PATH=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path | select(type == "string")' "$source") || return 1
   valid_uuid "$REPAIR_UUID" || return 1
   valid_port "$REPAIR_HY2_PORT" || return 1
-  if [[ $REPAIR_SS_ENABLED -eq 1 ]]; then
-    valid_port "$REPAIR_SS_PORT" || return 1
-    if [[ $REPAIR_SOCKS_INBOUND -eq 0 ]]; then
-      valid_ss_password "$REPAIR_SS_PASSWORD" || return 1
-    fi
+  if [[ $REPAIR_SOCKS_ENABLED -eq 1 ]]; then
+    valid_port "$REPAIR_SOCKS_PORT" || return 1
+    valid_socks_password "$REPAIR_SOCKS_PASSWORD" || return 1
+  fi
+  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
+    valid_port "$REPAIR_LEGACY_PORT" || return 1
+    valid_ss_password "$REPAIR_LEGACY_KEY" || return 1
   fi
   [[ $REPAIR_STRATEGY =~ ^(prefer_ipv4|prefer_ipv6|ipv4_only|ipv6_only)$ ]] || return 1
   if [[ $REPAIR_CERT_PATH == "$SB_DIR/cert.pem" && $REPAIR_KEY_PATH == "$SB_DIR/private.key" ]]; then
@@ -5447,12 +5621,15 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  local uuid=$REPAIR_UUID port_ss=$REPAIR_SS_PORT
   # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
-  local port_hy2=$REPAIR_HY2_PORT
+  local uuid=$REPAIR_UUID port_hy2=$REPAIR_HY2_PORT
   # shellcheck disable=SC2034
-  local ss_entry_enabled=$REPAIR_SS_ENABLED
+  local socks_entry_enabled=$REPAIR_SOCKS_ENABLED
+  # shellcheck disable=SC2034
+  local port_socks5=$REPAIR_SOCKS_PORT socks_password=$REPAIR_SOCKS_PASSWORD
+  # shellcheck disable=SC2034
+  local legacy_entry_inbound=$REPAIR_LEGACY_INBOUND
   local ss_password=$REPAIR_SS_PASSWORD ipv=$REPAIR_STRATEGY
   # shellcheck disable=SC2034
   local certificatec_hy2=$REPAIR_CERT_PATH certificatep_hy2=$REPAIR_KEY_PATH
@@ -5591,13 +5768,12 @@ install_repair_config(){
   fi
 }
 
-# True when the config still carries a protocol this version no longer ships:
-# the VLESS inbound removed in 2.0.0, or the plaintext SOCKS5 inbound that
-# 3.0.0 replaced with Shadowsocks-2022. Such a config is technically valid, so
-# repair must rewrite it instead of reporting it as healthy.
+# True when the config still carries a protocol this version no longer ships —
+# only the VLESS inbound removed in 2.0.0. The legacy Shadowsocks-2022 entry is
+# deliberately *not* listed: 4.0.0 preserves it verbatim instead of rewriting it.
 config_contains_removed_protocol(){
   local source=$1
-  jq -e '[.inbounds[]? | select(.type == "vless" or (.type == "socks" and .tag == "socks5-sb"))] | length > 0' "$source" >/dev/null 2>&1
+  jq -e '[.inbounds[]? | select(.type == "vless")] | length > 0' "$source" >/dev/null 2>&1
 }
 
 try_repair_config_source(){
@@ -5617,9 +5793,8 @@ try_repair_config_source(){
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 VLESS inbound"
   fi
-  if [[ $REPAIR_SOCKS_INBOUND -eq 1 ]]; then
-    REPAIR_SS_PASSWORD=$(generate_ss_password) || return 1
-    label+="，并把 SOCKS5 入站升级为 Shadowsocks-2022（密钥已重新生成，需更新客户端）"
+  if [[ -n $REPAIR_LEGACY_INBOUND ]]; then
+    label+="，并保留原有的 Shadowsocks-2022 入口"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||
@@ -5690,10 +5865,12 @@ rebuild_config_in_place(){
   REPAIR_UUID=$uuid
   REPAIR_HY2_PORT=$port_hy2
   # 原地重建 = 全新节点，和新建安装一样只装 hysteria2（可选入口由用户在菜单[8]启用）
-  REPAIR_SS_ENABLED=0
-  REPAIR_SS_PORT=
-  REPAIR_SS_PASSWORD=
-  REPAIR_SOCKS_INBOUND=0
+  REPAIR_SOCKS_ENABLED=0
+  REPAIR_SOCKS_PORT=
+  REPAIR_SOCKS_PASSWORD=
+  REPAIR_LEGACY_INBOUND=
+  REPAIR_LEGACY_PORT=
+  REPAIR_LEGACY_KEY=
   REPAIR_STRATEGY=$ipv
   REPAIR_CERT_FELL_BACK=0
   candidate=$(mktemp "$SB_DIR/.sb.json.rebuild.XXXXXX") || return 1
@@ -6289,7 +6466,7 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
-  yellow "安全提示：本次只安装 Hysteria2；需要 Shadowsocks-2022 的 TCP 入口时，在菜单[8]可选功能里启用"
+  yellow "安全提示：本次只安装 Hysteria2；需要 TCP 备用入口时到菜单[8]启用（SOCKS5，明文，仅限可信链路）"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
