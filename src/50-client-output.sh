@@ -75,12 +75,12 @@ result(){
   server_ipcl=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
   if valid_ipv4 "$server_ipcl"; then
     if [[ $server_ip != "$server_ipcl" ]]; then
-      red "两个公网IP文件不一致（$SB_DIR/server_ip.log / server_ipcl.log），请用菜单[3]重新检测"
+      red "两个公网IP文件不一致，请用菜单[3]重新检测"
       return 1
     fi
   elif valid_ipv6 "$server_ipcl"; then
     if [[ $server_ip != "[$server_ipcl]" ]]; then
-      red "两个公网IP文件不一致（IPv6 缺少方括号），请用菜单[3]重新检测"
+      red "公网IP文件的 IPv6 格式不一致，请用菜单[3]重新检测"
       return 1
     fi
   else
@@ -100,7 +100,7 @@ result(){
     if ! socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) ||
        ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
       # 入站还在、字段被改坏：保留已生成的 socks5.txt，只跳过它，Hysteria2 节点照常出。
-      red "服务端配置里的 SOCKS5 入口缺少口令或端口，本次不生成它的节点；请用菜单[8]重设一次"
+      red "SOCKS5 入口缺少口令或端口，本次不生成它的节点；请用菜单[8]重设一次"
       socks_password=
       socks_port=
       socks_keep_previous_share=1
@@ -534,7 +534,7 @@ sbshare(){
       return 1
     }
   elif [[ ${socks_keep_previous_share:-0} -eq 1 ]]; then
-    yellow "本次没有重写 $SB_DIR/socks5.txt（入口配置异常，保留原文件）"
+    yellow "本次未重写 $SB_DIR/socks5.txt（入口配置异常，保留原文件）"
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi

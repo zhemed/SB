@@ -513,27 +513,7 @@ remove_acme_renew_cron(){
     return
   fi
   filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
-    red "crontab 过滤结果异常，已中止，原任务未修改"
-    return 1
-  }
-  printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
-  load_current_crontab || return 1
-  if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
-    return 1
-  fi
-  remove_acme_renew_artifacts
-}
-
-remove_current_acme_cron(){
-  local current filtered
-  load_current_crontab || return 1
-  current=$CURRENT_CRONTAB
-  if ! crontab_has_acme_entries "$current"; then
-    remove_acme_renew_artifacts
-    return 0
-  fi
-  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
-    red "crontab 过滤结果异常，已中止，原任务未修改"
+    red "crontab 过滤异常，已中止，原任务未修改"
     return 1
   }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
@@ -553,7 +533,7 @@ remove_all_managed_crons(){
     return
   fi
   filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries filter_restart_cron_entries) || {
-    red "crontab 过滤结果异常，已中止，原任务未修改"
+    red "crontab 过滤异常，已中止，原任务未修改"
     return 1
   }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
@@ -590,7 +570,7 @@ setup_acme_renew_cron(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
-    red "crontab 过滤结果异常，已中止，原任务未修改"
+    red "crontab 过滤异常，已中止，原任务未修改"
     return 1
   }
   entry=$(acme_renew_cron_entry)

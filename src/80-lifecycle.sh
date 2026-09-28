@@ -156,7 +156,7 @@ cronsb(){
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
   filtered=$(filter_crontab_checked "$current" filter_restart_cron_entries) || {
-    red "crontab 过滤结果异常，已中止，原任务未修改"
+    red "crontab 过滤异常，已中止，原任务未修改"
     return 1
   }
   if command -v apk >/dev/null 2>&1; then

@@ -556,10 +556,7 @@ change_cert_mode(){
 
 change_ports(){
   local nport port candidate menu retry commit_status hy2_port port_hy2
-  if ! sbactive; then
-    readp "按回车返回主菜单..."
-    return 1
-  fi
+  service_must_be_active "主菜单" || return 1
   if ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前端口失败，配置未修改"
     readp "按回车返回主菜单..."
@@ -592,19 +589,12 @@ change_ports(){
           0) ;;
           *) continue ;;
         esac
-        if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-          red "创建端口候选配置失败，原配置未修改"
-          readp "按回车重试，输入0返回主菜单：" retry || return 1
-          [[ $retry == 0 ]] && return 1
-          continue
-        fi
-        if ! jq --argjson p "$port" '
+        # shellcheck disable=SC2016
+        if ! config_candidate candidate jq_rewrite --argjson p "$port" '
           if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
           then error("hy2 inbound missing or duplicated")
           else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port) = $p end
-        ' "$SB_CONFIG" > "$candidate" || \
-          ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
-          rm -f "$candidate"
+        '; then
           red "生成端口候选配置失败，原配置未修改"
           readp "按回车重新输入，输入0返回主菜单：" retry || return 1
           [[ $retry == 0 ]] && return 1
@@ -644,10 +634,7 @@ refresh_share_files_after_change(){
 
 changeuuid(){
   local olduuid uuid candidate choice retry commit_status
-  if ! sbactive; then
-    readp "按回车返回凭据菜单..."
-    return 1
-  fi
+  service_must_be_active "凭据菜单" || return 1
   if ! olduuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前UUID失败，配置未修改"
     readp "按回车返回凭据菜单..."
@@ -673,20 +660,13 @@ changeuuid(){
       readp "按回车返回凭据菜单..."
       return 0
     fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建UUID候选配置失败，原配置未修改"
-      readp "按回车重试，输入0返回凭据菜单：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! jq --arg uuid "$uuid" '
+    # shellcheck disable=SC2016
+    if ! config_candidate candidate jq_rewrite --arg uuid "$uuid" '
       if ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) != 1
       then error("required inbound missing or duplicated")
       else (.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password) = $uuid
       end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg uuid "$uuid" '([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb" and .users[0].password == $uuid)] | length == 1)' "$candidate" >/dev/null; then
-      rm -f "$candidate"
+    '; then
       red "生成UUID候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0返回凭据菜单：" retry || return 1
       [[ $retry == 0 ]] && return 1
@@ -713,10 +693,7 @@ changeuuid(){
 
 change_socks_password(){
   local current_password new_password candidate choice retry commit_status
-  if ! sbactive; then
-    readp "按回车返回 SOCKS5 入口..."
-    return 1
-  fi
+  service_must_be_active " SOCKS5 入口" || return 1
   if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     yellow "SOCKS5 入口当前未启用，请先用【1】启用"
     readp "按回车返回 SOCKS5 入口..."
@@ -741,21 +718,14 @@ change_socks_password(){
       red "SOCKS5密码必须为16-128位，仅可使用字母、数字、点、下划线、波浪号和连字符"
       continue
     fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建SOCKS5密码候选配置失败，原配置未修改"
-      readp "按回车重试，输入0取消：" retry || return 1
-      [[ $retry == 0 ]] && return 1
-      continue
-    fi
-    if ! jq --arg password "$new_password" --arg username "$SOCKS_USERNAME" '
+    # shellcheck disable=SC2016
+    if ! config_candidate candidate jq_rewrite --arg password "$new_password" --arg username "$SOCKS_USERNAME" '
       if ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) != 1
       then error("socks5 inbound missing or duplicated")
       else (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].username) = $username |
            (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password) = $password
       end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --arg password "$new_password" --arg username "$SOCKS_USERNAME" '([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .users[0].username == $username and .users[0].password == $password)] | length) == 1' "$candidate" >/dev/null; then
-      rm -f "$candidate"
+    '; then
       red "生成SOCKS5密码候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
@@ -833,10 +803,7 @@ relay_candidate_without_upstream(){
 
 set_relay_upstream(){
   local server port password candidate commit_status retry
-  if ! sbactive; then
-    readp "按回车返回上游/中转菜单..."
-    return 1
-  fi
+  service_must_be_active "上游/中转菜单" || return 1
   echo
   while true; do
     readp "请输入落地机地址（IPv4/IPv6/域名，输入0取消）：" server || return 1
@@ -878,13 +845,7 @@ set_relay_upstream(){
         return 0
       fi
     fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建上游候选配置失败，原配置未修改"
-      readp "按回车返回上游/中转菜单..."
-      return 1
-    fi
-    if ! relay_candidate_with_upstream "$candidate" "$server" "$port" "$password" || ! chmod 600 "$candidate"; then
-      rm -f "$candidate"
+    if ! config_candidate candidate relay_candidate_with_upstream "$server" "$port" "$password"; then
       red "生成上游候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0返回上游/中转菜单：" retry || return 1
       [[ $retry == 0 ]] && return 1
@@ -917,9 +878,9 @@ set_relay_upstream(){
       commit_status=$?
       if [[ $had_settings -eq 1 ]]; then
         save_relay_settings "$old_server" "$old_port" "$old_password" ||
-          red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+          red "上游状态文件回滚失败，请检查 $(relay_config_path)"
       else
-        clear_relay_settings || red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+        clear_relay_settings || red "上游状态文件回滚失败，请检查 $(relay_config_path)"
       fi
     fi
     if [[ $commit_status -eq 2 ]]; then
@@ -935,10 +896,7 @@ set_relay_upstream(){
 
 clear_relay_upstream(){
   local candidate commit_status
-  if ! sbactive; then
-    readp "按回车返回上游/中转菜单..."
-    return 1
-  fi
+  service_must_be_active "上游/中转菜单" || return 1
   if ! relay_settings_present &&
      ! jq -e '[.outbounds[]? | select(.tag == "relay")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
     yellow "当前没有配置上游，无需清除"
@@ -951,13 +909,7 @@ clear_relay_upstream(){
     readp "按回车返回上游/中转菜单..."
     return 0
   fi
-  if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-    red "创建上游候选配置失败，原配置未修改"
-    readp "按回车返回上游/中转菜单..."
-    return 1
-  fi
-  if ! relay_candidate_without_upstream "$candidate" || ! chmod 600 "$candidate"; then
-    rm -f "$candidate"
+  if ! config_candidate candidate relay_candidate_without_upstream; then
     red "生成上游候选配置失败，原配置未修改"
     readp "按回车返回上游/中转菜单..."
     return 1
@@ -976,7 +928,7 @@ clear_relay_upstream(){
   else
     commit_status=$?
     save_relay_settings "$saved_server" "$saved_port" "$saved_password" ||
-      red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+      red "上游状态文件回滚失败，请检查 $(relay_config_path)"
   fi
   if [[ $commit_status -eq 2 ]]; then
     red "清除上游失败且自动回滚失败，请先检查服务和备份配置"
@@ -1073,10 +1025,7 @@ socks_entry_candidate_without_inbound(){
 
 enable_socks_entry(){
   local port password listen_addr candidate commit_status retry
-  if ! sbactive; then
-    readp "按回车返回 SOCKS5 入口..."
-    return 1
-  fi
+  service_must_be_active " SOCKS5 入口" || return 1
   if socks_entry_is_enabled; then
     yellow "SOCKS5 入口已经启用；改端口用【3】，改密码用【4】"
     readp "按回车返回 SOCKS5 入口..."
@@ -1106,14 +1055,7 @@ enable_socks_entry(){
       readp "按回车返回 SOCKS5 入口..."
       return 1
     fi
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建候选配置失败，原配置未修改"
-      readp "按回车返回 SOCKS5 入口..."
-      return 1
-    fi
-    if ! socks_entry_candidate_with_inbound "$candidate" "$port" "$password" "$listen_addr" ||
-       ! chmod 600 "$candidate"; then
-      rm -f "$candidate"
+    if ! config_candidate candidate socks_entry_candidate_with_inbound "$port" "$password" "$listen_addr"; then
       red "生成候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
@@ -1141,11 +1083,8 @@ enable_socks_entry(){
 }
 
 disable_socks_entry(){
-  local candidate commit_status
-  if ! sbactive; then
-    readp "按回车返回 SOCKS5 入口..."
-    return 1
-  fi
+  local candidate
+  service_must_be_active " SOCKS5 入口" || return 1
   if ! socks_entry_is_enabled; then
     yellow "SOCKS5 入口当前未启用，无需停用"
     readp "按回车返回 SOCKS5 入口..."
@@ -1158,41 +1097,26 @@ disable_socks_entry(){
     readp "按回车返回 SOCKS5 入口..."
     return 0
   fi
-  if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-    red "创建候选配置失败，原配置未修改"
-    readp "按回车返回 SOCKS5 入口..."
-    return 1
-  fi
-  if ! socks_entry_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
-    rm -f "$candidate"
+  if ! config_candidate candidate socks_entry_candidate_without_inbound; then
     red "生成候选配置失败，原配置未修改"
     readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
-  if commit_config "$candidate"; then
-    refresh_share_files_after_change || true
-    green "SOCKS5 入口已停用"
-    readp "按回车返回 SOCKS5 入口..."
-    return 0
-  else
-    commit_status=$?
-  fi
-  if [[ $commit_status -eq 2 ]]; then
-    red "停用失败且自动回滚失败，请先检查服务和备份配置"
-    readp "按回车返回 SOCKS5 入口..."
-    return 2
-  fi
-  red "停用失败，原配置未修改或已恢复"
-  readp "按回车返回 SOCKS5 入口..."
-  return 1
+  commit_config_candidate "$candidate" "SOCKS5 入口"
+  case $? in
+    0)
+      refresh_share_files_after_change || true
+      green "SOCKS5 入口已停用"
+      readp "按回车返回 SOCKS5 入口..."
+      return 0
+      ;;
+    *) return 2 ;;
+  esac
 }
 
 change_socks_port(){
   local current nport port candidate retry commit_status
-  if ! sbactive; then
-    readp "按回车返回 SOCKS5 入口..."
-    return 1
-  fi
+  service_must_be_active " SOCKS5 入口" || return 1
   if ! current=$(socks_entry_port); then
     yellow "SOCKS5 入口当前未启用，请先用【1】启用"
     readp "按回车返回 SOCKS5 入口..."
@@ -1218,18 +1142,12 @@ change_socks_port(){
       0) ;;
       *) continue ;;
     esac
-    if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
-      red "创建端口候选配置失败，原配置未修改"
-      readp "按回车返回 SOCKS5 入口..."
-      return 1
-    fi
-    if ! jq --argjson p "$port" '
+    # shellcheck disable=SC2016
+    if ! config_candidate candidate jq_rewrite --argjson p "$port" '
       if ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) != 1
       then error("socks5 inbound missing or duplicated")
       else (.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port) = $p end
-    ' "$SB_CONFIG" > "$candidate" || \
-      ! jq -e --argjson p "$port" '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .listen_port == $p)] | length == 1' "$candidate" >/dev/null; then
-      rm -f "$candidate"
+    '; then
       red "生成端口候选配置失败，原配置未修改"
       readp "按回车重新输入，输入0取消：" retry || return 1
       [[ $retry == 0 ]] && return 1
@@ -1254,6 +1172,55 @@ change_socks_port(){
     readp "按回车重新输入，输入0取消：" retry || return 1
     [[ $retry == 0 ]] && return 1
   done
+}
+
+# 下面两个帮手抽的是重复了九遍的样板：建候选 → 用给定的改写器写它 → 校验权限 →
+# 提交并统一处理失败/回滚/重试。改写器既可以是函数（第一个参数是候选路径），
+# 也可以是 jq_rewrite 后面跟 jq 参数。
+# 需要服务在跑才能改配置：不在跑就提示返回，调用方一句 `|| return 1` 即可。
+service_must_be_active(){
+  sbactive && return 0
+  readp "按回车返回${1}..."
+  return 1
+}
+
+config_candidate(){
+  local var=$1 tmp status=0
+  shift
+  [[ $# -ge 1 ]] || return 1
+  tmp=$(mktemp "$SB_DIR/.sb.json.XXXXXX") || return 1
+  if [[ $1 == jq_rewrite ]]; then
+    shift
+    jq "$@" "$SB_CONFIG" > "$tmp" || status=1
+  else
+    "$@" "$tmp" || status=1
+  fi
+  if [[ $status -eq 0 ]] && ! chmod 600 "$tmp"; then
+    status=1
+  fi
+  if [[ $status -ne 0 ]]; then
+    rm -f "$tmp"
+    return 1
+  fi
+  printf -v "$var" '%s' "$tmp"
+}
+
+# 返回：0 已提交；2 提交与自动回滚都失败；3 用户放弃重试；1 提交失败可重试
+commit_config_candidate(){
+  local candidate=$1 menu=$2 status retry
+  if commit_config "$candidate"; then
+    return 0
+  fi
+  status=$?
+  if [[ $status -eq 2 ]]; then
+    red "提交失败且回滚也失败，请检查服务与备份"
+    readp "按回车返回${menu}..."
+    return 2
+  fi
+  red "提交失败，原配置未修改或已恢复"
+  readp "按回车重试，输入0取消：" retry || return 3
+  [[ $retry == 0 ]] && return 3
+  return 1
 }
 
 manage_socks_entry(){
