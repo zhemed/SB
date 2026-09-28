@@ -226,14 +226,27 @@ socks_share_printing(){
     yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
     FLOW_MESSAGES=
     print_socks_entry_share "$key" > "$out" || return 1
-    [[ $FLOW_MESSAGES == *'分享文件暂不可用'* ]] || return 1
+    [[ $FLOW_MESSAGES == *'尚未刷新或是旧的'* ]] || return 1
     [[ $FLOW_MESSAGES == *"用户名/密码：$SOCKS_USERNAME / $key"* ]] || return 1
+    # A share file that matches the live port, password, host and IP is shown as-is...
     printf '%s\n' 'socks5://sb:Socks.Pass_Two-7890~X@1.2.3.4:443#socks5-host' > "$SB_DIR/socks5.txt"
     chmod 600 "$SB_DIR/socks5.txt"
+    # shellcheck disable=SC2317
+    socks_entry_port(){ printf '%s\n' 443; }
+    # shellcheck disable=SC2034
+    server_ip=1.2.3.4
+    # shellcheck disable=SC2034
+    hostname=host
     FLOW_MESSAGES=
     print_socks_entry_share "$key" > "$out" || return 1
     grep -q 'socks5://sb:Socks.Pass_Two-7890~X@1.2.3.4:443#socks5-host' "$out" || return 1
     [[ $FLOW_MESSAGES == *"$SB_DIR/socks5.txt"* ]] || return 1
+    # ...but one written with an older password is not offered as the current link.
+    printf '%s\n' 'socks5://sb:Stale.Pass-0000000@1.2.3.4:443#socks5-host' > "$SB_DIR/socks5.txt"
+    FLOW_MESSAGES=
+    print_socks_entry_share "$key" > "$out" || return 1
+    if grep -q 'Stale.Pass-0000000' "$out"; then return 1; fi
+    [[ $FLOW_MESSAGES == *'尚未刷新或是旧的'* ]] || return 1
     return 0
   )
 }
@@ -466,6 +479,35 @@ empty_answer_disables_the_entry(){
 }
 expect_success "Enter (the default answer) disables the optional entry" \
   empty_answer_disables_the_entry
+
+# Both unit generators must emit the ownership marker: every ownership/repair check
+# greps for that exact line, so losing it makes the script refuse its own service
+# (this happened once — the comment sweep deleted it from the generated content).
+service_units_carry_the_marker(){
+  (
+    local dir="$TEMP_DIR/units" rc=0
+    mkdir -p "$dir"
+    SB_SERVICE=sbtest
+    SYSTEMD_UNIT="$dir/sbtest.service"
+    OPENRC_UNIT="$dir/sbtest.init"
+    # shellcheck disable=SC2034
+    if ! write_service_definition 2>/dev/null; then
+      # mktemp writes next to /etc/systemd/system, which needs root; skip when not
+      return 0
+    fi
+    # shellcheck disable=SC2031
+    if [[ -s $SYSTEMD_UNIT ]]; then
+      grep -Fqx '# Managed by sb.sh' "$SYSTEMD_UNIT" || rc=1
+      systemd_unit_is_owned "$SYSTEMD_UNIT" "$SB_DIR" "$SB_BIN" "$SB_CONFIG" '^# Managed by sb\.sh$' || rc=1
+    else
+      grep -Fqx '# Managed by sb.sh' "$OPENRC_UNIT" || rc=1
+      openrc_unit_is_owned "$OPENRC_UNIT" "$SB_BIN" "$SB_CONFIG" '^# Managed by sb\.sh$' || rc=1
+    fi
+    return "$rc"
+  )
+}
+expect_success "generated service units carry the ownership marker" \
+  service_units_carry_the_marker
 
 relay_candidate_builders(){
   (

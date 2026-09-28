@@ -220,6 +220,27 @@ crontab_has_restart_entries(){
   printf '%s\n' "$content" | grep -Fq "$RESTART_CRON_MARKER"
 }
 
+# 过滤 crontab 前先把结果落到临时文件：管道里任何一级出错（退出码 >=2）都必须中止，
+# 不能把半截内容写回 crontab 把别人的定时任务冲掉。
+filter_crontab_checked(){
+  local current=$1 tmp out code
+  local -a stage_status=()
+  shift
+  [[ $# -ge 1 ]] || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/sb-crontab.XXXXXX") || return 1
+  printf '%s\n' "$current" | "$@" > "$tmp"
+  stage_status=("${PIPESTATUS[@]}")
+  for code in "${stage_status[@]}"; do
+    if [[ $code -gt 1 ]]; then
+      rm -f -- "$tmp"
+      return 2
+    fi
+  done
+  out=$(cat "$tmp") || { rm -f -- "$tmp"; return 1; }
+  rm -f -- "$tmp"
+  printf '%s\n' "$out"
+}
+
 filter_restart_cron_entries(){
   grep -Fv "$RESTART_CRON_MARKER"
 }
@@ -450,7 +471,10 @@ remove_acme_renew_cron(){
     remove_acme_renew_artifacts
     return
   fi
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
   if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
@@ -467,7 +491,10 @@ remove_current_acme_cron(){
     remove_acme_renew_artifacts
     return 0
   fi
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
   if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
@@ -484,7 +511,10 @@ remove_all_managed_crons(){
     remove_acme_renew_artifacts
     return
   fi
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries | filter_restart_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries filter_restart_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
   if crontab_has_acme_entries "$CURRENT_CRONTAB" || crontab_has_restart_entries "$CURRENT_CRONTAB"; then
@@ -518,7 +548,10 @@ setup_acme_renew_cron(){
   write_acme_renew_runner || return 1
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   entry=$(acme_renew_cron_entry)
   { printf '%s\n' "$filtered"; printf '%s\n' "$entry"; } | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1

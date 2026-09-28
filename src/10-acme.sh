@@ -741,7 +741,9 @@ fi
 if rollback_deployment; then
   restart_managed_service >/dev/null 2>&1 || true
   sleep 1
-  managed_service_active >/dev/null 2>&1 || true
+  if ! managed_service_active >/dev/null 2>&1; then
+    echo "sb: certificate rollback finished but the service is not running" >&2
+  fi
 fi
 exit 1
 ACMERELOAD
@@ -840,9 +842,22 @@ register_acme_certificate_deployment(){
       --reloadcmd "$ACME_RELOAD"; then
     return 1
   fi
+  local staged_fingerprint deployed_fingerprint
   managed_acme_live_layout_is_valid &&
-    acme_deployment_config_is_current "$identity" &&
-    load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
+    acme_deployment_config_is_current "$identity" || return 1
+  # 只有"当前生效的证书就是这次安装进暂存区的那份"才算部署成功：hook 失败会回滚到
+  # 旧 generation，旧证书本身仍然有效，只校验它会把回滚误判成成功。
+  # certificate_fingerprint 读的是全局 cert_file（仓库既有约定），不吃参数。
+  # shellcheck disable=SC2034
+  cert_file=$ACME_STAGE_CERT
+  staged_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
+  # shellcheck disable=SC2034
+  cert_file=$ACME_CERT
+  deployed_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
+  # shellcheck disable=SC2034
+  cert_file=
+  [[ -n $staged_fingerprint && $staged_fingerprint == "$deployed_fingerprint" ]] || return 1
+  load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
     [[ $CERT_META_STATE == valid ]] &&
     certificate_identity_matches "$ACME_CERT" "$identity"
 }
@@ -1245,14 +1260,14 @@ issue_cloudflare_certificate(){
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
-    readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 1
+    readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 3
     if normalize_acme_domain "$domain_input"; then
       break
     fi
     red "域名格式错误，请输入 example.com、sub.example.com 或 *.example.com"
   done
   while true; do
-    readp "请输入 Cloudflare Account ID：" account_id || return 1
+    readp "请输入 Cloudflare Account ID：" account_id || return 3
     account_id=${account_id,,}
     account_id=$(printf '%s' "$account_id" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     if valid_cloudflare_account_id "$account_id"; then
@@ -1264,7 +1279,7 @@ issue_cloudflare_certificate(){
   yellow "API Token 需要 Zone / DNS / Edit 与 Zone / Zone / Read 权限"
   yellow "请把 Token 的 Zone 资源限制到目标域名"
   yellow "Token 将由 acme.sh 保存在仅 root 可读的 $ACME_HOME 配置中，用于自动续期"
-  readp "请输入 Cloudflare API Token：" cf_token || return 1
+  readp "请输入 Cloudflare API Token：" cf_token || return 3
   if [[ -z $cf_token ]]; then
     red "API Token 不能为空"
     return 1

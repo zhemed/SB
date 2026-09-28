@@ -242,6 +242,7 @@ write_service_definition(){
     unit_tmp=$(mktemp "/etc/init.d/.${SB_SERVICE}.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 #!/sbin/openrc-run
+# Managed by sb.sh
 description="sb sing-box service"
 command="$SB_BIN"
 command_args="run -c $SB_CONFIG"
@@ -260,6 +261,7 @@ EOF
     unit_tmp=$(mktemp "/etc/systemd/system/.${SB_SERVICE}.service.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 [Unit]
+# Managed by sb.sh
 Description=sb sing-box service
 After=network.target nss-lookup.target
 [Service]
@@ -268,7 +270,7 @@ WorkingDirectory=$SB_DIR
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 ExecStart=$SB_BIN run -c $SB_CONFIG
-ExecReload=/usr/bin/kill -HUP \$MAINPID
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=infinity
@@ -441,11 +443,6 @@ save_last_good_config(){
     rm -f "$candidate"
     return 1
   fi
-}
-
-installed_config_is_valid(){
-  installed_core_is_current && [[ -s $SB_CONFIG ]] || return 1
-  "$SB_BIN" check -c "$SB_CONFIG" >/dev/null 2>&1
 }
 
 cleanup_service(){

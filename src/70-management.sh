@@ -22,6 +22,7 @@ activate_managed_certificate(){
   CERT_ACTIVATION_MAINTENANCE_OK=1
   if ! load_certificate_metadata "$cert" "$key" || [[ $CERT_META_STATE != valid ]]; then
     red "目标证书无效、已过期或与私钥不匹配，拒绝切换"
+    yellow "若是证书文件不存在，请先用菜单[2]修复生成"
     return 1
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX") || return 1
@@ -315,10 +316,19 @@ restore_previous_active_acme(){
 apply_new_cloudflare_certificate(){
   local activation_status backup_path
   certificate_action_service_ready || return 1
-  if ! issue_cloudflare_certificate 0 1; then
-    red "新证书申请失败，当前证书未改变"
-    return 1
-  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
+  issue_cloudflare_certificate 0 1
+  case $? in
+    0) ;;
+    3)
+      yellow "已取消，未做任何修改"
+      return 0
+      ;;
+    *)
+      red "新证书申请失败，当前证书未改变"
+      return 1
+      ;;
+  esac
   if cert_acme; then
     if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
       finish_acme_replacement || true
@@ -362,35 +372,47 @@ replace_active_acme_certificate(){
     return 1
   fi
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  if issue_cloudflare_certificate 0 1 1; then
-    if cert_acme; then
-      if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
-        finish_acme_replacement || true
-        if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-          green "ACME 证书与 Cloudflare 凭据更换完成"
-        else
-          yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
-        fi
-        return 0
-      else
-        activation_status=$?
-      fi
-    else
-      activation_status=1
-    fi
-    if [[ $activation_status -eq 2 ]]; then
-      backup_path=$ACME_STATE_BACKUP
-      ACME_STATE_BACKUP=
+  issue_cloudflare_certificate 0 1 1
+  case $? in
+    0) ;;
+    3)
       ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
-      red "配置切换与自动回滚均失败；已保留新 ACME 状态，避免破坏当前配置引用"
-      yellow "更换前的 ACME 状态备份保留在：$backup_path"
-      return 2
+      discard_acme_state || yellow "清理解除备份失败，请手动检查 $SB_DIR"
+      yellow "已取消，未做任何修改"
+      return 0
+      ;;
+    *)
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+      rollback_new_acme_state || true
+      red "新证书申请失败，当前证书未改变"
+      return 1
+      ;;
+  esac
+  if cert_acme; then
+    if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+      finish_acme_replacement || true
+      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+        green "ACME 证书与 Cloudflare 凭据更换完成"
+      else
+        yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+      fi
+      return 0
+    else
+      activation_status=$?
     fi
-    red "新证书已签发，但服务切换失败"
-    rollback_new_acme_state || true
-  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
-    rollback_new_acme_state || true
+  else
+    activation_status=1
   fi
+  if [[ $activation_status -eq 2 ]]; then
+    backup_path=$ACME_STATE_BACKUP
+    ACME_STATE_BACKUP=
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    red "配置切换与自动回滚均失败；已保留新 ACME 状态，避免破坏当前配置引用"
+    yellow "更换前的 ACME 状态备份保留在：$backup_path"
+    return 2
+  fi
+  red "新证书已签发，但服务切换失败"
+  rollback_new_acme_state || true
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
   red "新证书申请或切换失败"
   restore_previous_active_acme "$old_identity" || true
@@ -689,7 +711,8 @@ change_socks_password(){
     return 1
   fi
   if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前SOCKS5密码失败，配置未修改"
+    yellow "SOCKS5 入口当前未启用，请先用【1】启用"
+    readp "按回车返回 SOCKS5 入口..."
     readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
@@ -783,7 +806,7 @@ relay_candidate_with_upstream(){
     else
       .outbounds = ([.outbounds[] | select(.tag != "relay")] +
         [{type: "socks", tag: "relay", server: $server, server_port: $port,
-          version: "5", username: $username, password: $password}]) |
+          version: "5", username: $username, password: $password, network: "tcp"}]) |
       .route.final = "relay"
     end
   ' "$SB_CONFIG" > "$output" || return 1
@@ -841,7 +864,7 @@ set_relay_upstream(){
       continue
     fi
     if ! relay_upstream_reachable "$server" "$port"; then
-      yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动或地址填错）"
+      yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动、地址填错或落地机密码不对）"
       yellow "启用后所有出网流量都会走它，上游不通等于断网；清除上游可立即恢复直连"
       if ! confirm_yes "上游不可达，仍要保存并切换出网？[回车/y 确认，n 取消]："; then
         yellow "已取消，未做任何修改"
@@ -861,18 +884,37 @@ set_relay_upstream(){
       [[ $retry == 0 ]] && return 1
       continue
     fi
-    if commit_config "$candidate"; then
-      if save_relay_settings "$server" "$port" "$password"; then
-        green "上游已启用：${server}:${port}"
-        yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "落地机要已启用 SOCKS5 入口（用户名固定 ${SOCKS_USERNAME}）"
+    local had_settings=0
+    # shellcheck disable=SC2034
+    local old_server='' old_port='' old_password=''
+    if relay_settings_present; then
+      had_settings=1
+      if load_relay_settings; then
+        old_server=$relay_server old_port=$relay_port old_password=$relay_password
       else
-        red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
+        had_settings=0
       fi
+    fi
+    if ! save_relay_settings "$server" "$port" "$password"; then
+      rm -f "$candidate"
+      red "上游状态文件写入失败，本次未修改任何东西"
+      readp "按回车返回上游/中转菜单..."
+      return 1
+    fi
+    if commit_config "$candidate"; then
+      green "上游已启用：${server}:${port}"
+      yellow "出网流量已交给落地机；清除上游可恢复直连"
+      yellow "落地机要已启用 SOCKS5 入口（用户名固定 ${SOCKS_USERNAME}）"
       readp "按回车返回上游/中转菜单..."
       return 0
     else
       commit_status=$?
+      if [[ $had_settings -eq 1 ]]; then
+        save_relay_settings "$old_server" "$old_port" "$old_password" ||
+          red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+      else
+        clear_relay_settings || red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+      fi
     fi
     if [[ $commit_status -eq 2 ]]; then
       red "上游设置失败且自动回滚失败，请先检查服务和备份配置"
@@ -914,16 +956,21 @@ clear_relay_upstream(){
     readp "按回车返回上游/中转菜单..."
     return 1
   fi
+  local saved_server=$relay_server saved_port=$relay_port saved_password=$relay_password
+  if ! clear_relay_settings; then
+    rm -f "$candidate"
+    red "上游状态文件删除失败，本次未修改任何东西"
+    readp "按回车返回上游/中转菜单..."
+    return 1
+  fi
   if commit_config "$candidate"; then
-    if clear_relay_settings; then
-      green "上游已清除，出网恢复直连"
-    else
-      red "服务端已恢复直连，但上游状态文件删除失败，请手动检查 $(relay_config_path)"
-    fi
+    green "上游已清除，出网恢复直连"
     readp "按回车返回上游/中转菜单..."
     return 0
   else
     commit_status=$?
+    save_relay_settings "$saved_server" "$saved_port" "$saved_password" ||
+      red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
   fi
   if [[ $commit_status -eq 2 ]]; then
     red "清除上游失败且自动回滚失败，请先检查服务和备份配置"
@@ -1242,7 +1289,7 @@ manage_optional_features(){
     fi
     if retired_port=$(retired_ss_entry_port); then
       yellow "   警告：配置里还有一个 4.0.0 之前创建的旧入口（端口 $retired_port），本版本已不再支持"
-      yellow "   下次重写配置（改端口/凭据、修复）会移除它，仍在用它连接的人会断开"
+      yellow "   只有用菜单[2]修复或重装重写配置时才会移除它，仍在用它连接的人会断开"
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"

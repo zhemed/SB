@@ -1022,7 +1022,9 @@ fi
 if rollback_deployment; then
   restart_managed_service >/dev/null 2>&1 || true
   sleep 1
-  managed_service_active >/dev/null 2>&1 || true
+  if ! managed_service_active >/dev/null 2>&1; then
+    echo "sb: certificate rollback finished but the service is not running" >&2
+  fi
 fi
 exit 1
 ACMERELOAD
@@ -1121,9 +1123,22 @@ register_acme_certificate_deployment(){
       --reloadcmd "$ACME_RELOAD"; then
     return 1
   fi
+  local staged_fingerprint deployed_fingerprint
   managed_acme_live_layout_is_valid &&
-    acme_deployment_config_is_current "$identity" &&
-    load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
+    acme_deployment_config_is_current "$identity" || return 1
+  # 只有"当前生效的证书就是这次安装进暂存区的那份"才算部署成功：hook 失败会回滚到
+  # 旧 generation，旧证书本身仍然有效，只校验它会把回滚误判成成功。
+  # certificate_fingerprint 读的是全局 cert_file（仓库既有约定），不吃参数。
+  # shellcheck disable=SC2034
+  cert_file=$ACME_STAGE_CERT
+  staged_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
+  # shellcheck disable=SC2034
+  cert_file=$ACME_CERT
+  deployed_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
+  # shellcheck disable=SC2034
+  cert_file=
+  [[ -n $staged_fingerprint && $staged_fingerprint == "$deployed_fingerprint" ]] || return 1
+  load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
     [[ $CERT_META_STATE == valid ]] &&
     certificate_identity_matches "$ACME_CERT" "$identity"
 }
@@ -1526,14 +1541,14 @@ issue_cloudflare_certificate(){
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
-    readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 1
+    readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 3
     if normalize_acme_domain "$domain_input"; then
       break
     fi
     red "域名格式错误，请输入 example.com、sub.example.com 或 *.example.com"
   done
   while true; do
-    readp "请输入 Cloudflare Account ID：" account_id || return 1
+    readp "请输入 Cloudflare Account ID：" account_id || return 3
     account_id=${account_id,,}
     account_id=$(printf '%s' "$account_id" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
     if valid_cloudflare_account_id "$account_id"; then
@@ -1545,7 +1560,7 @@ issue_cloudflare_certificate(){
   yellow "API Token 需要 Zone / DNS / Edit 与 Zone / Zone / Read 权限"
   yellow "请把 Token 的 Zone 资源限制到目标域名"
   yellow "Token 将由 acme.sh 保存在仅 root 可读的 $ACME_HOME 配置中，用于自动续期"
-  readp "请输入 Cloudflare API Token：" cf_token || return 1
+  readp "请输入 Cloudflare API Token：" cf_token || return 3
   if [[ -z $cf_token ]]; then
     red "API Token 不能为空"
     return 1
@@ -1931,6 +1946,7 @@ render_server_config(){
       "$listen_addr" "${port_socks5:-}" "$SOCKS_USERNAME" "${socks_password:-}") || return 1
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
+    entry_rules+=$'\n'
   fi
   if retired_ss_port=$(retired_ss_entry_port); then
     yellow "当前配置里还有一个 4.0.0 之前创建的旧入口（端口 ${retired_ss_port}），本版本已不再支持"
@@ -1939,14 +1955,14 @@ render_server_config(){
   if relay_settings_present; then
     if load_relay_settings; then
       route_final=relay
-      relay_outbound_suffix=$(printf ',\n    {\n      "type": "socks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s"\n    }' \
+      relay_outbound_suffix=$(printf ',\n    {\n      "type": "socks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    }' \
         "$relay_server" "$relay_port" "$SOCKS_USERNAME" "$relay_password") || return 1
     else
       red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
       yellow "上游凭据是落地机 SOCKS5 入口的密码；旧版填的密钥格式已不再支持，请在菜单[8]上游/中转里重新设置一次"
     fi
   elif [[ -s $SB_CONFIG ]] &&
-       jq -e '[.outbounds[]? | select(.type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
+       jq -e '[.outbounds[]? | select(.tag == "relay" or .type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
     yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"
     yellow "如需继续中转，请在菜单[8]上游/中转里重新设置一次"
   fi
@@ -2269,6 +2285,7 @@ write_service_definition(){
     unit_tmp=$(mktemp "/etc/init.d/.${SB_SERVICE}.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 #!/sbin/openrc-run
+# Managed by sb.sh
 description="sb sing-box service"
 command="$SB_BIN"
 command_args="run -c $SB_CONFIG"
@@ -2287,6 +2304,7 @@ EOF
     unit_tmp=$(mktemp "/etc/systemd/system/.${SB_SERVICE}.service.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 [Unit]
+# Managed by sb.sh
 Description=sb sing-box service
 After=network.target nss-lookup.target
 [Service]
@@ -2295,7 +2313,7 @@ WorkingDirectory=$SB_DIR
 CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_NET_RAW
 ExecStart=$SB_BIN run -c $SB_CONFIG
-ExecReload=/usr/bin/kill -HUP \$MAINPID
+ExecReload=/bin/kill -HUP \$MAINPID
 Restart=on-failure
 RestartSec=10
 LimitNOFILE=infinity
@@ -2470,11 +2488,6 @@ save_last_good_config(){
   fi
 }
 
-installed_config_is_valid(){
-  installed_core_is_current && [[ -s $SB_CONFIG ]] || return 1
-  "$SB_BIN" check -c "$SB_CONFIG" >/dev/null 2>&1
-}
-
 cleanup_service(){
   local failed=0
   service_name_conflict && return 1
@@ -2572,8 +2585,8 @@ ipuuid(){
     while true; do
       readp "请选择【1-2】：" menu
       case "$menu" in
-        ""|1) save_server_ip "$v4"; break ;;
-        2) save_server_ip "$v6"; break ;;
+        ""|1) save_server_ip "$v4" || return 1; break ;;
+        2) save_server_ip "$v6" || return 1; break ;;
         *) red "请输入1或2" ;;
       esac
     done
@@ -2621,25 +2634,44 @@ result(){
   server_ip=$(cat "$SB_DIR/server_ip.log" 2>/dev/null)
   server_ipcl=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
   if valid_ipv4 "$server_ipcl"; then
-    [[ $server_ip == "$server_ipcl" ]] || return 1
+    if [[ $server_ip != "$server_ipcl" ]]; then
+      red "两个公网IP文件不一致（$SB_DIR/server_ip.log / server_ipcl.log），请用菜单[3]重新检测"
+      return 1
+    fi
   elif valid_ipv6 "$server_ipcl"; then
-    [[ $server_ip == "[$server_ipcl]" ]] || return 1
+    if [[ $server_ip != "[$server_ipcl]" ]]; then
+      red "两个公网IP文件不一致（IPv6 缺少方括号），请用菜单[3]重新检测"
+      return 1
+    fi
   else
     red "保存的公网IP格式无效"
     return 1
   fi
-  uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
+  if ! uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
+    red "服务端配置里读不到 Hysteria2 口令，无法生成节点"
+    return 1
+  fi
+  # 入口是否存在按入站本身判定（与菜单里的判定同口径）：口令读不到是配置被改坏，
+  # 必须报出来，不能静默当"没启用"——那会把还能用的 socks5.txt 一起删掉。
   socks_enabled=0
   socks_port=
   socks_password=
-  if socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
+  if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$SB_CONFIG" >/dev/null 2>&1; then
     socks_enabled=1
-    socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  else
-    socks_password=
+    if ! socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) ||
+       ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
+      red "服务端配置里的 SOCKS5 入口缺少口令或端口，请用菜单[8]重设一次"
+      return 1
+    fi
   fi
-  hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
+  if ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
+    red "服务端配置里读不到 Hysteria2 端口，无法生成节点"
+    return 1
+  fi
+  if ! hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null); then
+    red "服务端配置里读不到 Hysteria2 证书路径，无法生成节点"
+    return 1
+  fi
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
     red "服务端配置中的节点参数不完整或格式无效"
     return 1
@@ -2659,9 +2691,14 @@ result(){
       return 1
     fi
     SHA256=$(openssl x509 -in "$SB_DIR/cert.pem" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
-    [[ $SHA256 =~ ^[0-9A-Fa-f]{64}$ ]] || return 1
-    hy2_certificate_json=$(jq -Rs . < "$SB_DIR/cert.pem") || return 1
-    [[ -n $hy2_certificate_json ]] || return 1
+    if [[ ! $SHA256 =~ ^[0-9A-Fa-f]{64}$ ]]; then
+      red "读取自签证书指纹失败，不能生成节点"
+      return 1
+    fi
+    if ! hy2_certificate_json=$(jq -Rs . < "$SB_DIR/cert.pem") || [[ -z $hy2_certificate_json ]]; then
+      red "读取自签证书内容失败，不能生成节点"
+      return 1
+    fi
     hy2_clash_ca="  ca-str: |"$'\n'"$(sed 's/^/    /' "$SB_DIR/cert.pem")"
     atomic_write_private_text "$SB_DIR/SHA256.txt" "$SHA256" || return 1
     hy2_name=www.bing.com
@@ -2669,6 +2706,9 @@ result(){
     cl_hy2_ip=$server_ipcl
   else
     SHA256=""
+    if [[ -e $SB_DIR/SHA256.txt ]]; then
+      rm -f -- "$SB_DIR/SHA256.txt" || yellow "旧的指纹文件 $SB_DIR/SHA256.txt 无法删除，请手动检查"
+    fi
     if ! ym=$(detect_acme_identity); then
       red "Acme证书身份无法确认，不能生成Hysteria2节点"
       return 1
@@ -2716,16 +2756,15 @@ ressocks5(){
 }
 
 print_socks_entry_share(){
-  local password=$1 path="$SB_DIR/socks5.txt" link=
+  local password=$1 path="$SB_DIR/socks5.txt" port=
   echo
-  green "分享链接（已写入 $path，菜单[3]可重看并出二维码）"
-  if managed_regular_file_is_trusted "$path" && [[ -s $path ]]; then
-    link=$(cat "$path" 2>/dev/null) || link=
-  fi
-  if [[ -n $link ]]; then
-    echo -e "${yellow}$link${plain}"
+  if port=$(socks_entry_port) && [[ -n $port ]] &&
+     managed_regular_file_is_trusted "$path" && [[ -s $path ]] &&
+     [[ $(cat "$path" 2>/dev/null) == "socks5://$SOCKS_USERNAME:$password@$server_ip:$port#socks5-$hostname" ]]; then
+    green "分享链接（已写入 $path，菜单[3]可重看并出二维码）"
+    echo -e "${yellow}$(cat "$path" 2>/dev/null)${plain}"
   else
-    yellow "分享文件暂不可用，请用菜单[3]刷新节点配置后重试"
+    yellow "分享文件尚未刷新或是旧的（里面可能还是上一个口令），请用菜单[3]重看链接与二维码"
   fi
   green "用户名/密码：$SOCKS_USERNAME / $password"
 }
@@ -2736,7 +2775,6 @@ sb_client(){
   local socks_selector_member=
   local socks_clash_proxy=
   local socks_clash_member=
-  local socks_clash_member=
   sbox_candidate=$(mktemp "$SB_DIR/.sbox.json.XXXXXX") || return 1
   clash_candidate=$(mktemp "$SB_DIR/.clash.yaml.XXXXXX") || { rm -f "$sbox_candidate"; return 1; }
   if [[ -n $hy2_certificate_json ]]; then
@@ -2746,7 +2784,7 @@ sb_client(){
     socks_outbound_field=$(printf '    {\n      "type": "socks",\n      "tag": "socks5-%s",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
     socks_selector_member=$(printf '        "socks5-%s",\n' "$hostname") || return 1
-    socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: %s\n  password: %s\n  udp: false\n\n' \
+    socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: "%s"\n  password: "%s"\n  udp: false\n\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
     socks_clash_member=$(printf '    - socks5-%s\n' "$hostname") || return 1
     socks_outbound_field+=$'\n'
@@ -3016,18 +3054,18 @@ sbshare(){
     return 1
   fi
   if [[ $socks_enabled -eq 1 ]]; then
-    socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
+    socks_tmp=$(mktemp "$SB_DIR/.socks5.txt.XXXXXX") || return 1
     if ! ressocks5 "$socks_tmp"; then
       rm -f "$socks_tmp"
       return 1
     fi
   fi
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.txt.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
   if ! reshy2 "$hy2_tmp"; then
     rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"}
     return 1
   fi
-  aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
+  aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.txt.XXXXXX") || {
     rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"}
     return 1
   }
@@ -3371,6 +3409,27 @@ crontab_has_restart_entries(){
   printf '%s\n' "$content" | grep -Fq "$RESTART_CRON_MARKER"
 }
 
+# 过滤 crontab 前先把结果落到临时文件：管道里任何一级出错（退出码 >=2）都必须中止，
+# 不能把半截内容写回 crontab 把别人的定时任务冲掉。
+filter_crontab_checked(){
+  local current=$1 tmp out code
+  local -a stage_status=()
+  shift
+  [[ $# -ge 1 ]] || return 1
+  tmp=$(mktemp "${TMPDIR:-/tmp}/sb-crontab.XXXXXX") || return 1
+  printf '%s\n' "$current" | "$@" > "$tmp"
+  stage_status=("${PIPESTATUS[@]}")
+  for code in "${stage_status[@]}"; do
+    if [[ $code -gt 1 ]]; then
+      rm -f -- "$tmp"
+      return 2
+    fi
+  done
+  out=$(cat "$tmp") || { rm -f -- "$tmp"; return 1; }
+  rm -f -- "$tmp"
+  printf '%s\n' "$out"
+}
+
 filter_restart_cron_entries(){
   grep -Fv "$RESTART_CRON_MARKER"
 }
@@ -3601,7 +3660,10 @@ remove_acme_renew_cron(){
     remove_acme_renew_artifacts
     return
   fi
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
   if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
@@ -3618,7 +3680,10 @@ remove_current_acme_cron(){
     remove_acme_renew_artifacts
     return 0
   fi
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
   if crontab_has_acme_entries "$CURRENT_CRONTAB"; then
@@ -3635,7 +3700,10 @@ remove_all_managed_crons(){
     remove_acme_renew_artifacts
     return
   fi
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries | filter_restart_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries filter_restart_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   printf '%s\n' "$filtered" | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
   if crontab_has_acme_entries "$CURRENT_CRONTAB" || crontab_has_restart_entries "$CURRENT_CRONTAB"; then
@@ -3669,7 +3737,10 @@ setup_acme_renew_cron(){
   write_acme_renew_runner || return 1
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
-  filtered=$(printf '%s\n' "$current" | filter_acme_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_acme_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   entry=$(acme_renew_cron_entry)
   { printf '%s\n' "$filtered"; printf '%s\n' "$entry"; } | crontab - >/dev/null 2>&1 || return 1
   load_current_crontab || return 1
@@ -3732,6 +3803,7 @@ activate_managed_certificate(){
   CERT_ACTIVATION_MAINTENANCE_OK=1
   if ! load_certificate_metadata "$cert" "$key" || [[ $CERT_META_STATE != valid ]]; then
     red "目标证书无效、已过期或与私钥不匹配，拒绝切换"
+    yellow "若是证书文件不存在，请先用菜单[2]修复生成"
     return 1
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX") || return 1
@@ -4025,10 +4097,19 @@ restore_previous_active_acme(){
 apply_new_cloudflare_certificate(){
   local activation_status backup_path
   certificate_action_service_ready || return 1
-  if ! issue_cloudflare_certificate 0 1; then
-    red "新证书申请失败，当前证书未改变"
-    return 1
-  fi
+  ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
+  issue_cloudflare_certificate 0 1
+  case $? in
+    0) ;;
+    3)
+      yellow "已取消，未做任何修改"
+      return 0
+      ;;
+    *)
+      red "新证书申请失败，当前证书未改变"
+      return 1
+      ;;
+  esac
   if cert_acme; then
     if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
       finish_acme_replacement || true
@@ -4072,35 +4153,47 @@ replace_active_acme_certificate(){
     return 1
   fi
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  if issue_cloudflare_certificate 0 1 1; then
-    if cert_acme; then
-      if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
-        finish_acme_replacement || true
-        if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-          green "ACME 证书与 Cloudflare 凭据更换完成"
-        else
-          yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
-        fi
-        return 0
-      else
-        activation_status=$?
-      fi
-    else
-      activation_status=1
-    fi
-    if [[ $activation_status -eq 2 ]]; then
-      backup_path=$ACME_STATE_BACKUP
-      ACME_STATE_BACKUP=
+  issue_cloudflare_certificate 0 1 1
+  case $? in
+    0) ;;
+    3)
       ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
-      red "配置切换与自动回滚均失败；已保留新 ACME 状态，避免破坏当前配置引用"
-      yellow "更换前的 ACME 状态备份保留在：$backup_path"
-      return 2
+      discard_acme_state || yellow "清理解除备份失败，请手动检查 $SB_DIR"
+      yellow "已取消，未做任何修改"
+      return 0
+      ;;
+    *)
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+      rollback_new_acme_state || true
+      red "新证书申请失败，当前证书未改变"
+      return 1
+      ;;
+  esac
+  if cert_acme; then
+    if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
+      finish_acme_replacement || true
+      if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
+        green "ACME 证书与 Cloudflare 凭据更换完成"
+      else
+        yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
+      fi
+      return 0
+    else
+      activation_status=$?
     fi
-    red "新证书已签发，但服务切换失败"
-    rollback_new_acme_state || true
-  elif [[ -n ${ACME_STATE_BACKUP:-} ]]; then
-    rollback_new_acme_state || true
+  else
+    activation_status=1
   fi
+  if [[ $activation_status -eq 2 ]]; then
+    backup_path=$ACME_STATE_BACKUP
+    ACME_STATE_BACKUP=
+    ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
+    red "配置切换与自动回滚均失败；已保留新 ACME 状态，避免破坏当前配置引用"
+    yellow "更换前的 ACME 状态备份保留在：$backup_path"
+    return 2
+  fi
+  red "新证书已签发，但服务切换失败"
+  rollback_new_acme_state || true
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
   red "新证书申请或切换失败"
   restore_previous_active_acme "$old_identity" || true
@@ -4399,7 +4492,8 @@ change_socks_password(){
     return 1
   fi
   if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
-    red "读取当前SOCKS5密码失败，配置未修改"
+    yellow "SOCKS5 入口当前未启用，请先用【1】启用"
+    readp "按回车返回 SOCKS5 入口..."
     readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
@@ -4493,7 +4587,7 @@ relay_candidate_with_upstream(){
     else
       .outbounds = ([.outbounds[] | select(.tag != "relay")] +
         [{type: "socks", tag: "relay", server: $server, server_port: $port,
-          version: "5", username: $username, password: $password}]) |
+          version: "5", username: $username, password: $password, network: "tcp"}]) |
       .route.final = "relay"
     end
   ' "$SB_CONFIG" > "$output" || return 1
@@ -4551,7 +4645,7 @@ set_relay_upstream(){
       continue
     fi
     if ! relay_upstream_reachable "$server" "$port"; then
-      yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动或地址填错）"
+      yellow "上游 $server:$port 的TCP端口连不上（未放行、未启动、地址填错或落地机密码不对）"
       yellow "启用后所有出网流量都会走它，上游不通等于断网；清除上游可立即恢复直连"
       if ! confirm_yes "上游不可达，仍要保存并切换出网？[回车/y 确认，n 取消]："; then
         yellow "已取消，未做任何修改"
@@ -4571,18 +4665,37 @@ set_relay_upstream(){
       [[ $retry == 0 ]] && return 1
       continue
     fi
-    if commit_config "$candidate"; then
-      if save_relay_settings "$server" "$port" "$password"; then
-        green "上游已启用：${server}:${port}"
-        yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "落地机要已启用 SOCKS5 入口（用户名固定 ${SOCKS_USERNAME}）"
+    local had_settings=0
+    # shellcheck disable=SC2034
+    local old_server='' old_port='' old_password=''
+    if relay_settings_present; then
+      had_settings=1
+      if load_relay_settings; then
+        old_server=$relay_server old_port=$relay_port old_password=$relay_password
       else
-        red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
+        had_settings=0
       fi
+    fi
+    if ! save_relay_settings "$server" "$port" "$password"; then
+      rm -f "$candidate"
+      red "上游状态文件写入失败，本次未修改任何东西"
+      readp "按回车返回上游/中转菜单..."
+      return 1
+    fi
+    if commit_config "$candidate"; then
+      green "上游已启用：${server}:${port}"
+      yellow "出网流量已交给落地机；清除上游可恢复直连"
+      yellow "落地机要已启用 SOCKS5 入口（用户名固定 ${SOCKS_USERNAME}）"
       readp "按回车返回上游/中转菜单..."
       return 0
     else
       commit_status=$?
+      if [[ $had_settings -eq 1 ]]; then
+        save_relay_settings "$old_server" "$old_port" "$old_password" ||
+          red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+      else
+        clear_relay_settings || red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
+      fi
     fi
     if [[ $commit_status -eq 2 ]]; then
       red "上游设置失败且自动回滚失败，请先检查服务和备份配置"
@@ -4624,16 +4737,21 @@ clear_relay_upstream(){
     readp "按回车返回上游/中转菜单..."
     return 1
   fi
+  local saved_server=$relay_server saved_port=$relay_port saved_password=$relay_password
+  if ! clear_relay_settings; then
+    rm -f "$candidate"
+    red "上游状态文件删除失败，本次未修改任何东西"
+    readp "按回车返回上游/中转菜单..."
+    return 1
+  fi
   if commit_config "$candidate"; then
-    if clear_relay_settings; then
-      green "上游已清除，出网恢复直连"
-    else
-      red "服务端已恢复直连，但上游状态文件删除失败，请手动检查 $(relay_config_path)"
-    fi
+    green "上游已清除，出网恢复直连"
     readp "按回车返回上游/中转菜单..."
     return 0
   else
     commit_status=$?
+    save_relay_settings "$saved_server" "$saved_port" "$saved_password" ||
+      red "上游状态文件回滚失败，请手动检查 $(relay_config_path)"
   fi
   if [[ $commit_status -eq 2 ]]; then
     red "清除上游失败且自动回滚失败，请先检查服务和备份配置"
@@ -4952,7 +5070,7 @@ manage_optional_features(){
     fi
     if retired_port=$(retired_ss_entry_port); then
       yellow "   警告：配置里还有一个 4.0.0 之前创建的旧入口（端口 $retired_port），本版本已不再支持"
-      yellow "   下次重写配置（改端口/凭据、修复）会移除它，仍在用它连接的人会断开"
+      yellow "   只有用菜单[2]修复或重装重写配置时才会移除它，仍在用它连接的人会断开"
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"
@@ -5109,13 +5227,14 @@ uninstall(){
   red "确认卸载sb? sb的配置和数据将被删除!"
   yellow "1：确认卸载"
   yellow "0：取消"
-  readp "请选择【0-1】：" menu
+  readp "请选择【0-1】：" menu || return 1
   if [[ $menu == 1 ]]; then
     with_lifecycle_acme_lock uninstall_locked || return 1
     green "sb卸载完成！"
     echo
     exit 0
   fi
+  yellow "已取消，未做任何修改"
 }
 cronsb(){
   local current filtered entry
@@ -5125,7 +5244,10 @@ cronsb(){
   fi
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
-  filtered=$(printf '%s\n' "$current" | filter_restart_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_restart_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   if command -v apk >/dev/null 2>&1; then
     entry="0 1 * * * rc-service $SB_SERVICE restart > /dev/null 2>&1 $RESTART_CRON_MARKER"
   else
@@ -5737,6 +5859,8 @@ cleanup_repair_temporary_files(){
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
     "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
+    "$SB_DIR"/.socks5.txt.* "$SB_DIR"/.hy2.txt.* "$SB_DIR"/.jhdy.txt.* \
+    "$SB_DIR"/.sb.json.?????? \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
     "$SB_DIR"/.repair-target-*; do
     [[ -e $path || -L $path ]] || continue

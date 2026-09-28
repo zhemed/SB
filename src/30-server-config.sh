@@ -13,6 +13,7 @@ render_server_config(){
       "$listen_addr" "${port_socks5:-}" "$SOCKS_USERNAME" "${socks_password:-}") || return 1
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
+    entry_rules+=$'\n'
   fi
   if retired_ss_port=$(retired_ss_entry_port); then
     yellow "当前配置里还有一个 4.0.0 之前创建的旧入口（端口 ${retired_ss_port}），本版本已不再支持"
@@ -21,14 +22,14 @@ render_server_config(){
   if relay_settings_present; then
     if load_relay_settings; then
       route_final=relay
-      relay_outbound_suffix=$(printf ',\n    {\n      "type": "socks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s"\n    }' \
+      relay_outbound_suffix=$(printf ',\n    {\n      "type": "socks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    }' \
         "$relay_server" "$relay_port" "$SOCKS_USERNAME" "$relay_password") || return 1
     else
       red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
       yellow "上游凭据是落地机 SOCKS5 入口的密码；旧版填的密钥格式已不再支持，请在菜单[8]上游/中转里重新设置一次"
     fi
   elif [[ -s $SB_CONFIG ]] &&
-       jq -e '[.outbounds[]? | select(.type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
+       jq -e '[.outbounds[]? | select(.tag == "relay" or .type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
     yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"
     yellow "如需继续中转，请在菜单[8]上游/中转里重新设置一次"
   fi

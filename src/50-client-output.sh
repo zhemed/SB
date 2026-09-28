@@ -24,8 +24,8 @@ ipuuid(){
     while true; do
       readp "请选择【1-2】：" menu
       case "$menu" in
-        ""|1) save_server_ip "$v4"; break ;;
-        2) save_server_ip "$v6"; break ;;
+        ""|1) save_server_ip "$v4" || return 1; break ;;
+        2) save_server_ip "$v6" || return 1; break ;;
         *) red "请输入1或2" ;;
       esac
     done
@@ -73,25 +73,44 @@ result(){
   server_ip=$(cat "$SB_DIR/server_ip.log" 2>/dev/null)
   server_ipcl=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
   if valid_ipv4 "$server_ipcl"; then
-    [[ $server_ip == "$server_ipcl" ]] || return 1
+    if [[ $server_ip != "$server_ipcl" ]]; then
+      red "两个公网IP文件不一致（$SB_DIR/server_ip.log / server_ipcl.log），请用菜单[3]重新检测"
+      return 1
+    fi
   elif valid_ipv6 "$server_ipcl"; then
-    [[ $server_ip == "[$server_ipcl]" ]] || return 1
+    if [[ $server_ip != "[$server_ipcl]" ]]; then
+      red "两个公网IP文件不一致（IPv6 缺少方括号），请用菜单[3]重新检测"
+      return 1
+    fi
   else
     red "保存的公网IP格式无效"
     return 1
   fi
-  uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
+  if ! uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
+    red "服务端配置里读不到 Hysteria2 口令，无法生成节点"
+    return 1
+  fi
+  # 入口是否存在按入站本身判定（与菜单里的判定同口径）：口令读不到是配置被改坏，
+  # 必须报出来，不能静默当"没启用"——那会把还能用的 socks5.txt 一起删掉。
   socks_enabled=0
   socks_port=
   socks_password=
-  if socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
+  if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$SB_CONFIG" >/dev/null 2>&1; then
     socks_enabled=1
-    socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  else
-    socks_password=
+    if ! socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) ||
+       ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
+      red "服务端配置里的 SOCKS5 入口缺少口令或端口，请用菜单[8]重设一次"
+      return 1
+    fi
   fi
-  hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
-  hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
+  if ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
+    red "服务端配置里读不到 Hysteria2 端口，无法生成节点"
+    return 1
+  fi
+  if ! hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null); then
+    red "服务端配置里读不到 Hysteria2 证书路径，无法生成节点"
+    return 1
+  fi
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
     red "服务端配置中的节点参数不完整或格式无效"
     return 1
@@ -111,9 +130,14 @@ result(){
       return 1
     fi
     SHA256=$(openssl x509 -in "$SB_DIR/cert.pem" -noout -fingerprint -sha256 2>/dev/null | cut -d= -f2 | tr -d ':')
-    [[ $SHA256 =~ ^[0-9A-Fa-f]{64}$ ]] || return 1
-    hy2_certificate_json=$(jq -Rs . < "$SB_DIR/cert.pem") || return 1
-    [[ -n $hy2_certificate_json ]] || return 1
+    if [[ ! $SHA256 =~ ^[0-9A-Fa-f]{64}$ ]]; then
+      red "读取自签证书指纹失败，不能生成节点"
+      return 1
+    fi
+    if ! hy2_certificate_json=$(jq -Rs . < "$SB_DIR/cert.pem") || [[ -z $hy2_certificate_json ]]; then
+      red "读取自签证书内容失败，不能生成节点"
+      return 1
+    fi
     hy2_clash_ca="  ca-str: |"$'\n'"$(sed 's/^/    /' "$SB_DIR/cert.pem")"
     atomic_write_private_text "$SB_DIR/SHA256.txt" "$SHA256" || return 1
     hy2_name=www.bing.com
@@ -121,6 +145,9 @@ result(){
     cl_hy2_ip=$server_ipcl
   else
     SHA256=""
+    if [[ -e $SB_DIR/SHA256.txt ]]; then
+      rm -f -- "$SB_DIR/SHA256.txt" || yellow "旧的指纹文件 $SB_DIR/SHA256.txt 无法删除，请手动检查"
+    fi
     if ! ym=$(detect_acme_identity); then
       red "Acme证书身份无法确认，不能生成Hysteria2节点"
       return 1
@@ -168,16 +195,15 @@ ressocks5(){
 }
 
 print_socks_entry_share(){
-  local password=$1 path="$SB_DIR/socks5.txt" link=
+  local password=$1 path="$SB_DIR/socks5.txt" port=
   echo
-  green "分享链接（已写入 $path，菜单[3]可重看并出二维码）"
-  if managed_regular_file_is_trusted "$path" && [[ -s $path ]]; then
-    link=$(cat "$path" 2>/dev/null) || link=
-  fi
-  if [[ -n $link ]]; then
-    echo -e "${yellow}$link${plain}"
+  if port=$(socks_entry_port) && [[ -n $port ]] &&
+     managed_regular_file_is_trusted "$path" && [[ -s $path ]] &&
+     [[ $(cat "$path" 2>/dev/null) == "socks5://$SOCKS_USERNAME:$password@$server_ip:$port#socks5-$hostname" ]]; then
+    green "分享链接（已写入 $path，菜单[3]可重看并出二维码）"
+    echo -e "${yellow}$(cat "$path" 2>/dev/null)${plain}"
   else
-    yellow "分享文件暂不可用，请用菜单[3]刷新节点配置后重试"
+    yellow "分享文件尚未刷新或是旧的（里面可能还是上一个口令），请用菜单[3]重看链接与二维码"
   fi
   green "用户名/密码：$SOCKS_USERNAME / $password"
 }
@@ -188,7 +214,6 @@ sb_client(){
   local socks_selector_member=
   local socks_clash_proxy=
   local socks_clash_member=
-  local socks_clash_member=
   sbox_candidate=$(mktemp "$SB_DIR/.sbox.json.XXXXXX") || return 1
   clash_candidate=$(mktemp "$SB_DIR/.clash.yaml.XXXXXX") || { rm -f "$sbox_candidate"; return 1; }
   if [[ -n $hy2_certificate_json ]]; then
@@ -198,7 +223,7 @@ sb_client(){
     socks_outbound_field=$(printf '    {\n      "type": "socks",\n      "tag": "socks5-%s",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
     socks_selector_member=$(printf '        "socks5-%s",\n' "$hostname") || return 1
-    socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: %s\n  password: %s\n  udp: false\n\n' \
+    socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: "%s"\n  password: "%s"\n  udp: false\n\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
     socks_clash_member=$(printf '    - socks5-%s\n' "$hostname") || return 1
     socks_outbound_field+=$'\n'
@@ -468,18 +493,18 @@ sbshare(){
     return 1
   fi
   if [[ $socks_enabled -eq 1 ]]; then
-    socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
+    socks_tmp=$(mktemp "$SB_DIR/.socks5.txt.XXXXXX") || return 1
     if ! ressocks5 "$socks_tmp"; then
       rm -f "$socks_tmp"
       return 1
     fi
   fi
-  hy2_tmp=$(mktemp "$SB_DIR/.hy2.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
+  hy2_tmp=$(mktemp "$SB_DIR/.hy2.txt.XXXXXX") || { rm -f ${socks_tmp:+"$socks_tmp"}; return 1; }
   if ! reshy2 "$hy2_tmp"; then
     rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"}
     return 1
   fi
-  aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.XXXXXX") || {
+  aggregate_tmp=$(mktemp "$SB_DIR/.jhdy.txt.XXXXXX") || {
     rm -f "$hy2_tmp" ${socks_tmp:+"$socks_tmp"}
     return 1
   }

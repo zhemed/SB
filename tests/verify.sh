@@ -78,7 +78,7 @@ if grep -Fq -- 'green " 1. 安装/修复"' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SHORTCUT="/usr/bin/sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "formal shortcut identity is invalid"
-[[ $(grep -Fxc '  readp "请输入 Cloudflare API Token：" cf_token || return 1' \
+[[ $(grep -Fxc '  readp "请输入 Cloudflare API Token：" cf_token || return 3' \
   "$ROOT_DIR/sb.sh" || true) -eq 1 ]] || fail "Cloudflare Token input is not visible"
 if grep -Fq 'API Token 已读取' "$ROOT_DIR/sb.sh" ||
    grep -Fq '输入不回显' "$ROOT_DIR/sb.sh" ||
@@ -238,6 +238,9 @@ grep -Fq -- 'choose_socks_port()' "$ROOT_DIR/sb.sh" ||
 # JSON/YAML/link text, so it cannot be trusted as-is.
 grep -Fq -- '输入0取消): " port || return 2' "$ROOT_DIR/sb.sh" ||
   fail "the port retry prompt no longer offers a cancel"
+# shellcheck disable=SC2016
+[[ $(grep -Fxc -- '# Managed by sb.sh' "$ROOT_DIR/sb.sh" || true) -eq 2 ]] ||
+  fail "the two unit generators no longer both emit the ownership marker"
 # shellcheck disable=SC2016
 grep -Fq -- 'hostname=$(hostname 2>/dev/null)' "$ROOT_DIR/sb.sh" ||
   fail "the hostname is used without a guarded read"

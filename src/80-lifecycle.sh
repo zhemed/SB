@@ -138,13 +138,14 @@ uninstall(){
   red "确认卸载sb? sb的配置和数据将被删除!"
   yellow "1：确认卸载"
   yellow "0：取消"
-  readp "请选择【0-1】：" menu
+  readp "请选择【0-1】：" menu || return 1
   if [[ $menu == 1 ]]; then
     with_lifecycle_acme_lock uninstall_locked || return 1
     green "sb卸载完成！"
     echo
     exit 0
   fi
+  yellow "已取消，未做任何修改"
 }
 cronsb(){
   local current filtered entry
@@ -154,7 +155,10 @@ cronsb(){
   fi
   load_current_crontab || return 1
   current=$CURRENT_CRONTAB
-  filtered=$(printf '%s\n' "$current" | filter_restart_cron_entries || true)
+  filtered=$(filter_crontab_checked "$current" filter_restart_cron_entries) || {
+    red "crontab 过滤结果异常，已中止，原任务未修改"
+    return 1
+  }
   if command -v apk >/dev/null 2>&1; then
     entry="0 1 * * * rc-service $SB_SERVICE restart > /dev/null 2>&1 $RESTART_CRON_MARKER"
   else
