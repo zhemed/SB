@@ -563,10 +563,13 @@ switch_ip_priority(){
     green "切换IP优先级 (控制VPS出站时IPv4/IPv6的偏好)"
     echo -e "当前: ${yellow}$current${plain}"
     echo
-    [[ -n $v4 ]] && green "1：IPV4优先 (prefer_ipv4)"
-    [[ -n $v6 ]] && green "2：IPV6优先 (prefer_ipv6)"
-    [[ -n $v4 ]] && green "3：仅IPV4 (ipv4_only)"
-    [[ -n $v6 ]] && green "4：仅IPV6 (ipv6_only)"
+    # The four options are always listed: hiding the ones the VPS cannot use made
+    # the menu disagree with its own 【0-4】 prompt and looked like missing
+    # features. Picking an unusable family is rejected below with a clear message.
+    green "1：IPV4优先 (prefer_ipv4)"
+    green "2：IPV6优先 (prefer_ipv6)"
+    green "3：仅IPV4 (ipv4_only)"
+    green "4：仅IPV6 (ipv6_only)"
     green "0：返回主菜单"
     readp "请选择【0-4】：" choose || return 1
     case "$choose" in

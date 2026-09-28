@@ -3155,10 +3155,13 @@ switch_ip_priority(){
     green "切换IP优先级 (控制VPS出站时IPv4/IPv6的偏好)"
     echo -e "当前: ${yellow}$current${plain}"
     echo
-    [[ -n $v4 ]] && green "1：IPV4优先 (prefer_ipv4)"
-    [[ -n $v6 ]] && green "2：IPV6优先 (prefer_ipv6)"
-    [[ -n $v4 ]] && green "3：仅IPV4 (ipv4_only)"
-    [[ -n $v6 ]] && green "4：仅IPV6 (ipv6_only)"
+    # The four options are always listed: hiding the ones the VPS cannot use made
+    # the menu disagree with its own 【0-4】 prompt and looked like missing
+    # features. Picking an unusable family is rejected below with a clear message.
+    green "1：IPV4优先 (prefer_ipv4)"
+    green "2：IPV6优先 (prefer_ipv6)"
+    green "3：仅IPV4 (ipv4_only)"
+    green "4：仅IPV6 (ipv6_only)"
     green "0：返回主菜单"
     readp "请选择【0-4】：" choose || return 1
     case "$choose" in
@@ -4641,8 +4644,7 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "这一跳走的是落地机的 SOCKS5 入口：用户名固定 ${SOCKS_USERNAME}，密码就是刚填的那个"
-        yellow "它不加密（明文），只承载 TCP；落地机要已在菜单[8]启用 SOCKS5 入口并放行其 TCP 端口"
+        yellow "落地机要已启用 SOCKS5 入口（这一跳不加密，用户名固定 ${SOCKS_USERNAME}）"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -4992,8 +4994,7 @@ manage_socks_entry(){
     else
       green "当前状态：${yellow}未启用${green}"
     fi
-    yellow "这是一个可选的 TCP 备用入口（明文，见 README 的协议说明）；启用后需自行放行其 TCP 端口"
-    green "1：启用（默认随机端口，可选自定义）"
+    green "1：启用"
     green "2：停用"
     green "3：更改端口"
     green "4：更改密码"

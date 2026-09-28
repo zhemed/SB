@@ -163,7 +163,7 @@ for retired_protocol_pattern in \
   'shadowsocks' \
   'Shadowsocks'; do
   if grep -Fiq -- "$retired_protocol_pattern" "$ROOT_DIR/sb.sh" ||
-     grep -Fiq -- "$retired_protocol_pattern" "$ROOT_DIR/src"; then
+     grep -rFiq -- "$retired_protocol_pattern" "$ROOT_DIR/src"; then
     fail "the retired protocol is still present: $retired_protocol_pattern"
   fi
 done
@@ -229,6 +229,30 @@ if printf '%s\n' "$relay_branch_flow" | grep -Fq -- '返回主菜单' ||
 fi
 if printf '%s\n' "$credential_menu" | grep -Fq -- 'Shadowsocks'; then
   fail "the credentials menu still advertises the removed Shadowsocks entry"
+fi
+
+# The IP-priority menu lists all four options, always: hiding the ones the VPS
+# cannot use made it contradict its own 【0-4】 prompt and looked like features had
+# vanished. Unusable families are rejected when picked instead.
+for ip_option in \
+  '1：IPV4优先 (prefer_ipv4)' \
+  '2：IPV6优先 (prefer_ipv6)' \
+  '3：仅IPV4 (ipv4_only)' \
+  '4：仅IPV6 (ipv6_only)'; do
+  grep -Fq -- "green \"$ip_option\"" "$ROOT_DIR/sb.sh" ||
+    fail "the IP-priority menu does not list every option: $ip_option"
+done
+dollar=$(printf '%s' '$')
+if grep -Fq -- "[[ -n ${dollar}v4 ]] && green" "$ROOT_DIR/sb.sh" ||
+   grep -Fq -- "[[ -n ${dollar}v6 ]] && green" "$ROOT_DIR/sb.sh"; then
+  fail "the IP-priority menu hides options again"
+fi
+grep -Fq -- '当前VPS不存在对应的IP地址' "$ROOT_DIR/sb.sh" ||
+  fail "an unusable IP family is no longer rejected with a message"
+# No standing hint blocks in the entry menus: the warning belongs to the moment of
+# enabling (the enable flow still prints it), not to a line that greets every visit.
+if grep -Fq -- '这是一个可选的 TCP 备用入口' "$ROOT_DIR/sb.sh"; then
+  fail "the optional-entry menu carries the standing hint block again"
 fi
 
 grep -Fq -- 'choose_socks_port()' "$ROOT_DIR/sb.sh" ||
@@ -336,9 +360,9 @@ grep -Fq -- 'TCP 备用入口（SOCKS5，明文）默认不安装' "$ROOT_DIR/sb
 # The upstream hop borrows the landing machine's SOCKS5 entry, so the flow has to
 # say so (and say that it is plaintext) — otherwise the operator cannot set the
 # landing machine up correctly.
-grep -Fq -- '这一跳走的是落地机的 SOCKS5 入口' "$ROOT_DIR/sb.sh" ||
+grep -Fq -- '落地机要已启用 SOCKS5 入口' "$ROOT_DIR/sb.sh" ||
   fail "the upstream flow does not explain which entry it uses"
-grep -Fq -- '它不加密（明文）' "$ROOT_DIR/sb.sh" ||
+grep -Fq -- '这一跳不加密' "$ROOT_DIR/sb.sh" ||
   fail "the upstream flow does not warn that the hop is plaintext"
 grep -Fq -- '请输入落地机 SOCKS5 入口的密码' "$ROOT_DIR/sb.sh" ||
   fail "the upstream credential prompt does not name the SOCKS5 password"
