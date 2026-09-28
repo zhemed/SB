@@ -337,3 +337,41 @@
 ### Next Steps
 
 - 无；若还想有 TCP 备用入口就用菜单 [8] 第 1 项启用 SOCKS5（不存在重建 SS 入口的路）
+
+
+## Session 13: 5.1.0：彻底移除 SS、菜单收拾、删注释（含本次几个错）
+<!-- trellis-session: v=2 fp=476e5fe1fa3979cd -->
+
+**Date**: 2026-09-28
+**Task**: 5.1.0：彻底移除 SS、菜单收拾、删注释（含本次几个错）
+**Branch**: `main`
+
+### Summary
+
+两个任务：5.0.1 扫文案修提示指向；5.1.0 把最后一处 SS（中转那一跳）换成落地机 SOCKS5 入口、菜单去掉常驻提示与多余括注、IP 菜单四项常显、README 退回用户版本、删除 src/tests 说明性注释。真实内核两跳复验通过。
+
+### Main Changes
+
+- src/00,20,30,40,50,70,85 + tests/* + README + 规范；版本 5.1.0
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `5f7208a` | [task:09-28-ss-wording-cleanup] 5.0.1：扫一遍面向用户的文案，修返回提示与 SS 残留 |
+| `2e8601b` | [task:09-28-relay-over-socks5] 5.1.0：项目里彻底不再有 Shadowsocks |
+| `a63695f` | [task:09-28-relay-over-socks5] README 退回用户版本，只保留 3 处必要事实 |
+| `9987e9b` | [task:09-28-relay-over-socks5] 菜单收拾：IP 优先级四项常显、去掉两处多余的常驻提示 |
+| `8f947eb` | [task:09-28-relay-over-socks5] 删除 src/ 与 tests/ 里的说明性注释 |
+
+### Testing
+
+- [OK] 门禁绿（unit/repair/verify + shellcheck 0.10.0）；真实内核：线路机 SOCKS5 入口→relay 出站→落地机 SOCKS5 入站→目标两跳跑通；CI run 36421210076 success
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 用户升级到 5.1.0 后若用中转：落地机启用 SOCKS5 入口，线路机重设上游

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 12
-- **Last Active**: 2026-09-20
+- **Total Sessions**: 13
+- **Last Active**: 2026-09-28
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~339 | Active |
+| `journal-1.md` | ~377 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 13 | 2026-09-28 | 5.1.0：彻底移除 SS、菜单收拾、删注释（含本次几个错） | `5f7208a`, `2e8601b`, `a63695f`, `9987e9b`, `8f947eb` | `main` |
 | 12 | 2026-09-20 | 5.0.0：彻底移除旧 Shadowsocks-2022 入口的兼容层 | `4b33571`, `8667408` | `main` |
 | 11 | 2026-09-20 | v4.0.0 上线结果：入口切换为 SOCKS5，旧 SS 入口已移除 | - | `main` |
 | 10 | 2026-09-20 | v4.0.0：可选入口换回公网 SOCKS5（旧 ss-sb 原样保留） | `bd248c7`, `b84e6b9`, `dd44f80` | `main` |
