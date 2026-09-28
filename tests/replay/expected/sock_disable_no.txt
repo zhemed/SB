@@ -1,0 +1,55 @@
+
+YEL|停用后使用这个入口的客户端会立即连不上，分享文件与客户端配置也会去掉它
+YEL|已取消，未做任何修改
+RC=0
+{
+  "inbounds": [
+    {
+      "listen": "::",
+      "listen_port": 23456,
+      "tag": "hy2-sb",
+      "tls": {
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/tmp/x.crt",
+        "enabled": true,
+        "key_path": "/tmp/x.key",
+        "min_version": "1.3"
+      },
+      "type": "hysteria2",
+      "users": [
+        {
+          "password": "aaaaaaaa-1111-2222-3333-444444444444"
+        }
+      ]
+    },
+    {
+      "listen": "::",
+      "listen_port": 20808,
+      "tag": "socks5-sb",
+      "type": "socks",
+      "users": [
+        {
+          "password": "Socks.Pass_Old-0000",
+          "username": "sb"
+        }
+      ]
+    }
+  ],
+  "log": {
+    "level": "warn"
+  },
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct",
+    "rules": []
+  }
+}
+RELAY_CONF=none
+LEFTOVERS=sb.json 

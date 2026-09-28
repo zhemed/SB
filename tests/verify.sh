@@ -22,6 +22,7 @@ bash -n "$ROOT_DIR/sb.sh"
 bash -n "$ROOT_DIR/scripts/build.sh"
 bash -n "$ROOT_DIR/tests/unit.sh"
 bash -n "$ROOT_DIR/tests/repair.sh"
+bash -n "$ROOT_DIR/tests/replay.sh"
 bash -n "$ROOT_DIR/tests/verify.sh"
 
 [[ $(grep -Fxc 'CORE_VERSION="1.10.7"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
@@ -428,6 +429,9 @@ fi
 
 bash "$ROOT_DIR/tests/unit.sh"
 bash "$ROOT_DIR/tests/repair.sh"
+# 行为回放：单测与修复测试把 commit_config、归属判定、安装入口都打桩了，
+# 所以它们全绿并不代表菜单流程还能用。17 条菜单流程的落地结果在这里比对。
+bash "$ROOT_DIR/tests/replay.sh"
 
 digest=$(sha256sum "$ROOT_DIR/sb.sh" | awk '{print $1}')
 printf 'verification passed: %s\n' "$digest"

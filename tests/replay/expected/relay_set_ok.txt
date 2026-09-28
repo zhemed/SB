@@ -1,0 +1,54 @@
+
+GRN|上游已启用：1.2.3.4:1080
+YEL|出网流量已交给落地机；清除上游可恢复直连
+YEL|落地机要已启用 SOCKS5 入口（用户名固定 sb）
+RC=0
+{
+  "inbounds": [
+    {
+      "listen": "::",
+      "listen_port": 23456,
+      "tag": "hy2-sb",
+      "tls": {
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/tmp/x.crt",
+        "enabled": true,
+        "key_path": "/tmp/x.key",
+        "min_version": "1.3"
+      },
+      "type": "hysteria2",
+      "users": [
+        {
+          "password": "aaaaaaaa-1111-2222-3333-444444444444"
+        }
+      ]
+    }
+  ],
+  "log": {
+    "level": "warn"
+  },
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    },
+    {
+      "network": "tcp",
+      "password": "Socks.Pass_One-234",
+      "server": "1.2.3.4",
+      "server_port": 1080,
+      "tag": "relay",
+      "type": "socks",
+      "username": "sb",
+      "version": "5"
+    }
+  ],
+  "route": {
+    "final": "relay",
+    "rules": []
+  }
+}
+RELAY_CONF=server=1.2.3.4 port=1080 password=Socks.Pass_One-234 
+LEFTOVERS=relay.conf sb.json sb.json.last-good 

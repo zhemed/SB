@@ -1,9 +1,9 @@
 # Test Suite Layer
 
-> Conventions for `tests/verify.sh`, `tests/unit.sh`, and `tests/repair.sh` — the only gate the
-> project has.
+> Conventions for `tests/verify.sh`, `tests/unit.sh`, `tests/repair.sh`, and `tests/replay.sh` —
+> the only gate the project has.
 
-There is no test framework. The suite is three Bash scripts producing TAP-ish output, runnable
+There is no test framework. The suite is four Bash scripts producing TAP-ish output, runnable
 **without root** and without touching the host system. CI runs exactly one command
 (`bash tests/verify.sh`).
 
@@ -44,3 +44,23 @@ behavioural test runs.
 | 5 | `shellcheck --severity=info` (skipped with a message if absent) | `tests/verify.sh:312-320` |
 | 6 | `bash tests/unit.sh` | `tests/verify.sh:322` |
 | 7 | `bash tests/repair.sh` | `tests/verify.sh:323` |
+| 8 | `bash tests/replay.sh` — menu flows replayed against recorded behaviour | `tests/verify.sh:324` |
+
+## Behavioural replay (`tests/replay.sh`)
+
+`unit.sh` and `repair.sh` stub `commit_config`, the ownership checks, and the install entry, so a
+green gate never proved that a **menu flow** still works: a refactor that renamed an argument or
+swallowed a return code passed everything and still broke four menu paths.
+
+`replay.sh` closes that hole. It extracts every function from `sb.sh`, drives 17 menu flows
+(change UUID/port/password, enable/disable the SOCKS5 entry, set/clear the upstream) in a sandbox
+with stubbed system commands, and compares four things per flow against
+`tests/replay/expected/<flow>.txt`: the **return code**, the printed output, the resulting
+`sb.json`, and the leftover files in `SB_DIR`.
+
+- Any behavioural drift fails the gate. Review a diff line by line before running
+  `bash tests/replay.sh --update`; the expectations are the contract, not a snapshot to refresh.
+- The sandbox mirrors the globals `00-bootstrap.sh` initialises and runs under `set -u`, so an
+  uninitialised global shows up as a flow failure instead of passing silently.
+- When you add a menu flow that writes configuration, add it to the `FLOWS` list and record its
+  behaviour in the same commit.
