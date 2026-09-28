@@ -1193,7 +1193,10 @@ config_candidate(){
     shift
     jq "$@" "$SB_CONFIG" > "$tmp" || status=1
   else
-    "$@" "$tmp" || status=1
+    # 候选构造函数的第一个参数是输出路径，其余是它自己的参数
+    local builder=$1
+    shift
+    "$builder" "$tmp" "$@" || status=1
   fi
   if [[ $status -eq 0 ]] && ! chmod 600 "$tmp"; then
     status=1
@@ -1208,10 +1211,11 @@ config_candidate(){
 # 返回：0 已提交；2 提交与自动回滚都失败；3 用户放弃重试；1 提交失败可重试
 commit_config_candidate(){
   local candidate=$1 menu=$2 status retry
-  if commit_config "$candidate"; then
+  commit_config "$candidate"
+  status=$?
+  if [[ $status -eq 0 ]]; then
     return 0
   fi
-  status=$?
   if [[ $status -eq 2 ]]; then
     red "提交失败且回滚也失败，请检查服务与备份"
     readp "按回车返回${menu}..."

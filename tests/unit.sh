@@ -649,6 +649,68 @@ acme_cancel_keeps_the_live_state(){
 expect_success "cancelling a certificate replacement leaves the live ACME state alone" \
   acme_cancel_keeps_the_live_state
 
+# The shared helpers replaced 19 duplicated sites; the way they pass arguments and map
+# return codes is what keeps those sites equivalent, so both are pinned here.
+# (Both of these were real regressions during the refactor.)
+config_candidate_passes_the_output_path_first(){
+  (
+    local dir="$TEMP_DIR/config-candidate"
+    rm -rf "$dir"; mkdir -p "$dir"
+    # shellcheck disable=SC2030
+    SB_DIR="$dir"
+    # shellcheck disable=SC2317
+    builder(){ local out=$1; shift; printf 'out=%s args=%s\n' "$out" "$*" > "$out"; }
+    local candidate=
+    config_candidate candidate builder alpha beta || return 1
+    [[ -n $candidate ]] || return 1
+    grep -Fq "args=alpha beta" "$candidate" || return 1
+    grep -Fq "out=$dir/" "$candidate" || return 1
+    rm -f "$candidate"
+    return 0
+  )
+}
+expect_success "config_candidate hands the candidate path to the builder first" \
+  config_candidate_passes_the_output_path_first
+
+commit_candidate_reports_a_failed_rollback(){
+  (
+    # shellcheck disable=SC2317
+    commit_config(){ return 2; }
+    # shellcheck disable=SC2317
+    readp(){ return 1; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    commit_config_candidate /tmp/does-not-matter "主菜单"
+    [[ $? -eq 2 ]]
+  )
+}
+expect_success "a commit whose rollback also failed is reported as such" \
+  commit_candidate_reports_a_failed_rollback
+
+commit_candidate_reports_a_retryable_failure(){
+  (
+    # shellcheck disable=SC2317
+    commit_config(){ return 1; }
+    local answer='0'
+    # shellcheck disable=SC2317
+    readp(){ printf -v "$2" '%s' "$answer"; return 0; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    commit_config_candidate /tmp/does-not-matter "主菜单"
+    [[ $? -eq 3 ]] || return 1
+    answer=''
+    # 空输入＝重试
+    # shellcheck disable=SC2317
+    readp(){ printf -v "$2" '%s' ''; return 0; }
+    commit_config_candidate /tmp/does-not-matter "主菜单"
+    [[ $? -eq 1 ]]
+  )
+}
+expect_success "a failed commit either retries or gives up, never silently succeeds" \
+  commit_candidate_reports_a_retryable_failure
+
 relay_candidate_builders(){
   (
     local dir="$relay_roundtrip/candidate" key="$relay_password_valid"
