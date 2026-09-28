@@ -180,6 +180,11 @@ than aborting:
   `tests/verify.sh:74` and `:179` assert two of these strings still exist, so keep the prompt text
   when adding options. The prompt must match the options that are actually offered: menu [8]'s
   SOCKS5 sub-menu is `请选择【0-4】` since 5.0.0 dropped its fifth item.
+- **A wait prompt must name the menu the operator lands in.** `按回车返回 X...` is a promise about
+  the next screen, and it is easy to leave behind when a function is reached from a different menu
+  (5.0.1 fixed three of these: the UUID flow said 主菜单 while it returns to 凭据管理, and both the
+  SOCKS5-entry and upstream actions named a menu one level above where they land). `tests/verify.sh`
+  brackets those flows with `awk` and fails if the label disagrees with the caller.
 
 ---
 

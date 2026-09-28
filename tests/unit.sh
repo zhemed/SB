@@ -1976,7 +1976,7 @@ pass "SOCKS5 password success is shown"
 [[ $FLOW_MESSAGES == *"share:$SOCKS_PASSWORD_TWO"* ]] ||
   fail "SOCKS5 password success did not print the share link"
 pass "SOCKS5 password success prints the share link"
-[[ $FLOW_PROMPTS == *'按回车返回可选功能...'* ]] ||
+[[ $FLOW_PROMPTS == *'按回车返回 SOCKS5 入口...'* ]] ||
   fail "SOCKS5 password success did not wait for return"
 pass "SOCKS5 password success waits before returning"
 
@@ -2008,9 +2008,11 @@ expect_success "credential menu dispatches the UUID flow only" change_credential
 pass "credential menu dispatches the UUID flow exactly once"
 [[ $FLOW_MESSAGES == *'请输入0或1'* ]] || fail "credential menu invalid choice was not shown"
 pass "credential menu reports invalid choices"
-[[ $FLOW_MESSAGES == *'菜单[8]'* ]] ||
-  fail "credential menu does not point at the optional-features menu"
-pass "credential menu points at menu [8] for the upstream Shadowsocks key"
+# The credentials menu manages the Hysteria2 UUID only: the removed SS entry used to
+# leave a pointer to menu [8] here, and that pointer was noise once the entry was gone.
+[[ $FLOW_MESSAGES != *'Shadowsocks'* ]] ||
+  fail "credential menu still mentions the removed Shadowsocks entry"
+pass "credential menu mentions neither the removed entry nor the upstream key"
 unset -f changeuuid
 
 SS_MENU_CALLS=

@@ -47,12 +47,12 @@ fi
   fail "SOCKS5 username is not fixed to sb"
 [[ $(grep -Fxc 'RELAY_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "upstream Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
-[[ $(grep -Fxc 'sb_version="v5.0.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.0.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.0.0' ]] ||
-  fail "VERSION file is not 5.0.0"
-grep -Fq -- "当前项目版本：\`5.0.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.0.0"
+[[ $(grep -Fxc 'sb_version="v5.0.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.0.1"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.0.1' ]] ||
+  fail "VERSION file is not 5.0.1"
+grep -Fq -- "当前项目版本：\`5.0.1\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.0.1"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -188,6 +188,33 @@ for optional_pattern in 'socks_password' 'port_socks5' 'socks5-sb' 'generate_soc
     fail "install flow still creates an optional entry: $optional_pattern"
   fi
 done
+# Every "按回车返回 X" prompt must name the menu the operator actually lands in.
+# Three of them were wrong in 5.0.0 (they said 主菜单 / 可选功能 while the caller
+# was a sub-menu), so the flows are pinned here instead of being left to review.
+credential_flow=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_socks_password\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+socks_branch_flow=$(awk '/^enable_socks_entry\(\)\{/{inside=1} /^manage_socks_entry\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+relay_branch_flow=$(awk '/^set_relay_upstream\(\)\{/{inside=1} /^manage_relay\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+credential_menu=$(awk '/^change_credentials\(\)\{/{inside=1} /^set_relay_upstream\(\)\{/{inside=0} inside' \
+  "$ROOT_DIR/sb.sh")
+[[ -n $credential_flow && -n $socks_branch_flow && -n $relay_branch_flow && -n $credential_menu ]] ||
+  fail "cannot extract the menu flows for the return-label check"
+if printf '%s\n' "$credential_flow" | grep -Fq '返回主菜单'; then
+  fail "the UUID flow returns to 凭据管理 but tells the operator it returns to 主菜单"
+fi
+if printf '%s\n' "$socks_branch_flow" | grep -Fq -- '返回可选功能'; then
+  fail "the SOCKS5 entry actions land in the sub-menu but say 返回可选功能"
+fi
+if printf '%s\n' "$relay_branch_flow" | grep -Fq -- '返回主菜单' ||
+   printf '%s\n' "$relay_branch_flow" | grep -Fq -- '返回可选功能'; then
+  fail "the upstream actions land in the 上游/中转 menu but name another menu"
+fi
+if printf '%s\n' "$credential_menu" | grep -Fq -- 'Shadowsocks'; then
+  fail "the credentials menu still advertises the removed Shadowsocks entry"
+fi
+
 grep -Fq -- 'choose_socks_port()' "$ROOT_DIR/sb.sh" ||
   fail "optional entry port selection is missing"
 [[ $(grep -Fc -- '按回车返回主菜单...' "$ROOT_DIR/sb.sh" || true) -ge 5 ]] ||

@@ -615,12 +615,12 @@ refresh_share_files_after_change(){
 changeuuid(){
   local olduuid uuid candidate choice retry commit_status
   if ! sbactive; then
-    readp "按回车返回主菜单..."
+    readp "按回车返回凭据菜单..."
     return 1
   fi
   if ! olduuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前UUID失败，配置未修改"
-    readp "按回车返回主菜单..."
+    readp "按回车返回凭据菜单..."
     return 1
   fi
   echo
@@ -679,12 +679,12 @@ changeuuid(){
 change_socks_password(){
   local current_password new_password candidate choice retry commit_status
   if ! sbactive; then
-    readp "按回车返回主菜单..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前SOCKS5密码失败，配置未修改"
-    readp "按回车返回主菜单..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   echo
@@ -694,7 +694,7 @@ change_socks_password(){
     readp "输入新密码（16-128位安全字符，回车随机生成，输入0取消）：" choice || return 1
     if [[ $choice == 0 ]]; then
       yellow "已取消，密码未修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 0
     fi
     if [[ -z $choice ]]; then
@@ -730,14 +730,14 @@ change_socks_password(){
       refresh_share_files_after_change || true
       green "SOCKS5密码修改成功：${new_password}"
       print_socks_entry_share "$new_password" || true
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 0
     else
       commit_status=$?
     fi
     if [[ $commit_status -eq 2 ]]; then
       red "SOCKS5密码修改失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 2
     fi
     red "SOCKS5密码修改失败，原配置未修改或已恢复"
@@ -752,7 +752,6 @@ change_credentials(){
     green "凭据管理"
     green "1：更改Hysteria2 UUID（密码）"
     green "0：返回主菜单"
-    yellow "上游中转的 Shadowsocks-2022 密钥在菜单[8]第2项里管理"
     readp "请选择【0-1】：" choice || return 1
     case "$choice" in
       1) changeuuid ;;
@@ -800,7 +799,7 @@ relay_candidate_without_upstream(){
 set_relay_upstream(){
   local server port password candidate commit_status retry
   if ! sbactive; then
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 1
   fi
   echo
@@ -808,7 +807,7 @@ set_relay_upstream(){
     readp "请输入落地机地址（IPv4/IPv6/域名，输入0取消）：" server || return 1
     if [[ $server == 0 ]]; then
       yellow "已取消，未做任何修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回上游/中转菜单..."
       return 0
     fi
     if ! relay_server_is_valid "$server"; then
@@ -818,7 +817,7 @@ set_relay_upstream(){
     readp "请输入落地机端口（1-65535，输入0取消）：" port || return 1
     if [[ $port == 0 ]]; then
       yellow "已取消，未做任何修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回上游/中转菜单..."
       return 0
     fi
     if ! valid_port "$port"; then
@@ -828,7 +827,7 @@ set_relay_upstream(){
     readp "请输入落地机的Shadowsocks-2022密钥（44位base64，输入0取消）：" password || return 1
     if [[ $password == 0 ]]; then
       yellow "已取消，未做任何修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回上游/中转菜单..."
       return 0
     fi
     if ! valid_ss_password "$password"; then
@@ -840,19 +839,19 @@ set_relay_upstream(){
       yellow "启用后所有出网流量都会走它，上游不通等于断网；清除上游可立即恢复直连"
       if ! confirm_yes "上游不可达，仍要保存并切换出网？[回车/y 确认，n 取消]："; then
         yellow "已取消，未做任何修改"
-        readp "按回车返回可选功能..."
+        readp "按回车返回上游/中转菜单..."
         return 0
       fi
     fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建上游候选配置失败，原配置未修改"
-      readp "按回车返回主菜单..."
+      readp "按回车返回上游/中转菜单..."
       return 1
     fi
     if ! relay_candidate_with_upstream "$candidate" "$server" "$port" "$password" || ! chmod 600 "$candidate"; then
       rm -f "$candidate"
       red "生成上游候选配置失败，原配置未修改"
-      readp "按回车重新输入，输入0返回主菜单：" retry || return 1
+      readp "按回车重新输入，输入0返回上游/中转菜单：" retry || return 1
       [[ $retry == 0 ]] && return 1
       continue
     fi
@@ -864,18 +863,18 @@ set_relay_upstream(){
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
-      readp "按回车返回主菜单..."
+      readp "按回车返回上游/中转菜单..."
       return 0
     else
       commit_status=$?
     fi
     if [[ $commit_status -eq 2 ]]; then
       red "上游设置失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回主菜单..."
+      readp "按回车返回上游/中转菜单..."
       return 2
     fi
     red "上游设置失败，原配置未修改或已恢复"
-    readp "按回车重新输入，输入0返回主菜单：" retry || return 1
+    readp "按回车重新输入，输入0返回上游/中转菜单：" retry || return 1
     [[ $retry == 0 ]] && return 1
   done
 }
@@ -883,30 +882,30 @@ set_relay_upstream(){
 clear_relay_upstream(){
   local candidate commit_status
   if ! sbactive; then
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 1
   fi
   if ! relay_settings_present &&
      ! jq -e '[.outbounds[]? | select(.tag == "relay")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
     yellow "当前没有配置上游，无需清除"
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 0
   fi
   echo
   if ! confirm_yes "确认清除上游并恢复直连出网？[回车/y 确认，n 取消]："; then
     yellow "已取消，未做任何修改"
-    readp "按回车返回可选功能..."
+    readp "按回车返回上游/中转菜单..."
     return 0
   fi
   if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
     red "创建上游候选配置失败，原配置未修改"
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 1
   fi
   if ! relay_candidate_without_upstream "$candidate" || ! chmod 600 "$candidate"; then
     rm -f "$candidate"
     red "生成上游候选配置失败，原配置未修改"
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 1
   fi
   if commit_config "$candidate"; then
@@ -915,18 +914,18 @@ clear_relay_upstream(){
     else
       red "服务端已恢复直连，但上游状态文件删除失败，请手动检查 $(relay_config_path)"
     fi
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 0
   else
     commit_status=$?
   fi
   if [[ $commit_status -eq 2 ]]; then
     red "清除上游失败且自动回滚失败，请先检查服务和备份配置"
-    readp "按回车返回主菜单..."
+    readp "按回车返回上游/中转菜单..."
     return 2
   fi
   red "清除上游失败，原配置未修改或已恢复"
-  readp "按回车返回主菜单..."
+  readp "按回车返回上游/中转菜单..."
   return 1
 }
 
@@ -945,7 +944,7 @@ manage_relay(){
     yellow "启用上游后本机所有出网流量都交给落地机，上游不可达等于断网"
     green "1：设置/更换上游（落地机）"
     green "2：清除上游（恢复直连）"
-    green "0：返回主菜单"
+    green "0：返回可选功能"
     readp "请选择【0-2】：" choice || return 1
     case "$choice" in
       1) set_relay_upstream ;;
@@ -1026,17 +1025,17 @@ socks_entry_candidate_without_inbound(){
 enable_socks_entry(){
   local port password listen_addr candidate commit_status retry
   if ! sbactive; then
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   if socks_entry_is_enabled; then
     yellow "SOCKS5 入口已经启用；改端口用【3】，改密码用【4】"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 0
   fi
   if ! listen_addr=$(jq -er '.inbounds[] | select(.tag == "hy2-sb") | .listen' "$SB_CONFIG" 2>/dev/null); then
     red "读取现有监听地址失败，本次未启用"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   echo
@@ -1048,7 +1047,7 @@ enable_socks_entry(){
       0) : ;;
       2)
         yellow "已取消，未做任何修改"
-        readp "按回车返回可选功能..."
+        readp "按回车返回 SOCKS5 入口..."
         return 0
         ;;
       *) return 1 ;;
@@ -1056,12 +1055,12 @@ enable_socks_entry(){
     password=$(generate_socks_password) || password=
     if ! valid_socks_password "$password"; then
       red "生成SOCKS5密码失败"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 1
     fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建候选配置失败，原配置未修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 1
     fi
     if ! socks_entry_candidate_with_inbound "$candidate" "$port" "$password" "$listen_addr" ||
@@ -1077,14 +1076,14 @@ enable_socks_entry(){
       green "SOCKS5 入口已启用：端口 ${port}/tcp"
       print_socks_entry_share "$password"
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 0
     else
       commit_status=$?
     fi
     if [[ $commit_status -eq 2 ]]; then
       red "启用失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 2
     fi
     red "启用失败，原配置未修改或已恢复"
@@ -1096,59 +1095,59 @@ enable_socks_entry(){
 disable_socks_entry(){
   local candidate commit_status
   if ! sbactive; then
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   if ! socks_entry_is_enabled; then
     yellow "SOCKS5 入口当前未启用，无需停用"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 0
   fi
   echo
   yellow "停用后使用这个入口的客户端会立即连不上，分享文件与客户端配置也会去掉它"
   if ! confirm_yes "确认停用 SOCKS5 入口？[回车/y 确认，n 取消]："; then
     yellow "已取消，未做任何修改"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 0
   fi
   if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
     red "创建候选配置失败，原配置未修改"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   if ! socks_entry_candidate_without_inbound "$candidate" || ! chmod 600 "$candidate"; then
     rm -f "$candidate"
     red "生成候选配置失败，原配置未修改"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   if commit_config "$candidate"; then
     refresh_share_files_after_change || true
     green "SOCKS5 入口已停用"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 0
   else
     commit_status=$?
   fi
   if [[ $commit_status -eq 2 ]]; then
     red "停用失败且自动回滚失败，请先检查服务和备份配置"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 2
   fi
   red "停用失败，原配置未修改或已恢复"
-  readp "按回车返回可选功能..."
+  readp "按回车返回 SOCKS5 入口..."
   return 1
 }
 
 change_socks_port(){
   local current nport port candidate retry commit_status
   if ! sbactive; then
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
   if ! current=$(socks_entry_port); then
     yellow "SOCKS5 入口当前未启用，请先用【1】启用"
-    readp "按回车返回可选功能..."
+    readp "按回车返回 SOCKS5 入口..."
     return 0
   fi
   echo
@@ -1157,14 +1156,14 @@ change_socks_port(){
     readp "请输入新SOCKS5端口 (1-65535，留空随机10000-65535，输入0取消): " nport || return 1
     if [[ $nport == 0 ]]; then
       yellow "已取消，端口未修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 0
     fi
     port="$nport"
     chooseport tcp || continue
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建端口候选配置失败，原配置未修改"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 1
     fi
     if ! jq --argjson p "$port" '
@@ -1184,14 +1183,14 @@ change_socks_port(){
       green "SOCKS5端口修改成功：$port"
       print_socks_entry_share "$(socks_entry_password)" || true
       yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port}/tcp"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 0
     else
       commit_status=$?
     fi
     if [[ $commit_status -eq 2 ]]; then
       red "端口修改失败且自动回滚失败，请先检查服务和备份配置"
-      readp "按回车返回可选功能..."
+      readp "按回车返回 SOCKS5 入口..."
       return 2
     fi
     red "端口修改失败，原配置未修改或已恢复"
