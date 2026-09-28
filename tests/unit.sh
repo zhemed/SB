@@ -310,6 +310,47 @@ choose_socks_port_cancel_status(){
 }
 expect_success "cancelling the port question is distinct from a random port" \
   choose_socks_port_cancel_status
+
+# The retry loop inside chooseport used to have no exit: a conflicting port kept the
+# same value, so pressing Ctrl-D (or any invalid input) spun the loop forever. It now
+# offers 0 as a cancel and treats a failed read as one.
+chooseport_cancel_status(){
+  (
+    # shellcheck disable=SC2317
+    readp(){ printf -v "$2" '%s' 0; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    blue(){ :; }
+    # shellcheck disable=SC2317
+    port_conflict(){ return 0; }
+    port=1234
+    chooseport tcp
+    status=$?
+    [[ $status -eq 2 ]]
+  )
+}
+expect_success "a conflicting port can be cancelled instead of looping forever" \
+  chooseport_cancel_status
+
+chooseport_read_failure_is_a_cancel(){
+  (
+    # shellcheck disable=SC2030,SC2031
+    # shellcheck disable=SC2317
+    readp(){ return 1; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    blue(){ :; }
+    # shellcheck disable=SC2317
+    port_conflict(){ return 0; }
+    port=1234
+    chooseport tcp
+    [[ $? -eq 2 ]]
+  )
+}
+expect_success "a failed port read (EOF) is treated as a cancel" \
+  chooseport_read_failure_is_a_cancel
 unset -f readp
 
 cancelled_disable_is_reported(){

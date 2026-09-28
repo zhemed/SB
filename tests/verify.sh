@@ -45,12 +45,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.1.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.1.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.1.0' ]] ||
-  fail "VERSION file is not 5.1.0"
-grep -Fq -- "当前项目版本：\`5.1.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.1.0"
+[[ $(grep -Fxc 'sb_version="v5.1.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.1.1"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.1.1' ]] ||
+  fail "VERSION file is not 5.1.1"
+grep -Fq -- "当前项目版本：\`5.1.1\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.1.1"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -234,6 +234,16 @@ fi
 
 grep -Fq -- 'choose_socks_port()' "$ROOT_DIR/sb.sh" ||
   fail "optional entry port selection is missing"
+# A port retry loop must always be escapable, and the hostname is interpolated into
+# JSON/YAML/link text, so it cannot be trusted as-is.
+grep -Fq -- '输入0取消): " port || return 2' "$ROOT_DIR/sb.sh" ||
+  fail "the port retry prompt no longer offers a cancel"
+# shellcheck disable=SC2016
+grep -Fq -- 'hostname=$(hostname 2>/dev/null)' "$ROOT_DIR/sb.sh" ||
+  fail "the hostname is used without a guarded read"
+grep -Fq -- '|| hostname=sb' "$ROOT_DIR/sb.sh" ||
+  fail "an invalid hostname is no longer replaced by a safe tag prefix"
+
 [[ $(grep -Fc -- '按回车返回主菜单...' "$ROOT_DIR/sb.sh" || true) -ge 5 ]] ||
   fail "modification flows do not consistently wait before returning"
 

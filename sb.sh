@@ -101,8 +101,9 @@ x86_64) cpu=amd64;;
 *) red "目前脚本不支持$(uname -m)架构"; exit 1;;
 esac
 
-hostname=$(hostname)
-sb_version="v5.1.0"
+hostname=$(hostname 2>/dev/null)
+[[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
+sb_version="v5.1.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1830,7 +1831,8 @@ chooseport(){
     elif valid_port "$port" 1; then
       break
     fi
-    readp "请重新输入端口 (1-65535，留空随机10000-65535): " port
+    readp "请重新输入端口 (1-65535，留空随机10000-65535，输入0取消): " port || return 2
+    [[ $port == 0 ]] && return 2
   done
   blue "确认的端口：$port" && sleep 2
 }
@@ -1872,8 +1874,9 @@ choose_socks_port(){
 }
 
 hy2port(){
-  readp "\n设置Hysteria2主端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport udp
+  readp "\n设置Hysteria2主端口 (可输入1-65535，留空随机10000-65535，输入0取消)：" port || return 1
+  [[ $port == 0 ]] && return 2
+  chooseport udp || return $?
   port_hy2=$port
 }
 
@@ -1892,7 +1895,11 @@ insport(){
       2)
         port=
         hy2port
-        break
+        case $? in
+          2) yellow "已取消安装"; return 1 ;;
+          0) break ;;
+          *) return 1 ;;
+        esac
         ;;
       *) red "请输入1或2" ;;
     esac
@@ -4261,7 +4268,16 @@ change_ports(){
           return 0
         fi
         port="$nport"
-        chooseport udp || continue
+        chooseport udp
+        case $? in
+          2)
+            yellow "已取消，端口未修改"
+            readp "按回车返回主菜单..."
+            return 0
+            ;;
+          0) ;;
+          *) continue ;;
+        esac
         if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
           red "创建端口候选配置失败，原配置未修改"
           readp "按回车重试，输入0返回主菜单：" retry || return 1
@@ -4849,7 +4865,16 @@ change_socks_port(){
       return 0
     fi
     port="$nport"
-    chooseport tcp || continue
+    chooseport tcp
+    case $? in
+      2)
+        yellow "已取消，端口未修改"
+        readp "按回车返回 SOCKS5 入口..."
+        return 0
+        ;;
+      0) ;;
+      *) continue ;;
+    esac
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建端口候选配置失败，原配置未修改"
       readp "按回车返回 SOCKS5 入口..."

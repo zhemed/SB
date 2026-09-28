@@ -558,7 +558,16 @@ change_ports(){
           return 0
         fi
         port="$nport"
-        chooseport udp || continue
+        chooseport udp
+        case $? in
+          2)
+            yellow "已取消，端口未修改"
+            readp "按回车返回主菜单..."
+            return 0
+            ;;
+          0) ;;
+          *) continue ;;
+        esac
         if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
           red "创建端口候选配置失败，原配置未修改"
           readp "按回车重试，输入0返回主菜单：" retry || return 1
@@ -1146,7 +1155,16 @@ change_socks_port(){
       return 0
     fi
     port="$nport"
-    chooseport tcp || continue
+    chooseport tcp
+    case $? in
+      2)
+        yellow "已取消，端口未修改"
+        readp "按回车返回 SOCKS5 入口..."
+        return 0
+        ;;
+      0) ;;
+      *) continue ;;
+    esac
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建端口候选配置失败，原配置未修改"
       readp "按回车返回 SOCKS5 入口..."

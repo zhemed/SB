@@ -59,7 +59,8 @@ chooseport(){
     elif valid_port "$port" 1; then
       break
     fi
-    readp "请重新输入端口 (1-65535，留空随机10000-65535): " port
+    readp "请重新输入端口 (1-65535，留空随机10000-65535，输入0取消): " port || return 2
+    [[ $port == 0 ]] && return 2
   done
   blue "确认的端口：$port" && sleep 2
 }
@@ -101,8 +102,9 @@ choose_socks_port(){
 }
 
 hy2port(){
-  readp "\n设置Hysteria2主端口 (可输入1-65535，留空随机10000-65535)：" port
-  chooseport udp
+  readp "\n设置Hysteria2主端口 (可输入1-65535，留空随机10000-65535，输入0取消)：" port || return 1
+  [[ $port == 0 ]] && return 2
+  chooseport udp || return $?
   port_hy2=$port
 }
 
@@ -121,7 +123,11 @@ insport(){
       2)
         port=
         hy2port
-        break
+        case $? in
+          2) yellow "已取消安装"; return 1 ;;
+          0) break ;;
+          *) return 1 ;;
+        esac
         ;;
       *) red "请输入1或2" ;;
     esac
