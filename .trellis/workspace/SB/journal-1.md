@@ -375,3 +375,42 @@
 ### Next Steps
 
 - 用户升级到 5.1.0 后若用中转：落地机启用 SOCKS5 入口，线路机重设上游
+
+
+## Session 14: 三轮审计与精简：把行为回放固化成门禁第 8 步
+<!-- trellis-session: v=2 fp=428f0adad158ef12 -->
+
+**Date**: 2026-09-28
+**Task**: 三轮审计与精简：把行为回放固化成门禁第 8 步
+**Branch**: `main`
+
+### Summary
+
+第二轮扫描（改动反审+行为沙箱）修掉 13 处，其中两处高危是我自己造成的（ACME 指纹函数不存在、取消流程删掉生效证书）；精简一轮净删 53 行、收掉 19 处重复样板；A/B 回归验证抓到精简引入的两处高危（返回码被吞、候选路径传错，四条菜单路径失效）。新增 tests/replay.sh 17 条流程行为回放并接进门禁第 8 步，元验证过会报红。
+
+### Main Changes
+
+- src/10,00,20,30,40,50,60,70,85 + tests/replay.sh + tests/verify.sh + 规范
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `806cd06` | [task:09-28-script-audit] 5.1.1：按三份审计修掉 26 处真缺陷 |
+| `fe760e2` | [task:09-28-script-audit-2] 修掉我今天引入的两处高危：crontab 过滤器链与守卫 |
+| `0e24949` | [task:09-28-script-audit-2] 第二轮扫描：行为级沙箱抓到的高危与我改动的反审修复 |
+| `9887c6d` | [task:09-28-simplify] 精简一轮：净删 53 行，收掉 19 处重复样板 |
+| `c27c37f` | [task:09-28-refactor-verify] A/B 回归验证：抓到并修掉精简引入的两处高危 |
+| `445cc3d` | [task:09-28-refactor-verify] 把行为回放固化成仓库步骤（tests/replay.sh + 门禁第 8 步） |
+
+### Testing
+
+- [OK] 门禁 389 项全绿；真实内核三项通过；卸载沙箱一致；A/B 17/17 一致；回放元验证（注入回归会红）
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 推送后 CI 验证；后续任何改动先过 tests/replay.sh 再报完成

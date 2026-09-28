@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 13
+- **Total Sessions**: 14
 - **Last Active**: 2026-09-28
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~377 | Active |
+| `journal-1.md` | ~416 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 14 | 2026-09-28 | 三轮审计与精简：把行为回放固化成门禁第 8 步 | `806cd06`, `fe760e2`, `0e24949`, `9887c6d`, `c27c37f`, `445cc3d` | `main` |
 | 13 | 2026-09-28 | 5.1.0：彻底移除 SS、菜单收拾、删注释（含本次几个错） | `5f7208a`, `2e8601b`, `a63695f`, `9987e9b`, `8f947eb` | `main` |
 | 12 | 2026-09-20 | 5.0.0：彻底移除旧 Shadowsocks-2022 入口的兼容层 | `4b33571`, `8667408` | `main` |
 | 11 | 2026-09-20 | v4.0.0 上线结果：入口切换为 SOCKS5，旧 SS 入口已移除 | - | `main` |
