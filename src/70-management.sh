@@ -321,6 +321,7 @@ apply_new_cloudflare_certificate(){
   case $? in
     0) ;;
     3)
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
       yellow "已取消，未做任何修改"
       return 0
       ;;
@@ -376,8 +377,9 @@ replace_active_acme_certificate(){
   case $? in
     0) ;;
     3)
+      # 用户只是敲了 Ctrl-D / 在 Token 处回了车：现场还是原样，绝不能删除正在生效的
+      # ACME 状态（discard_acme_state 会删掉证书本身）。备份留给残留恢复机制处理。
       ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
-      discard_acme_state || yellow "清理解除备份失败，请手动检查 $SB_DIR"
       yellow "已取消，未做任何修改"
       return 0
       ;;
@@ -666,6 +668,11 @@ changeuuid(){
       yellow "请重新输入UUID"
       continue
     fi
+    if [[ ${uuid,,} == "${olduuid,,}" ]]; then
+      yellow "与当前 UUID 相同，未做修改"
+      readp "按回车返回凭据菜单..."
+      return 0
+    fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建UUID候选配置失败，原配置未修改"
       readp "按回车重试，输入0返回凭据菜单：" retry || return 1
@@ -712,7 +719,6 @@ change_socks_password(){
   fi
   if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     yellow "SOCKS5 入口当前未启用，请先用【1】启用"
-    readp "按回车返回 SOCKS5 入口..."
     readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
@@ -1293,6 +1299,8 @@ manage_optional_features(){
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"
+    elif relay_settings_present; then
+      red "2：上游/中转 状态文件无法解析，请进子菜单重设"
     else
       green "2：上游/中转 ${yellow}未配置${plain}"
     fi

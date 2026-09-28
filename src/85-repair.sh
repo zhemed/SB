@@ -156,6 +156,24 @@ ensure_repair_certificate(){
   esac
 }
 
+prune_config_backups_before_repair(){
+  local keep=2 path failed=0 count=0
+  local -a candidates=()
+  for path in "$SB_DIR"/.sb.json.before-repair.*; do
+    [[ -e $path || -L $path ]] || continue
+    [[ $path == "${REPAIR_CONFIG_BACKUP:-}" ]] && continue
+    candidates+=("$path")
+  done
+  [[ ${#candidates[@]} -gt 0 ]] || return 0
+  while IFS= read -r path; do
+    [[ -n $path ]] || continue
+    count=$((count + 1))
+    [[ $count -le $keep ]] && continue
+    rm -f -- "$path" || failed=1
+  done < <(printf '%s\n' "${candidates[@]}" | xargs -r ls -1t 2>/dev/null)
+  return "$failed"
+}
+
 preserve_config_before_repair(){
   local backup
   [[ -z ${REPAIR_CONFIG_BACKUP:-} ]] || return 0
@@ -387,14 +405,19 @@ cleanup_repair_temporary_files(){
     "$SB_DIR"/.socks5.txt.* "$SB_DIR"/.hy2.txt.* "$SB_DIR"/.jhdy.txt.* \
     "$SB_DIR"/.sb.json.?????? \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
-    "$SB_DIR"/.repair-target-*; do
+    "$SB_DIR"/.repair-target-* "$SB_DIR"/.repair-core-backup.* \
+    "$SB_DIR"/.repair-service-backup.* "$SB_DIR"/.sb.json.backup.*; do
     [[ -e $path || -L $path ]] || continue
     if [[ $path == "${REPAIR_TARGET_CORE_SNAPSHOT:-}" ||
-          $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ]]; then
+          $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ||
+          $path == "${REPAIR_CORE_BACKUP:-}" ||
+          $path == "${REPAIR_SERVICE_BACKUP:-}" ||
+          $path == "${REPAIR_CONFIG_BACKUP:-}" ]]; then
       continue
     fi
     rm -rf -- "$path" || failed=1
   done
+  prune_config_backups_before_repair || failed=1
   return "$failed"
 }
 
@@ -608,14 +631,19 @@ abort_repair_transaction(){
   else
     REPAIR_ROLLBACK_STATE=not_needed
   fi
-  if [[ $REPAIR_ROLLBACK_STATE == original_restored ]]; then
-    if [[ -n ${REPAIR_CORE_BACKUP:-} ]]; then
-      if rm -f -- "$REPAIR_CORE_BACKUP"; then REPAIR_CORE_BACKUP=; else status=1; fi
-    fi
-    if [[ -n ${REPAIR_SERVICE_BACKUP:-} ]]; then
-      if rm -f -- "$REPAIR_SERVICE_BACKUP"; then REPAIR_SERVICE_BACKUP=; else status=1; fi
-    fi
-  fi
+  # original_restored：原件已经回到位；not_needed：还没改动任何东西；target_restored：
+  # 修复后的状态已经启用。这三种情况下修复前备份都不再需要，必须删掉——否则一次
+  # 开头的 Ctrl-C 就会在 /etc/sb 里永久留下一份 ~30MB 的内核拷贝。
+  case $REPAIR_ROLLBACK_STATE in
+    original_restored|not_needed|target_restored)
+      if [[ -n ${REPAIR_CORE_BACKUP:-} ]]; then
+        if rm -f -- "$REPAIR_CORE_BACKUP"; then REPAIR_CORE_BACKUP=; else status=1; fi
+      fi
+      if [[ -n ${REPAIR_SERVICE_BACKUP:-} ]]; then
+        if rm -f -- "$REPAIR_SERVICE_BACKUP"; then REPAIR_SERVICE_BACKUP=; else status=1; fi
+      fi
+      ;;
+  esac
   cleanup_repair_temporary_files || status=1
   REPAIR_TRANSACTION_ACTIVE=0
   REPAIR_TRANSACTION_FINALIZING=0

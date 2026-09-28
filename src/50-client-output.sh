@@ -62,6 +62,7 @@ refresh_saved_ip(){
 }
 
 result(){
+  socks_keep_previous_share=0
   if [[ ! -s $SB_CONFIG ]]; then
     red "配置文件不存在，请先安装"
     return 1
@@ -96,11 +97,15 @@ result(){
   socks_port=
   socks_password=
   if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$SB_CONFIG" >/dev/null 2>&1; then
-    socks_enabled=1
     if ! socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) ||
        ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
-      red "服务端配置里的 SOCKS5 入口缺少口令或端口，请用菜单[8]重设一次"
-      return 1
+      # 入站还在、字段被改坏：保留已生成的 socks5.txt，只跳过它，Hysteria2 节点照常出。
+      red "服务端配置里的 SOCKS5 入口缺少口令或端口，本次不生成它的节点；请用菜单[8]重设一次"
+      socks_password=
+      socks_port=
+      socks_keep_previous_share=1
+    else
+      socks_enabled=1
     fi
   fi
   if ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
@@ -528,6 +533,8 @@ sbshare(){
       rm -f "$socks_tmp" "$hy2_tmp" "$aggregate_tmp"
       return 1
     }
+  elif [[ ${socks_keep_previous_share:-0} -eq 1 ]]; then
+    yellow "本次没有重写 $SB_DIR/socks5.txt（入口配置异常，保留原文件）"
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi

@@ -847,16 +847,9 @@ register_acme_certificate_deployment(){
     acme_deployment_config_is_current "$identity" || return 1
   # 只有"当前生效的证书就是这次安装进暂存区的那份"才算部署成功：hook 失败会回滚到
   # 旧 generation，旧证书本身仍然有效，只校验它会把回滚误判成成功。
-  # certificate_fingerprint 读的是全局 cert_file（仓库既有约定），不吃参数。
-  # shellcheck disable=SC2034
-  cert_file=$ACME_STAGE_CERT
-  staged_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
-  # shellcheck disable=SC2034
-  cert_file=$ACME_CERT
-  deployed_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
-  # shellcheck disable=SC2034
-  cert_file=
-  [[ -n $staged_fingerprint && $staged_fingerprint == "$deployed_fingerprint" ]] || return 1
+  staged_fingerprint=$(certificate_file_fingerprint "$ACME_STAGE_CERT") || return 1
+  deployed_fingerprint=$(certificate_file_fingerprint "$ACME_CERT") || return 1
+  [[ $staged_fingerprint == "$deployed_fingerprint" ]] || return 1
   load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
     [[ $CERT_META_STATE == valid ]] &&
     certificate_identity_matches "$ACME_CERT" "$identity"

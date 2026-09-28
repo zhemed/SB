@@ -579,6 +579,76 @@ crontab_filter_chains_every_stage(){
 }
 expect_success "every filter in the chain runs" crontab_filter_chains_every_stage
 
+# Regression guard: a function that only exists inside a generated heredoc (the ACME hook
+# and the renewal runner) must never be called from the main script — that mistake made the
+# Cloudflare certificate flow fail with "command not found" while every gate stayed green.
+heredoc_helpers_are_not_called_from_the_main_script(){
+  local root_dir
+  root_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
+  local body helpers fn
+  helpers=$(awk '
+    /<<.?(ACMERELOAD|ACMERENEW).?/ {hd=1; next}
+    hd && /^(ACMERELOAD|ACMERENEW)$/ {hd=0; next}
+    hd && /^[a-z_][a-z0-9_]*\(\)\{/ {sub(/\(\).*/,""); print}
+  ' "$root_dir/sb.sh")
+  [[ -n $helpers ]] || return 1
+  body=$(awk '
+    /<<.?(ACMERELOAD|ACMERENEW).?/ {hd=1; next}
+    hd && /^(ACMERELOAD|ACMERENEW)$/ {hd=0; next}
+    !hd {print}
+  ' "$root_dir/sb.sh")
+  for fn in $helpers; do
+    # 只在真正的调用位置判定：命令替换 $(name …)，或行首直接调用。
+    # 转义写法 \$(name …) 是生成器写给 hook 的文本，校验用的 grep 字符串也不算调用。
+    if printf '%s\n' "$body" | grep -Eq '(^|[^\\])\$\('"$fn"'([^A-Za-z0-9_]|$)' ||
+       printf '%s\n' "$body" | grep -Eq '^[[:space:]]*'"$fn"'([^A-Za-z0-9_]|$)'; then
+      printf 'heredoc-only helper called from the main script: %s\n' "$fn" >&2
+      return 1
+    fi
+  done
+  return 0
+}
+expect_success "helpers that live inside the generated hooks are not called directly" \
+  heredoc_helpers_are_not_called_from_the_main_script
+
+# Regression guard: cancelling a certificate replacement must not touch the live ACME state.
+# The cancel path once called discard_acme_state, which deletes the deployed certificate.
+acme_cancel_keeps_the_live_state(){
+  (
+    local discarded="$TEMP_DIR/acme-cancel.discarded"
+    rm -f "$discarded"
+    # shellcheck disable=SC2317
+    detect_acme_identity(){ printf '%s\n' 'example.com'; }
+    # shellcheck disable=SC2317
+    certificate_action_service_ready(){ return 0; }
+    # shellcheck disable=SC2317
+    readp(){ printf -v "$2" '%s' '1'; }
+    # shellcheck disable=SC2317
+    issue_cloudflare_certificate(){ return 3; }
+    # shellcheck disable=SC2317
+    begin_acme_state_backup(){ return 0; }
+    # shellcheck disable=SC2317
+    discard_acme_state(){ : > "$discarded"; return 0; }
+    # shellcheck disable=SC2317
+    rollback_new_acme_state(){ : > "$discarded"; return 0; }
+    # shellcheck disable=SC2317
+    restore_previous_active_acme(){ : > "$discarded"; return 0; }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # 取消语义：返回 0（不是失败），并且一律不许动现场
+    replace_active_acme_certificate
+    [[ $? -eq 0 ]] || return 1
+    [[ ! -e $discarded ]] || return 1
+    return 0
+  )
+}
+expect_success "cancelling a certificate replacement leaves the live ACME state alone" \
+  acme_cancel_keeps_the_live_state
+
 relay_candidate_builders(){
   (
     local dir="$relay_roundtrip/candidate" key="$relay_password_valid"

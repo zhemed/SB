@@ -1128,16 +1128,9 @@ register_acme_certificate_deployment(){
     acme_deployment_config_is_current "$identity" || return 1
   # 只有"当前生效的证书就是这次安装进暂存区的那份"才算部署成功：hook 失败会回滚到
   # 旧 generation，旧证书本身仍然有效，只校验它会把回滚误判成成功。
-  # certificate_fingerprint 读的是全局 cert_file（仓库既有约定），不吃参数。
-  # shellcheck disable=SC2034
-  cert_file=$ACME_STAGE_CERT
-  staged_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
-  # shellcheck disable=SC2034
-  cert_file=$ACME_CERT
-  deployed_fingerprint=$(certificate_fingerprint 2>/dev/null) || { cert_file=; return 1; }
-  # shellcheck disable=SC2034
-  cert_file=
-  [[ -n $staged_fingerprint && $staged_fingerprint == "$deployed_fingerprint" ]] || return 1
+  staged_fingerprint=$(certificate_file_fingerprint "$ACME_STAGE_CERT") || return 1
+  deployed_fingerprint=$(certificate_file_fingerprint "$ACME_CERT") || return 1
+  [[ $staged_fingerprint == "$deployed_fingerprint" ]] || return 1
   load_certificate_metadata "$ACME_CERT" "$ACME_KEY" &&
     [[ $CERT_META_STATE == valid ]] &&
     certificate_identity_matches "$ACME_CERT" "$identity"
@@ -2136,6 +2129,9 @@ save_relay_settings(){
   valid_socks_password "$password" || return 1
   payload=$(printf 'server=%s\nport=%s\npassword=%s' "$server" "$port" "$password") || return 1
   atomic_write_private_text "$(relay_config_path)" "$payload"
+  relay_server=$server
+  relay_port=$port
+  relay_password=$password
 }
 
 clear_relay_settings(){
@@ -2540,13 +2536,18 @@ commit_config(){
     return 1
   fi
   chmod 600 "$candidate"
+  # 从 mv 到收尾结束这段窗口里配置已经生效：此时被打断会留下"服务在跑新配置、
+  # 节点文件与快照还是旧的"且用户看不到任何提示，所以先屏蔽中断，收尾完再恢复。
+  trap '' INT TERM HUP
   if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
+    trap handle_install_interrupt INT TERM HUP
     rm -f "$candidate" "$backup"
     return 1
   fi
   if restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
     save_last_good_config "$SB_CONFIG" || yellow "配置已生效，但最后可用配置快照更新失败"
+    trap handle_install_interrupt INT TERM HUP
     return 0
   fi
   red "服务未能使用新配置启动，正在回滚"
@@ -2554,9 +2555,17 @@ commit_config(){
      restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
     red "已恢复修改前的配置和服务"
+    trap handle_install_interrupt INT TERM HUP
     return 1
   fi
+  if [[ -f $backup ]] && cmp -s "$backup" "$SB_CONFIG"; then
+    red "配置已回滚，但服务未能重新启动；请检查服务状态"
+    red "原配置备份保留在 $backup"
+    trap handle_install_interrupt INT TERM HUP
+    return 2
+  fi
   red "自动回滚失败！请立即检查服务；原配置备份保留在 $backup"
+  trap handle_install_interrupt INT TERM HUP
   return 2
 }
 # sb-module: 50-client-output
@@ -2623,6 +2632,7 @@ refresh_saved_ip(){
 }
 
 result(){
+  socks_keep_previous_share=0
   if [[ ! -s $SB_CONFIG ]]; then
     red "配置文件不存在，请先安装"
     return 1
@@ -2657,11 +2667,15 @@ result(){
   socks_port=
   socks_password=
   if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$SB_CONFIG" >/dev/null 2>&1; then
-    socks_enabled=1
     if ! socks_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) ||
        ! socks_port=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
-      red "服务端配置里的 SOCKS5 入口缺少口令或端口，请用菜单[8]重设一次"
-      return 1
+      # 入站还在、字段被改坏：保留已生成的 socks5.txt，只跳过它，Hysteria2 节点照常出。
+      red "服务端配置里的 SOCKS5 入口缺少口令或端口，本次不生成它的节点；请用菜单[8]重设一次"
+      socks_password=
+      socks_port=
+      socks_keep_previous_share=1
+    else
+      socks_enabled=1
     fi
   fi
   if ! hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null); then
@@ -3089,6 +3103,8 @@ sbshare(){
       rm -f "$socks_tmp" "$hy2_tmp" "$aggregate_tmp"
       return 1
     }
+  elif [[ ${socks_keep_previous_share:-0} -eq 1 ]]; then
+    yellow "本次没有重写 $SB_DIR/socks5.txt（入口配置异常，保留原文件）"
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
@@ -3393,6 +3409,14 @@ acme_renew_cron_is_current(){
   direct_count=$(printf '%s\n' "$content" | grep -Fc -- "$ACME_BIN --cron" || true)
   [[ $exact_count -eq 1 && $marker_count -eq 1 && $runner_count -eq 1 && $direct_count -eq 0 ]] &&
     ! printf '%s\n' "$content" | grep -Fq "$SB_DIR/cert_renew.sh"
+}
+
+certificate_file_fingerprint(){
+  local path=$1 fingerprint
+  [[ -s $path ]] || return 1
+  fingerprint=$(sha256sum "$path" 2>/dev/null | awk '{print $1}') || return 1
+  [[ $fingerprint =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s\n' "${fingerprint,,}"
 }
 
 filter_acme_cron_entries(){
@@ -4135,6 +4159,7 @@ apply_new_cloudflare_certificate(){
   case $? in
     0) ;;
     3)
+      ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
       yellow "已取消，未做任何修改"
       return 0
       ;;
@@ -4190,8 +4215,9 @@ replace_active_acme_certificate(){
   case $? in
     0) ;;
     3)
+      # 用户只是敲了 Ctrl-D / 在 Token 处回了车：现场还是原样，绝不能删除正在生效的
+      # ACME 状态（discard_acme_state 会删掉证书本身）。备份留给残留恢复机制处理。
       ACME_RESTORE_ACTIVE_ON_INTERRUPT=0
-      discard_acme_state || yellow "清理解除备份失败，请手动检查 $SB_DIR"
       yellow "已取消，未做任何修改"
       return 0
       ;;
@@ -4480,6 +4506,11 @@ changeuuid(){
       yellow "请重新输入UUID"
       continue
     fi
+    if [[ ${uuid,,} == "${olduuid,,}" ]]; then
+      yellow "与当前 UUID 相同，未做修改"
+      readp "按回车返回凭据菜单..."
+      return 0
+    fi
     if ! candidate=$(mktemp "$SB_DIR/.sb.json.XXXXXX"); then
       red "创建UUID候选配置失败，原配置未修改"
       readp "按回车重试，输入0返回凭据菜单：" retry || return 1
@@ -4526,7 +4557,6 @@ change_socks_password(){
   fi
   if ! current_password=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null); then
     yellow "SOCKS5 入口当前未启用，请先用【1】启用"
-    readp "按回车返回 SOCKS5 入口..."
     readp "按回车返回 SOCKS5 入口..."
     return 1
   fi
@@ -5107,6 +5137,8 @@ manage_optional_features(){
     fi
     if load_relay_settings; then
       green "2：上游/中转 ${yellow}${relay_server}:${relay_port}${plain}"
+    elif relay_settings_present; then
+      red "2：上游/中转 状态文件无法解析，请进子菜单重设"
     else
       green "2：上游/中转 ${yellow}未配置${plain}"
     fi
@@ -5664,6 +5696,24 @@ ensure_repair_certificate(){
   esac
 }
 
+prune_config_backups_before_repair(){
+  local keep=2 path failed=0 count=0
+  local -a candidates=()
+  for path in "$SB_DIR"/.sb.json.before-repair.*; do
+    [[ -e $path || -L $path ]] || continue
+    [[ $path == "${REPAIR_CONFIG_BACKUP:-}" ]] && continue
+    candidates+=("$path")
+  done
+  [[ ${#candidates[@]} -gt 0 ]] || return 0
+  while IFS= read -r path; do
+    [[ -n $path ]] || continue
+    count=$((count + 1))
+    [[ $count -le $keep ]] && continue
+    rm -f -- "$path" || failed=1
+  done < <(printf '%s\n' "${candidates[@]}" | xargs -r ls -1t 2>/dev/null)
+  return "$failed"
+}
+
 preserve_config_before_repair(){
   local backup
   [[ -z ${REPAIR_CONFIG_BACKUP:-} ]] || return 0
@@ -5895,14 +5945,19 @@ cleanup_repair_temporary_files(){
     "$SB_DIR"/.socks5.txt.* "$SB_DIR"/.hy2.txt.* "$SB_DIR"/.jhdy.txt.* \
     "$SB_DIR"/.sb.json.?????? \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
-    "$SB_DIR"/.repair-target-*; do
+    "$SB_DIR"/.repair-target-* "$SB_DIR"/.repair-core-backup.* \
+    "$SB_DIR"/.repair-service-backup.* "$SB_DIR"/.sb.json.backup.*; do
     [[ -e $path || -L $path ]] || continue
     if [[ $path == "${REPAIR_TARGET_CORE_SNAPSHOT:-}" ||
-          $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ]]; then
+          $path == "${REPAIR_TARGET_CONFIG_SNAPSHOT:-}" ||
+          $path == "${REPAIR_CORE_BACKUP:-}" ||
+          $path == "${REPAIR_SERVICE_BACKUP:-}" ||
+          $path == "${REPAIR_CONFIG_BACKUP:-}" ]]; then
       continue
     fi
     rm -rf -- "$path" || failed=1
   done
+  prune_config_backups_before_repair || failed=1
   return "$failed"
 }
 
@@ -6116,14 +6171,19 @@ abort_repair_transaction(){
   else
     REPAIR_ROLLBACK_STATE=not_needed
   fi
-  if [[ $REPAIR_ROLLBACK_STATE == original_restored ]]; then
-    if [[ -n ${REPAIR_CORE_BACKUP:-} ]]; then
-      if rm -f -- "$REPAIR_CORE_BACKUP"; then REPAIR_CORE_BACKUP=; else status=1; fi
-    fi
-    if [[ -n ${REPAIR_SERVICE_BACKUP:-} ]]; then
-      if rm -f -- "$REPAIR_SERVICE_BACKUP"; then REPAIR_SERVICE_BACKUP=; else status=1; fi
-    fi
-  fi
+  # original_restored：原件已经回到位；not_needed：还没改动任何东西；target_restored：
+  # 修复后的状态已经启用。这三种情况下修复前备份都不再需要，必须删掉——否则一次
+  # 开头的 Ctrl-C 就会在 /etc/sb 里永久留下一份 ~30MB 的内核拷贝。
+  case $REPAIR_ROLLBACK_STATE in
+    original_restored|not_needed|target_restored)
+      if [[ -n ${REPAIR_CORE_BACKUP:-} ]]; then
+        if rm -f -- "$REPAIR_CORE_BACKUP"; then REPAIR_CORE_BACKUP=; else status=1; fi
+      fi
+      if [[ -n ${REPAIR_SERVICE_BACKUP:-} ]]; then
+        if rm -f -- "$REPAIR_SERVICE_BACKUP"; then REPAIR_SERVICE_BACKUP=; else status=1; fi
+      fi
+      ;;
+  esac
   cleanup_repair_temporary_files || status=1
   REPAIR_TRANSACTION_ACTIVE=0
   REPAIR_TRANSACTION_FINALIZING=0

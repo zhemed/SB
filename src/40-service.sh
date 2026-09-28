@@ -93,6 +93,9 @@ save_relay_settings(){
   valid_socks_password "$password" || return 1
   payload=$(printf 'server=%s\nport=%s\npassword=%s' "$server" "$port" "$password") || return 1
   atomic_write_private_text "$(relay_config_path)" "$payload"
+  relay_server=$server
+  relay_port=$port
+  relay_password=$password
 }
 
 clear_relay_settings(){
@@ -497,13 +500,18 @@ commit_config(){
     return 1
   fi
   chmod 600 "$candidate"
+  # 从 mv 到收尾结束这段窗口里配置已经生效：此时被打断会留下"服务在跑新配置、
+  # 节点文件与快照还是旧的"且用户看不到任何提示，所以先屏蔽中断，收尾完再恢复。
+  trap '' INT TERM HUP
   if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
+    trap handle_install_interrupt INT TERM HUP
     rm -f "$candidate" "$backup"
     return 1
   fi
   if restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
     save_last_good_config "$SB_CONFIG" || yellow "配置已生效，但最后可用配置快照更新失败"
+    trap handle_install_interrupt INT TERM HUP
     return 0
   fi
   red "服务未能使用新配置启动，正在回滚"
@@ -511,8 +519,16 @@ commit_config(){
      restartsb >/dev/null 2>&1 && sleep 1 && service_is_active; then
     rm -f "$backup"
     red "已恢复修改前的配置和服务"
+    trap handle_install_interrupt INT TERM HUP
     return 1
   fi
+  if [[ -f $backup ]] && cmp -s "$backup" "$SB_CONFIG"; then
+    red "配置已回滚，但服务未能重新启动；请检查服务状态"
+    red "原配置备份保留在 $backup"
+    trap handle_install_interrupt INT TERM HUP
+    return 2
+  fi
   red "自动回滚失败！请立即检查服务；原配置备份保留在 $backup"
+  trap handle_install_interrupt INT TERM HUP
   return 2
 }

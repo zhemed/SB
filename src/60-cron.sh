@@ -206,6 +206,14 @@ acme_renew_cron_is_current(){
     ! printf '%s\n' "$content" | grep -Fq "$SB_DIR/cert_renew.sh"
 }
 
+certificate_file_fingerprint(){
+  local path=$1 fingerprint
+  [[ -s $path ]] || return 1
+  fingerprint=$(sha256sum "$path" 2>/dev/null | awk '{print $1}') || return 1
+  [[ $fingerprint =~ ^[0-9a-fA-F]{64}$ ]] || return 1
+  printf '%s\n' "${fingerprint,,}"
+}
+
 filter_acme_cron_entries(){
   local runner
   runner=$(acme_renew_runner_path)
