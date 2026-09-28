@@ -1,5 +1,4 @@
 # sb-module: 30-server-config
-# Generate server config JSON
 render_server_config(){
   local output=$1 listen_addr relay_outbound_suffix route_final retired_ss_port
   local entry_inbounds=
@@ -9,25 +8,16 @@ render_server_config(){
   route_final=direct
   listen_addr=$(server_listen_address "$IPV6_SYSCTL_ROOT") || return 1
   [[ -n $listen_addr ]] || return 1
-  # The optional TCP entry is absent by default: a new install creates only
-  # hysteria2, and the operator enables the entry from menu [8].
   if [[ ${socks_entry_enabled:-0} -eq 1 ]]; then
     entry_inbounds=$(printf ',\n    {\n      "type": "socks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "socks5-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "users": [\n        {\n          "username": "%s",\n          "password": "%s"\n        }\n      ]\n    }' \
       "$listen_addr" "${port_socks5:-}" "$SOCKS_USERNAME" "${socks_password:-}") || return 1
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
-  # An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: the
-  # rewrite below does not carry it over, so say it out loud instead of letting
-  # the entry disappear silently. People still connecting through it will be cut
-  # off, and that is the operator's call to make.
   if retired_ss_port=$(retired_ss_entry_port); then
     yellow "当前配置里还有一个 4.0.0 之前创建的旧入口（端口 ${retired_ss_port}），本版本已不再支持"
     yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请用菜单[8]里的 SOCKS5"
   fi
-  # The optional upstream is re-read from relay.conf on every render, so a
-  # rewritten config keeps the relay instead of silently falling back to a
-  # direct exit. An unreadable state file is reported, not guessed at.
   if relay_settings_present; then
     if load_relay_settings; then
       route_final=relay
@@ -39,8 +29,6 @@ render_server_config(){
     fi
   elif [[ -s $SB_CONFIG ]] &&
        jq -e '[.outbounds[]? | select(.type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
-    # A hand-edited upstream outbound is not a state file we know about; say so
-    # rather than letting the rewrite silently send traffic out directly again.
     yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"
     yellow "如需继续中转，请在菜单[8]上游/中转里重新设置一次"
   fi

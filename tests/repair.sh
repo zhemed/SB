@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# The repair harness deliberately rebinds globals and mocks functions inside
-# subshells; production code consumes those names indirectly after sourcing.
 # shellcheck disable=SC2016,SC2030,SC2031,SC2034,SC2317
 set -Eeuo pipefail
 
@@ -374,8 +372,6 @@ repair_signal_restores_stack_and_cleans_temporary_files(){
     REPAIR_CONFIG_CHANGED=1
     : > "$SB_DIR/.sing-box.signal"
     : > "$SB_DIR/.sb.json.repair.signal"
-    # .reality-key.* / .public.key.* have no producer any more, but released
-    # versions wrote them; the sweep must still clear pre-upgrade leftovers.
     mkdir "$SB_DIR/.reality-key.signal"
     CORE_DOWNLOAD_TEMP_DIR="$SB_DIR/.core.signal"
     mkdir "$CORE_DOWNLOAD_TEMP_DIR"
@@ -404,20 +400,17 @@ incomplete_managed_directory_is_adopted(){
     local case_dir="$TEMP_DIR/incomplete-managed"
     mkdir -p "$case_dir"
 
-    # (a) an empty directory left by an interrupt between mkdir and the marker rename
     SB_DIR="$case_dir/empty"
     SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
     mkdir -p "$SB_DIR"
     prepare_managed_directory && managed_directory_is_owned || return 1
 
-    # (b) only a stray marker temporary survived
     SB_DIR="$case_dir/stray"
     SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
     mkdir -p "$SB_DIR"
     : > "$SB_DIR/.sb-managed.AbCdEf"
     prepare_managed_directory && managed_directory_is_owned || return 1
 
-    # (c) foreign content is still refused, and left untouched
     SB_DIR="$case_dir/foreign"
     SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
     mkdir -p "$SB_DIR"
@@ -425,7 +418,6 @@ incomplete_managed_directory_is_adopted(){
     if prepare_managed_directory >/dev/null 2>&1; then return 1; fi
     [[ -f $SB_DIR/foreign.txt && ! -e $SB_MANAGED_MARKER ]] || return 1
 
-    # (d) an existing but unrecognised marker is still refused, and left untouched
     SB_DIR="$case_dir/badmarker"
     SB_MANAGED_MARKER="$SB_DIR/.sb-managed"
     mkdir -p "$SB_DIR"
@@ -446,7 +438,6 @@ interrupt_handler_restores_only_inflight_acme_state(){
   [[ -s $handler_file ]] || return 1
   mkdir -p "$case_dir"
 
-  # (a) a recovery point merely discovered at startup must survive an interrupt
   (
     ACME_STATE_BACKUP="$case_dir/discovered"
     ACME_INFLIGHT_BACKUP=
@@ -462,7 +453,6 @@ interrupt_handler_restores_only_inflight_acme_state(){
   ) >/dev/null 2>&1
   [[ ! -e $case_dir/restored.log && -d $case_dir/discovered ]] || status=1
 
-  # (b) a recovery point created by the in-flight operation is still restored
   (
     ACME_STATE_BACKUP="$case_dir/inflight"
     ACME_INFLIGHT_BACKUP="$case_dir/inflight"
@@ -499,12 +489,10 @@ legacy_vless_config_is_migrated(){
     ' "$SB_CONFIG" > "$case_dir/legacy.json" || return 1
     SB_CONFIG="$case_dir/legacy.json"
     REPAIR_CERT_FELL_BACK=0
-    # the retired inbound must not make the config unusable as a repair source
     load_repair_config_values "$SB_CONFIG" || return 1
     config_contains_removed_protocol "$SB_CONFIG" || return 1
     try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置" || return 1
     action=$REPAIR_CONFIG_ACTION
-    # the inbound is gone, the node values survive, and the report says so
     jq -e '[.inbounds[] | select(.type == "vless")] | length == 0' "$SB_CONFIG" >/dev/null || return 1
     jq -e --arg uuid "$uuid"       'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)'       "$SB_CONFIG" >/dev/null || return 1
     [[ $action == *VLESS* ]]
@@ -515,7 +503,6 @@ hysteria2_only_config_is_preserved(){
   (
     local case_dir="$TEMP_DIR/hy2-only" action
     mkdir -p "$case_dir"
-    # The 3.1.0 default shape, still the 4.0.0 default: no optional inbound.
     socks_entry_enabled=0
     port_socks5=
     socks_password=
@@ -530,13 +517,11 @@ hysteria2_only_config_is_preserved(){
     config_contains_removed_protocol "$SB_CONFIG" && return 1
     try_repair_config_source "$SB_CONFIG" "已从当前节点参数重建标准配置" || return 1
     action=$REPAIR_CONFIG_ACTION
-    # repair must not invent an optional entry the operator never enabled
     jq -e '[.inbounds[] | select(.tag == "ss-sb" or .tag == "socks5-sb")] | length == 0' \
       "$SB_CONFIG" >/dev/null || return 1
     jq -e --arg uuid "$uuid" \
       'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' "$SB_CONFIG" >/dev/null || return 1
     jq -e '.route.final == "direct"' "$SB_CONFIG" >/dev/null || return 1
-    # a healthy config is recognised as such instead of being rewritten
     [[ $action == *'当前配置正常'* ]]
   )
 }
@@ -545,9 +530,6 @@ socks5_entry_config_round_trips(){
   (
     local case_dir="$TEMP_DIR/socks5-entry" action
     mkdir -p "$case_dir"
-    # The 4.0.0 optional entry: a SOCKS5 inbound with users, never re-rendered
-    # from a key. The source is a *candidate*, not the live config, so the
-    # rewrite path runs the way a restore-from-backup does.
     socks_entry_enabled=1
     port_socks5=1081
     render_server_config "$case_dir/source.json" || return 1
@@ -560,7 +542,6 @@ socks5_entry_config_round_trips(){
     config_contains_removed_protocol "$case_dir/source.json" && return 1
     try_repair_config_source "$case_dir/source.json" "已从当前节点参数重建标准配置" || return 1
     action=$REPAIR_CONFIG_ACTION
-    # the rewritten config keeps the same port, username and password
     jq -e --argjson port 1081 --arg password "$socks_password" --arg username "$SOCKS_USERNAME" '
       ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb" and .listen_port == $port and
                              .users[0].username == $username and .users[0].password == $password)] | length) == 1 and
@@ -568,7 +549,6 @@ socks5_entry_config_round_trips(){
     ' "$SB_CONFIG" >/dev/null || return 1
     jq -e --arg uuid "$uuid" \
       'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' "$SB_CONFIG" >/dev/null || return 1
-    # the SOCKS5 entry round-trips as-is: nothing to migrate, nothing to report
     [[ $action == "已从当前节点参数重建标准配置" ]]
   )
 }
@@ -577,9 +557,6 @@ retired_ss_inbound_is_rewritten_away(){
   (
     local case_dir="$TEMP_DIR/retired-ss-repair" action
     mkdir -p "$case_dir"
-    # An upgraded host still carries the entry an older release rendered; 5.0.0
-    # cannot produce one, so inject it by hand — that is exactly the shape the
-    # repair path has to cope with.
     render_server_config "$case_dir/source.json" || return 1
     jq --arg password "$ss_password" '
       .inbounds += [{type: "shadowsocks", tag: "ss-sb", listen: "::", listen_port: 1080,
@@ -588,8 +565,6 @@ retired_ss_inbound_is_rewritten_away(){
     ' "$case_dir/source.json" > "$case_dir/patched.json" || return 1
     mv -fT -- "$case_dir/patched.json" "$case_dir/source.json" || return 1
     chmod 600 "$case_dir/source.json"
-    # The retired entry counts as a removed protocol, so the config is rewritten
-    # instead of being declared healthy.
     config_contains_removed_protocol "$case_dir/source.json" || return 1
     SB_CONFIG="$case_dir/active.json"
     REPAIR_CERT_FELL_BACK=0
@@ -602,7 +577,6 @@ retired_ss_inbound_is_rewritten_away(){
       "$SB_CONFIG" >/dev/null || return 1
     jq -e --arg uuid "$uuid" \
       'any(.inbounds[]; .tag == "hy2-sb" and .users[0].password == $uuid)' "$SB_CONFIG" >/dev/null || return 1
-    # ... and the report has to say what happened to it
     [[ $action == *'移除已废弃的 inbound'* ]]
   )
 }
@@ -614,7 +588,6 @@ blue(){ :; }
 white(){ :; }
 valid_ipv4(){ [[ ${1-} =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]; }
 valid_ipv6(){ return 1; }
-# Defined in src/00-bootstrap.sh, which this harness does not source.
 server_listen_address(){ printf '%s\n' '::'; }
 sanitize_location(){
   tr '\r\n\t' '   ' | sed 's/[[:cntrl:]]//g; s/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' | cut -c1-160
@@ -672,11 +645,6 @@ MOCKCORE
 chmod 755 "$SB_BIN"
 
 uuid=123e4567-e89b-42d3-a456-426614174000
-# Values below are consumed through Bash dynamic scope by render_server_config.
-# A new install creates hysteria2 only: the optional SOCKS5 entry stays off here,
-# and the fixture carries the pre-4.0.0 Shadowsocks-2022 inbound an upgraded host
-# would still have. 5.0.0 never renders one, so it is injected by hand — that is
-# also the only way to produce the shape the repair path must clean up.
 # shellcheck disable=SC2034
 socks_entry_enabled=0
 # shellcheck disable=SC2034
@@ -720,8 +688,6 @@ expect_success "managed server values are extracted" load_repair_config_values "
    $REPAIR_SOCKS_ENABLED == 0 &&
    -z $REPAIR_SOCKS_PORT && -z $REPAIR_SOCKS_PASSWORD ]] ||
   fail "extracted repair values are incorrect"
-# A config that still carries the retired entry must be classified as carrying a
-# removed protocol, otherwise repair would call it healthy and keep it alive.
 expect_success "a config with the retired SS-2022 entry counts as a removed protocol" \
   config_contains_removed_protocol "$SB_CONFIG"
 pass "managed server extraction preserves node values"

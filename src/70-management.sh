@@ -1,5 +1,4 @@
 # sb-module: 70-management
-# Certificate management
 current_certificate_mode(){
   if config_uses_acme_certificate; then
     printf '%s\n' acme
@@ -531,7 +530,6 @@ change_cert_mode(){
 }
 
 
-# Change ports
 change_ports(){
   local nport port candidate menu retry commit_status hy2_port port_hy2
   if ! sbactive; then
@@ -604,7 +602,6 @@ change_ports(){
   done
 }
 
-# Credential management
 refresh_share_files_after_change(){
   if ! sbshare >/dev/null 2>&1; then
     yellow "服务端修改成功，但节点文件刷新失败，请稍后通过菜单[3]重试"
@@ -761,7 +758,6 @@ change_credentials(){
   done
 }
 
-# Upstream / relay ("线路机 -> 落地机")
 relay_upstream_reachable(){
   local server=$1 port=$2 target
   target=$server
@@ -860,7 +856,7 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "落地机要已启用 SOCKS5 入口（这一跳不加密，用户名固定 ${SOCKS_USERNAME}）"
+        yellow "落地机要已启用 SOCKS5 入口（用户名固定 ${SOCKS_USERNAME}）"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -956,7 +952,6 @@ manage_relay(){
   done
 }
 
-# Optional features (menu [8])
 socks_entry_is_enabled(){
   [[ -s $SB_CONFIG ]] &&
     jq -e '([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1' \
@@ -973,11 +968,6 @@ socks_entry_password(){
     "$SB_CONFIG" 2>/dev/null
 }
 
-# An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: nothing
-# preserves it any more, and the next rewrite drops it. This probe only *reports*
-# what is still there so the menus and the render can warn instead of letting the
-# entry vanish silently. It is read-only on purpose — there is no conversion and
-# no removal action left in the script. Matching is by tag alone.
 retired_ss_entry_port(){
   local port
   [[ -s $SB_CONFIG ]] || return 1
@@ -986,10 +976,6 @@ retired_ss_entry_port(){
   printf '%s\n' "$port"
 }
 
-# Candidate builders for the optional entry. Both are idempotent: the inbound and
-# its UDP-block rule are removed before being (re)inserted, so applying them twice
-# yields the same configuration. They patch the live config with jq rather than
-# re-rendering, because a render would need every dynamic-scope node parameter.
 socks_entry_candidate_with_inbound(){
   local output=$1 port=$2 password=$3 listen=$4
   jq --argjson port "$port" --arg password "$password" --arg username "$SOCKS_USERNAME" --arg listen "$listen" '
@@ -1040,8 +1026,7 @@ enable_socks_entry(){
     return 1
   fi
   echo
-  green "启用 SOCKS5 入口（TCP 备用入口，需自行放行其 TCP 端口）"
-  yellow "注意：SOCKS5 不加密——口令与流量明文，握手特征明显、容易被识别与封锁，只应在可信链路上使用"
+  green "启用 SOCKS5 入口（需自行放行其 TCP 端口）"
   while true; do
     choose_socks_port
     case $? in

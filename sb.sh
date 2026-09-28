@@ -70,11 +70,6 @@ readp(){
   fi
 }
 
-# Confirmation gate for destructive actions.
-# Enter (empty) or y/yes in any case confirms; everything else — including an
-# explicit n/no — cancels, and returns non-zero so the caller can say that
-# nothing happened. A silent `return` looks exactly like a broken menu item.
-# EOF (Ctrl-D) also cancels: never treat a lost terminal as consent.
 confirm_yes(){
   local prompt=$1 answer
   readp "$prompt" answer || return 1
@@ -185,7 +180,6 @@ v4v6(){
   v4v6_refresh
 }
 
-# IP stack detection for domain_strategy
 v6only(){
   if ip -4 addr show 2>/dev/null | grep -oP 'inet \K[0-9.]+' | grep -qv '^127\.'; then
     ipv=prefer_ipv4
@@ -194,13 +188,6 @@ v6only(){
   fi
 }
 
-# Inbound listen address for this host.
-# "::" is a dual-stack listener (it accepts IPv4 connections too), but it is only
-# usable while the kernel still provides AF_INET6. A host that switched IPv6 off
-# -- sysctl net.ipv6.conf.all.disable_ipv6=1, or the boot parameter ipv6.disable=1
-# -- gets 0.0.0.0 instead. The answer is deterministic per host, so rewriting a
-# config never flips the listen address behind the operator's back.
-# The caller passes $IPV6_SYSCTL_ROOT; tests pass a fixture tree instead.
 server_listen_address(){
   local root=$1 disabled=
   [[ -d $root ]] || { printf '%s\n' 0.0.0.0; return 0; }
@@ -212,7 +199,6 @@ server_listen_address(){
   fi
 }
 
-# Core download
 cleanup_core_download_temp(){
   local path=${CORE_DOWNLOAD_TEMP_DIR:-}
   [[ -n $path ]] || return 0
@@ -293,7 +279,6 @@ inssb(){
   blue "成功安装 Sing-box 内核版本：$("$SB_BIN" version 2>/dev/null | awk '/version/{print $NF}')"
 }
 # sb-module: 10-acme
-# Certificate functions
 cert_self_signed(){
   certificatec_hy2="$SB_DIR/cert.pem"
   certificatep_hy2="$SB_DIR/private.key"
@@ -1052,7 +1037,6 @@ ACMERELOAD
 }
 
 acme_reload_hook_is_current(){
-  # Dollar-prefixed names in the grep patterns are literal generated-hook text.
   # shellcheck disable=SC2016
   [[ -f $ACME_RELOAD && ! -L $ACME_RELOAD && -x $ACME_RELOAD ]] &&
     [[ $(grep -Fxc "$ACME_RELOAD_IDENTITY" "$ACME_RELOAD" 2>/dev/null || true) -eq 1 ]] &&
@@ -1796,9 +1780,6 @@ valid_uuid(){
   [[ $1 =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-# SOCKS5 password: 16-128 characters from a shell-safe set. This is a plain
-# shared secret and the protocol sends it in the clear — see the warning the
-# enable flow prints, and the note in README.
 valid_socks_password(){
   [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
 }
@@ -1866,11 +1847,6 @@ random_available_port(){
   done
 }
 
-# Port selection for the optional SOCKS5 entry (menu [8]).
-# Empty/1 = random, 2 = custom — the same shape the installer uses for its own
-# port question. The result is returned in the global `port`.
-# Returns 0 with `port` set, or 2 when the operator cancelled: a prompt that
-# precedes a live change must always offer a way out.
 choose_socks_port(){
   local choice
   while true; do
@@ -1932,10 +1908,8 @@ insport(){
     return 1
   fi
   blue "Hysteria2 UUID（密码）：${uuid}"
-  yellow "TCP 备用入口（SOCKS5，明文）默认不安装，需要时在菜单[8]可选功能里启用"
 }
 # sb-module: 30-server-config
-# Generate server config JSON
 render_server_config(){
   local output=$1 listen_addr relay_outbound_suffix route_final retired_ss_port
   local entry_inbounds=
@@ -1945,25 +1919,16 @@ render_server_config(){
   route_final=direct
   listen_addr=$(server_listen_address "$IPV6_SYSCTL_ROOT") || return 1
   [[ -n $listen_addr ]] || return 1
-  # The optional TCP entry is absent by default: a new install creates only
-  # hysteria2, and the operator enables the entry from menu [8].
   if [[ ${socks_entry_enabled:-0} -eq 1 ]]; then
     entry_inbounds=$(printf ',\n    {\n      "type": "socks",\n      "sniff": true,\n      "sniff_override_destination": true,\n      "tag": "socks5-sb",\n      "listen": "%s",\n      "listen_port": %s,\n      "users": [\n        {\n          "username": "%s",\n          "password": "%s"\n        }\n      ]\n    }' \
       "$listen_addr" "${port_socks5:-}" "$SOCKS_USERNAME" "${socks_password:-}") || return 1
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
-  # An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: the
-  # rewrite below does not carry it over, so say it out loud instead of letting
-  # the entry disappear silently. People still connecting through it will be cut
-  # off, and that is the operator's call to make.
   if retired_ss_port=$(retired_ss_entry_port); then
     yellow "当前配置里还有一个 4.0.0 之前创建的旧入口（端口 ${retired_ss_port}），本版本已不再支持"
     yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请用菜单[8]里的 SOCKS5"
   fi
-  # The optional upstream is re-read from relay.conf on every render, so a
-  # rewritten config keeps the relay instead of silently falling back to a
-  # direct exit. An unreadable state file is reported, not guessed at.
   if relay_settings_present; then
     if load_relay_settings; then
       route_final=relay
@@ -1975,8 +1940,6 @@ render_server_config(){
     fi
   elif [[ -s $SB_CONFIG ]] &&
        jq -e '[.outbounds[]? | select(.type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
-    # A hand-edited upstream outbound is not a state file we know about; say so
-    # rather than letting the rewrite silently send traffic out directly again.
     yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"
     yellow "如需继续中转，请在菜单[8]上游/中转里重新设置一次"
   fi
@@ -2106,15 +2069,6 @@ atomic_copy_private_file(){
   fi
 }
 
-# --- Optional upstream ("线路机 -> 落地机") -------------------------------------
-# relay.conf lives in the managed directory and is the single source of truth
-# for the upstream: the config renderer re-reads it on every render, so no
-# management flow (port change, credential change, repair) can drop the relay.
-# Format is a three-line key=value file; there is deliberately no shell
-# evaluation and no unknown-key tolerance. The credentials are those of the
-# landing machine's SOCKS5 entry (fixed username `sb` + its password), so a
-# relay.conf written by an older release (a 44-character key with symbols this
-# rule rejects) fails validation here and is reported instead of being used.
 relay_config_path(){
   printf '%s\n' "$SB_DIR/relay.conf"
 }
@@ -2199,8 +2153,6 @@ managed_directory_is_incomplete_creation(){
   [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
   managed_directory_is_owned && return 1
   [[ ! -e $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
-  # mv -fT is atomic, so an interrupt between mkdir and the marker rename can
-  # only leave an empty directory or stray marker temporaries behind.
   for entry in "$SB_DIR"/* "$SB_DIR"/.[!.]* "$SB_DIR"/..?*; do
     [[ -e $entry || -L $entry ]] || continue
     name=${entry##*/}
@@ -2229,7 +2181,6 @@ systemd_unit_is_owned(){
   systemd_service_has_other_units "$service_name" "$unit" && return 1
   fragment=$(systemctl show "${service_name}.service" -p FragmentPath --value 2>/dev/null || true)
   [[ -z $fragment || $fragment == "$unit" ]] || return 1
-  # Allow drop-ins (systemctl edit) — ownership of main unit still guarantees managed service
   grep -Eq "$marker_pattern" "$unit" 2>/dev/null &&
     grep -Fqx "WorkingDirectory=$directory" "$unit" 2>/dev/null &&
     grep -Fqx "ExecStart=$binary run -c $config" "$unit" 2>/dev/null
@@ -2311,7 +2262,6 @@ write_service_definition(){
     unit_tmp=$(mktemp "/etc/init.d/.${SB_SERVICE}.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 #!/sbin/openrc-run
-# Managed by sb.sh
 description="sb sing-box service"
 command="$SB_BIN"
 command_args="run -c $SB_CONFIG"
@@ -2330,7 +2280,6 @@ EOF
     unit_tmp=$(mktemp "/etc/systemd/system/.${SB_SERVICE}.service.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 [Unit]
-# Managed by sb.sh
 Description=sb sing-box service
 After=network.target nss-lookup.target
 [Service]
@@ -2591,7 +2540,6 @@ commit_config(){
   return 2
 }
 # sb-module: 50-client-output
-# IP detection for share links
 save_server_ip(){
   local ip=$1 server_value client_value
   if valid_ipv4 "$ip"; then
@@ -2654,7 +2602,6 @@ refresh_saved_ip(){
   fi
 }
 
-# Read config from sb.json for share outputs
 result(){
   if [[ ! -s $SB_CONFIG ]]; then
     red "配置文件不存在，请先安装"
@@ -2675,8 +2622,6 @@ result(){
     return 1
   fi
   uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
-  # The optional TCP entry is SOCKS5 since 4.0.0, and "no such inbound" is a
-  # normal state rather than a broken config: everything keys off socks_enabled.
   socks_enabled=0
   socks_port=
   socks_password=
@@ -2686,8 +2631,6 @@ result(){
   else
     socks_password=
   fi
-  # An entry created before 4.0.0 is no longer supported (5.0.0): it has no
-  # share link and no client entry any more.
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
@@ -2765,9 +2708,6 @@ ressocks5(){
   echo
 }
 
-# After enabling or changing the optional SOCKS5 entry the operator
-# needs exactly two things: the share link (sbshare has already written it) and
-# the server-side credentials. Printing only the port read as "no link and no key".
 print_socks_entry_share(){
   local password=$1 path="$SB_DIR/socks5.txt" link=
   echo
@@ -2783,7 +2723,6 @@ print_socks_entry_share(){
   green "用户名/密码：$SOCKS_USERNAME / $password"
 }
 
-# Client config generation (kept compatible with sing-box 1.10.7)
 sb_client(){
   local sbox_candidate clash_candidate hy2_certificate_field=
   local socks_outbound_field=
@@ -2796,8 +2735,6 @@ sb_client(){
   if [[ -n $hy2_certificate_json ]]; then
     hy2_certificate_field=$(printf ',\n        "certificate": %s' "$hy2_certificate_json")
   fi
-  # Client pieces are emitted per inbound that actually exists on the server:
-  # the optional SOCKS5 entry, then Hysteria2.
   if [[ $socks_enabled -eq 1 ]]; then
     socks_outbound_field=$(printf '    {\n      "type": "socks",\n      "tag": "socks5-%s",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
@@ -2805,9 +2742,6 @@ sb_client(){
     socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: %s\n  password: %s\n  udp: false\n\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
     socks_clash_member=$(printf '    - socks5-%s\n' "$hostname") || return 1
-    # Command substitution eats every trailing newline, so the line breaks the
-    # template relies on have to be put back explicitly. Without this the Clash
-    # proxies and the group members run into the next line.
     socks_outbound_field+=$'\n'
     socks_selector_member+=$'\n'
     socks_clash_proxy+=$'\n\n'
@@ -3055,8 +2989,6 @@ EOF
   mv -fT -- "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
 }
 
-# The optional entry was switched off: drop the share file it used to produce
-# instead of leaving a stale link that no longer connects.
 remove_saved_ss_link(){
   local path="$SB_DIR/ss.txt"
   [[ -e $path || -L $path ]] || return 0
@@ -3076,8 +3008,6 @@ sbshare(){
   if ! result; then
     return 1
   fi
-  # Share files follow what the server actually runs, in the same order as the
-  # client configuration: SOCKS5 entry, then Hysteria2.
   if [[ $socks_enabled -eq 1 ]]; then
     socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
     if ! ressocks5 "$socks_tmp"; then
@@ -3117,9 +3047,6 @@ sbshare(){
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
-  # ss.txt belonged to the entry that 5.0.0 no longer supports: nothing writes
-  # it any more, and a leftover file from an older release is a managed asset,
-  # so clean it up and say so if that fails.
   if ! remove_saved_ss_link; then
     yellow "本版本已不再生成 $SB_DIR/ss.txt，但遗留文件无法删除，请手动检查"
   fi
@@ -3137,7 +3064,6 @@ sbshare(){
   echo
 }
 
-# Switch IP priority for server outbound domain_strategy (like original sb.sh)
 switch_ip_priority(){
   local current new choose candidate retry commit_status
   if ! sbactive; then
@@ -3155,9 +3081,6 @@ switch_ip_priority(){
     green "切换IP优先级 (控制VPS出站时IPv4/IPv6的偏好)"
     echo -e "当前: ${yellow}$current${plain}"
     echo
-    # The four options are always listed: hiding the ones the VPS cannot use made
-    # the menu disagree with its own 【0-4】 prompt and looked like missing
-    # features. Picking an unusable family is rejected below with a clear message.
     green "1：IPV4优先 (prefer_ipv4)"
     green "2：IPV6优先 (prefer_ipv6)"
     green "3：仅IPV4 (ipv4_only)"
@@ -3220,7 +3143,6 @@ switch_ip_priority(){
   done
 }
 # sb-module: 60-cron
-# Manage only sb-owned crontab entries.
 load_current_crontab(){
   local error_file error_text temp_base=$SB_DIR
   CURRENT_CRONTAB=
@@ -3284,7 +3206,6 @@ acquire_acme_lock(){
   done
   ACME_LOCK_FD=
   ACME_COMPAT_LOCK_FD=
-  # All callers and generated runners acquire the global lock before the v1.8.0 lock.
   exec {ACME_LOCK_FD}> "$lock" || return 1
   if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
     release_acme_lock >/dev/null 2>&1 || true
@@ -3330,7 +3251,6 @@ acme_renew_runner_identity(){
   printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v2}"
 }
 
-# Parsed values are consumed by the certificate management module.
 # shellcheck disable=SC2034
 load_acme_renew_state(){
   local state line key value mode
@@ -3470,7 +3390,6 @@ acme_renew_runner_is_current(){
     MINGW*|MSYS*) ;;
     *) [[ $mode == 700 ]] || return 1 ;;
   esac
-  # Dollar-prefixed names below are literal generated-runner text.
   # shellcheck disable=SC2016
   [[ $(grep -Fxc -- "$identity" "$runner" 2>/dev/null || true) -eq 1 ]] &&
     grep -Fqx -- "$expected_sb_dir" "$runner" 2>/dev/null &&
@@ -3783,7 +3702,6 @@ ensure_acme_renew_cron(){
   fi
 }
 # sb-module: 70-management
-# Certificate management
 current_certificate_mode(){
   if config_uses_acme_certificate; then
     printf '%s\n' acme
@@ -4315,7 +4233,6 @@ change_cert_mode(){
 }
 
 
-# Change ports
 change_ports(){
   local nport port candidate menu retry commit_status hy2_port port_hy2
   if ! sbactive; then
@@ -4388,7 +4305,6 @@ change_ports(){
   done
 }
 
-# Credential management
 refresh_share_files_after_change(){
   if ! sbshare >/dev/null 2>&1; then
     yellow "服务端修改成功，但节点文件刷新失败，请稍后通过菜单[3]重试"
@@ -4545,7 +4461,6 @@ change_credentials(){
   done
 }
 
-# Upstream / relay ("线路机 -> 落地机")
 relay_upstream_reachable(){
   local server=$1 port=$2 target
   target=$server
@@ -4644,7 +4559,7 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "落地机要已启用 SOCKS5 入口（这一跳不加密，用户名固定 ${SOCKS_USERNAME}）"
+        yellow "落地机要已启用 SOCKS5 入口（用户名固定 ${SOCKS_USERNAME}）"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -4740,7 +4655,6 @@ manage_relay(){
   done
 }
 
-# Optional features (menu [8])
 socks_entry_is_enabled(){
   [[ -s $SB_CONFIG ]] &&
     jq -e '([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) == 1' \
@@ -4757,11 +4671,6 @@ socks_entry_password(){
     "$SB_CONFIG" 2>/dev/null
 }
 
-# An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: nothing
-# preserves it any more, and the next rewrite drops it. This probe only *reports*
-# what is still there so the menus and the render can warn instead of letting the
-# entry vanish silently. It is read-only on purpose — there is no conversion and
-# no removal action left in the script. Matching is by tag alone.
 retired_ss_entry_port(){
   local port
   [[ -s $SB_CONFIG ]] || return 1
@@ -4770,10 +4679,6 @@ retired_ss_entry_port(){
   printf '%s\n' "$port"
 }
 
-# Candidate builders for the optional entry. Both are idempotent: the inbound and
-# its UDP-block rule are removed before being (re)inserted, so applying them twice
-# yields the same configuration. They patch the live config with jq rather than
-# re-rendering, because a render would need every dynamic-scope node parameter.
 socks_entry_candidate_with_inbound(){
   local output=$1 port=$2 password=$3 listen=$4
   jq --argjson port "$port" --arg password "$password" --arg username "$SOCKS_USERNAME" --arg listen "$listen" '
@@ -4824,8 +4729,7 @@ enable_socks_entry(){
     return 1
   fi
   echo
-  green "启用 SOCKS5 入口（TCP 备用入口，需自行放行其 TCP 端口）"
-  yellow "注意：SOCKS5 不加密——口令与流量明文，握手特征明显、容易被识别与封锁，只应在可信链路上使用"
+  green "启用 SOCKS5 入口（需自行放行其 TCP 端口）"
   while true; do
     choose_socks_port
     case $? in
@@ -5041,8 +4945,6 @@ manage_optional_features(){
   done
 }
 # sb-module: 80-lifecycle
-# Remove an incomplete installation only after its directory ownership has
-# been proved. Service and cron cleanup must succeed before data is deleted.
 running_from_managed_shortcut(){
   local source_path shortcut_path
   shortcut_is_owned || return 1
@@ -5169,7 +5071,6 @@ uninstall_locked(){
   fi
 }
 
-# Uninstall
 uninstall(){
   local menu
   if service_name_conflict; then
@@ -5426,7 +5327,6 @@ install_dependencies(){
   atomic_write_private_text "$SB_DIR/.deps_ok" ready
 }
 # sb-module: 85-repair
-# Diagnose and repair an owned sb installation without deleting node data.
 load_repair_config_values(){
   local source=$1
   REPAIR_UUID=
@@ -5448,11 +5348,6 @@ load_repair_config_values(){
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  # The optional TCP entry (SOCKS5 since 4.0.0) is read here so a rewrite keeps
-  # its port and password; "no entry" stays that way and is never auto-added.
-  # A pre-4.0.0 ss-sb inbound is accepted by the gate below only so the config can
-  # still be read and rebuilt from its node parameters — 5.0.0 no longer carries
-  # it over, and config_contains_removed_protocol makes the rewrite explicit.
   if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
     REPAIR_SOCKS_ENABLED=1
     REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
@@ -5479,7 +5374,6 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
   local uuid=$REPAIR_UUID port_hy2=$REPAIR_HY2_PORT
   # shellcheck disable=SC2034
@@ -5611,8 +5505,6 @@ install_repair_config(){
     rm -f "$candidate"
     return 1
   fi
-  # Mark the transaction before replacement so an interrupt cannot land
-  # between mv(1) and the rollback state update.
   REPAIR_CONFIG_CHANGED=1
   if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
     rm -f "$candidate"
@@ -5624,11 +5516,6 @@ install_repair_config(){
   fi
 }
 
-# True when the config still carries a protocol this version no longer ships: the
-# VLESS inbound removed in 2.0.0, and an entry created before 4.0.0 (support
-# removed in 5.0.0, after being preserved for one release). Such a config must be
-# rewritten rather than declared healthy, otherwise the retired inbound would
-# live on unnoticed. Matching is by tag alone.
 config_contains_removed_protocol(){
   local source=$1
   jq -e '[.inbounds[]? | select(.type == "vless" or .tag == "ss-sb")] | length > 0' \
@@ -5645,10 +5532,6 @@ try_repair_config_source(){
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
   fi
-  # A config that still carries a removed protocol (VLESS, or an entry created
-  # before 4.0.0) must be rewritten rather than left untouched: sing-box still
-  # accepts both, so the version check alone would classify them as healthy and
-  # keep the retired inbound alive.
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 inbound（VLESS / 4.0.0 之前的入口）"
   fi
@@ -5720,7 +5603,6 @@ rebuild_config_in_place(){
   v6only
   REPAIR_UUID=$uuid
   REPAIR_HY2_PORT=$port_hy2
-  # 原地重建 = 全新节点，和新建安装一样只装 hysteria2（可选入口由用户在菜单[8]启用）
   REPAIR_SOCKS_ENABLED=0
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
@@ -5828,8 +5710,6 @@ initialize_repair_report(){
 cleanup_repair_temporary_files(){
   local path failed=0
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
-  # .public.key.* and .reality-key.* have no producer any more, but released
-  # versions wrote them, so an upgraded host can still carry leftovers.
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
     "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
@@ -6123,8 +6003,6 @@ repair_singbox_locked(){
     REPAIR_CORE_ACTION="Sing-box v${CORE_VERSION} 正常"
   else
     green "正在恢复固定版本 Sing-box v${CORE_VERSION} 内核……"
-    # inssb performs the final mv itself; set the flag first so signals and
-    # post-replacement verification failures still restore a usable old stack.
     REPAIR_CORE_REPLACED=1
     if ! quarantine_invalid_core_path || ! inssb; then
       REPAIR_CORE_ACTION="固定版本内核恢复失败"
@@ -6274,7 +6152,6 @@ repair_singbox(){
   return "$repair_status"
 }
 # sb-module: 90-main
-# Installation main flow
 install_singbox(){
   local shortcut_ready=0
   if service_name_conflict; then
@@ -6319,7 +6196,6 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
-  yellow "安全提示：本次只安装 Hysteria2；需要 TCP 备用入口时到菜单[8]启用（SOCKS5，明文，仅限可信链路）"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
@@ -6327,7 +6203,6 @@ install_singbox(){
   if update_shortcut; then
     shortcut_ready=1
   else
-    # Fallback for bash <(curl ...) where $0 is /dev/fd/* : download directly
     if (curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$SHORTCUT" 2>/dev/null || wget -qO "$SHORTCUT" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null) && chmod +x "$SHORTCUT" 2>/dev/null && shortcut_is_owned; then
       shortcut_ready=1
     else
@@ -6355,7 +6230,6 @@ install_singbox(){
   INSTALL_TRANSACTION_ACTIVE=0
 }
 
-# Management menu
 menu(){
   local Input insV sb_ver status_text status_color
   while true; do
@@ -6443,7 +6317,6 @@ menu(){
   done
 }
 
-# Make/update shortcut
 # sb-entrypoint
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
@@ -6478,8 +6351,6 @@ handle_install_interrupt(){
 }
 trap handle_install_interrupt INT TERM HUP
 
-# Install the trap first: prepare_runtime_state can create the managed
-# directory and resolve ACME recovery points, so it must not run unguarded.
 prepare_runtime_state || exit 1
 
 if is_installed; then
@@ -6487,5 +6358,4 @@ if is_installed; then
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
 fi
 
-# Start
 menu

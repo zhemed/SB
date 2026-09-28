@@ -1,5 +1,4 @@
 # sb-module: 85-repair
-# Diagnose and repair an owned sb installation without deleting node data.
 load_repair_config_values(){
   local source=$1
   REPAIR_UUID=
@@ -21,11 +20,6 @@ load_repair_config_values(){
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
   REPAIR_HY2_PORT=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port | select(type == "number")' "$source") || return 1
-  # The optional TCP entry (SOCKS5 since 4.0.0) is read here so a rewrite keeps
-  # its port and password; "no entry" stays that way and is never auto-added.
-  # A pre-4.0.0 ss-sb inbound is accepted by the gate below only so the config can
-  # still be read and rebuilt from its node parameters — 5.0.0 no longer carries
-  # it over, and config_contains_removed_protocol makes the rewrite explicit.
   if jq -e '[.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length == 1' "$source" >/dev/null 2>&1; then
     REPAIR_SOCKS_ENABLED=1
     REPAIR_SOCKS_PORT=$(jq -er '.inbounds[] | select(.type == "socks" and .tag == "socks5-sb") | .listen_port | select(type == "number")' "$source") || return 1
@@ -52,7 +46,6 @@ load_repair_config_values(){
 
 render_repair_config(){
   local output=$1
-  # render_server_config consumes these locals through Bash dynamic scope.
   # shellcheck disable=SC2034
   local uuid=$REPAIR_UUID port_hy2=$REPAIR_HY2_PORT
   # shellcheck disable=SC2034
@@ -184,8 +177,6 @@ install_repair_config(){
     rm -f "$candidate"
     return 1
   fi
-  # Mark the transaction before replacement so an interrupt cannot land
-  # between mv(1) and the rollback state update.
   REPAIR_CONFIG_CHANGED=1
   if ! mv -fT -- "$candidate" "$SB_CONFIG"; then
     rm -f "$candidate"
@@ -197,11 +188,6 @@ install_repair_config(){
   fi
 }
 
-# True when the config still carries a protocol this version no longer ships: the
-# VLESS inbound removed in 2.0.0, and an entry created before 4.0.0 (support
-# removed in 5.0.0, after being preserved for one release). Such a config must be
-# rewritten rather than declared healthy, otherwise the retired inbound would
-# live on unnoticed. Matching is by tag alone.
 config_contains_removed_protocol(){
   local source=$1
   jq -e '[.inbounds[]? | select(.type == "vless" or .tag == "ss-sb")] | length > 0' \
@@ -218,10 +204,6 @@ try_repair_config_source(){
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
   fi
-  # A config that still carries a removed protocol (VLESS, or an entry created
-  # before 4.0.0) must be rewritten rather than left untouched: sing-box still
-  # accepts both, so the version check alone would classify them as healthy and
-  # keep the retired inbound alive.
   if config_contains_removed_protocol "$source"; then
     label+="，并移除已废弃的 inbound（VLESS / 4.0.0 之前的入口）"
   fi
@@ -293,7 +275,6 @@ rebuild_config_in_place(){
   v6only
   REPAIR_UUID=$uuid
   REPAIR_HY2_PORT=$port_hy2
-  # 原地重建 = 全新节点，和新建安装一样只装 hysteria2（可选入口由用户在菜单[8]启用）
   REPAIR_SOCKS_ENABLED=0
   REPAIR_SOCKS_PORT=
   REPAIR_SOCKS_PASSWORD=
@@ -401,8 +382,6 @@ initialize_repair_report(){
 cleanup_repair_temporary_files(){
   local path failed=0
   cleanup_core_download_temp >/dev/null 2>&1 || failed=1
-  # .public.key.* and .reality-key.* have no producer any more, but released
-  # versions wrote them, so an upgraded host can still carry leftovers.
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
     "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
@@ -696,8 +675,6 @@ repair_singbox_locked(){
     REPAIR_CORE_ACTION="Sing-box v${CORE_VERSION} 正常"
   else
     green "正在恢复固定版本 Sing-box v${CORE_VERSION} 内核……"
-    # inssb performs the final mv itself; set the flag first so signals and
-    # post-replacement verification failures still restore a usable old stack.
     REPAIR_CORE_REPLACED=1
     if ! quarantine_invalid_core_path || ! inssb; then
       REPAIR_CORE_ACTION="固定版本内核恢复失败"

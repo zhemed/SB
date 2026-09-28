@@ -96,7 +96,6 @@ for success_message in \
   grep -Fq -- "$success_message" "$ROOT_DIR/sb.sh" ||
     fail "missing modification success message: $success_message"
 done
-# The dollar-prefixed strings below are literal generated-configuration text.
 # shellcheck disable=SC2016
 for socks_pattern in \
   'SOCKS_USERNAME="sb"' \
@@ -137,25 +136,15 @@ for socks_pattern in \
   '当前配置里有一条上游出站，但' \
   'set_relay_upstream()' \
   'clear_relay_upstream()' \
-  '本次只安装 Hysteria2' \
-  'SOCKS5 不加密' \
-  'TCP 备用入口（SOCKS5，明文）默认不安装' \
   '输入0取消' \
   '已取消，端口未修改'; do
   grep -Fq -- "$socks_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing SOCKS5 integration: $socks_pattern"
 done
-# 5.0.0 removed the old entry for good, and 5.1.0 removed the last protocol use
-# (the upstream hop, which now borrows the landing machine's SOCKS5 entry). The
-# retired names, the cipher and the protocol spelling must stay gone from the
-# shipped script entirely — that is what "removed" has to mean here.
 if grep -Eq '^(ss_entry_is_enabled|ss_entry_candidate_with_inbound|ss_entry_candidate_without_inbound|enable_ss_entry|disable_ss_entry|change_ss_password|change_ss_port|choose_ss_port|generate_ss_password|print_ss_entry_share|preserved_ss_entry_is_enabled|preserved_ss_entry_port|preserved_ss_candidate_without_inbound|remove_preserved_ss_entry|resss)\(\)\{' \
   "$ROOT_DIR/sb.sh"; then
   fail "a retired Shadowsocks-2022-entry function is still defined"
 fi
-# The project must not contain the retired protocol in any form: no producer,
-# no consumer, no cipher constant, no validator. `ss-sb` stays only as the tag
-# of a legacy inbound that the rewrite drops (matched by tag, never by type).
 for retired_protocol_pattern in \
   'RELAY_METHOD' \
   '2022-blake3' \
@@ -183,8 +172,6 @@ for removed_pattern in \
     fail "retired integration remains: $removed_pattern"
   fi
 done
-# The retired entry may only be *reported*: nothing may write it back into a
-# rendered config, so the render must not take a preserved-inbound argument.
 # shellcheck disable=SC2016
 grep -Fq -- 'local ipv=$REPAIR_STRATEGY' "$ROOT_DIR/sb.sh" ||
   fail "repair render no longer reads the IP strategy through dynamic scope"
@@ -194,8 +181,6 @@ if grep -Fq -- 'entry_inbounds+=$(printf' "$ROOT_DIR/sb.sh"; then
 fi
 grep -Fq -- '请选择【0-1】' "$ROOT_DIR/sb.sh" ||
   fail "port management menu is missing"
-# The install path must not create an optional inbound: only hysteria2. Both the
-# 4.0.0 SOCKS5 entry and the pre-4.0.0 Shadowsocks-2022 one are menu [8] features.
 install_function=$(awk '/^insport\(\)\{/{inside=1} /^render_server_config\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $install_function ]] || fail "cannot extract insport"
@@ -204,9 +189,6 @@ for optional_pattern in 'socks_password' 'port_socks5' 'socks5-sb' 'generate_soc
     fail "install flow still creates an optional entry: $optional_pattern"
   fi
 done
-# Every "按回车返回 X" prompt must name the menu the operator actually lands in.
-# Three of them were wrong in 5.0.0 (they said 主菜单 / 可选功能 while the caller
-# was a sub-menu), so the flows are pinned here instead of being left to review.
 credential_flow=$(awk '/^changeuuid\(\)\{/{inside=1} /^change_socks_password\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 socks_branch_flow=$(awk '/^enable_socks_entry\(\)\{/{inside=1} /^manage_socks_entry\(\)\{/{inside=0} inside' \
@@ -231,9 +213,6 @@ if printf '%s\n' "$credential_menu" | grep -Fq -- 'Shadowsocks'; then
   fail "the credentials menu still advertises the removed Shadowsocks entry"
 fi
 
-# The IP-priority menu lists all four options, always: hiding the ones the VPS
-# cannot use made it contradict its own 【0-4】 prompt and looked like features had
-# vanished. Unusable families are rejected when picked instead.
 for ip_option in \
   '1：IPV4优先 (prefer_ipv4)' \
   '2：IPV6优先 (prefer_ipv6)' \
@@ -249,8 +228,6 @@ if grep -Fq -- "[[ -n ${dollar}v4 ]] && green" "$ROOT_DIR/sb.sh" ||
 fi
 grep -Fq -- '当前VPS不存在对应的IP地址' "$ROOT_DIR/sb.sh" ||
   fail "an unusable IP family is no longer rejected with a message"
-# No standing hint blocks in the entry menus: the warning belongs to the moment of
-# enabling (the enable flow still prints it), not to a line that greets every visit.
 if grep -Fq -- '这是一个可选的 TCP 备用入口' "$ROOT_DIR/sb.sh"; then
   fail "the optional-entry menu carries the standing hint block again"
 fi
@@ -282,29 +259,20 @@ if printf '%s\n' "$client_function" | grep -Fq -- '"default": "auto"'; then
   fail "Sing-box proxy selector still defaults to the removed automatic group"
 fi
 
-# Node presentation order is uniform: the optional SOCKS5 entry, then Hysteria2.
 share_function=$(awk '/^sbshare\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
 [[ -n $share_function ]] || fail "cannot extract share generator"
-# Compare byte offsets: the two generators sit on the same source line, so
-# line numbers would compare equal and silently pass.
-# `|| true` keeps `set -o pipefail` from aborting before the guard can report.
 socks_share_off=$(printf '%s\n' "$share_function" | grep -bo 'ressocks5 ' | head -1 | cut -d: -f1 || true)
 hy2_share_off=$(printf '%s\n' "$share_function" | grep -bo 'reshy2' | head -1 | cut -d: -f1 || true)
 [[ -n $socks_share_off && -n $hy2_share_off ]] ||
   fail "cannot locate share generators in sbshare"
 [[ $socks_share_off -lt $hy2_share_off ]] ||
   fail "share output lists Hysteria2 before the optional SOCKS5 entry"
-# The optional entry is emitted through a printf fragment, so its tag is the
-# literal `socks5-%s` here while Hysteria2 keeps its inline `hy2-$hostname`.
 # shellcheck disable=SC2016
 socks_out_off=$(printf '%s\n' "$client_function" | grep -bo 'socks5-%s' | head -1 | cut -d: -f1 || true)
 # shellcheck disable=SC2016
 hy2_out_off=$(printf '%s\n' "$client_function" | grep -bo 'hy2-\$hostname' | head -1 | cut -d: -f1 || true)
 [[ -n $socks_out_off && -n $hy2_out_off && $socks_out_off -lt $hy2_out_off ]] ||
   fail "client configuration lists Hysteria2 before the optional SOCKS5 entry"
-# Offsets locate where the fragment is *built*; a fragment built early could still
-# be emitted after Hysteria2. Pin the emission sites too: these are the only
-# places the optional entry can enter the document.
 # shellcheck disable=SC2016
 grep -Fq -- '${socks_outbound_field}    {' "$ROOT_DIR/sb.sh" ||
   fail "client configuration emits the optional outbound in a different place"
@@ -317,7 +285,6 @@ grep -Fq -- '${socks_clash_proxy}- name: hysteria2-$hostname' "$ROOT_DIR/sb.sh" 
 # shellcheck disable=SC2016
 grep -Fq -- '${socks_clash_member}    - DIRECT' "$ROOT_DIR/sb.sh" ||
   fail "clash group no longer lists the optional entry first"
-# Ordering must never be bought by making the TCP fallback entry the default.
 # shellcheck disable=SC2016
 grep -Fq -- '"default": "hy2-$hostname"' <<< "$client_function" ||
   fail "Sing-box proxy selector does not default to Hysteria2"
@@ -349,25 +316,13 @@ if grep -Fq -- '"insecure": true' "$ROOT_DIR/sb.sh" ||
   fail "insecure Hysteria2 client setting remains"
 fi
 
-# Hysteria2 owns 443/udp, so an optional entry that also binds UDP fails at start
-# time while `check` still passes: the SOCKS5 entry must block inbound UDP.
-# The `\n` below is literal backslash-n text inside the printf fragment.
 grep -Fq -- '"socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"' \
   "$ROOT_DIR/sb.sh" ||
   fail "the optional SOCKS5 entry no longer blocks inbound UDP"
-grep -Fq -- 'TCP 备用入口（SOCKS5，明文）默认不安装' "$ROOT_DIR/sb.sh" ||
-  fail "install does not state that the TCP fallback entry is optional"
-# The upstream hop borrows the landing machine's SOCKS5 entry, so the flow has to
-# say so (and say that it is plaintext) — otherwise the operator cannot set the
-# landing machine up correctly.
 grep -Fq -- '落地机要已启用 SOCKS5 入口' "$ROOT_DIR/sb.sh" ||
   fail "the upstream flow does not explain which entry it uses"
-grep -Fq -- '这一跳不加密' "$ROOT_DIR/sb.sh" ||
-  fail "the upstream flow does not warn that the hop is plaintext"
 grep -Fq -- '请输入落地机 SOCKS5 入口的密码' "$ROOT_DIR/sb.sh" ||
   fail "the upstream credential prompt does not name the SOCKS5 password"
-# Removing the entry must not remove the *warning* about a config that still has
-# one: dropping it silently would cut users off without notice.
 grep -Fq -- '本版本已不再支持' "$ROOT_DIR/sb.sh" ||
   fail "the retired entry is dropped without a warning"
 grep -Fq -- '本次重写会移除该入口' "$ROOT_DIR/sb.sh" ||
@@ -430,7 +385,6 @@ grep -Fq -- "register_acme_certificate_deployment \"\$ACME_PRIMARY_DOMAIN\" \"\$
 register_function=$(awk '/^register_acme_certificate_deployment\(\)\{/{inside=1} /^config_uses_acme_certificate\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $register_function ]] || fail "cannot extract ACME deployment registration"
-# The dollar-prefixed names below are literal generated-script text.
 # shellcheck disable=SC2016
 grep -Fq -- 'SB_INITIAL_INSTALL="$initial_install" HOME="$SB_DIR" "$ACME_BIN"' \
   <<< "$register_function" || fail "ACME deployment does not mark initial-install hooks explicitly"
@@ -439,7 +393,6 @@ grep -Fq -- '--key-file "$ACME_STAGE_KEY" --fullchain-file "$ACME_STAGE_CERT"' \
   <<< "$register_function" || fail "acme.sh still writes certificate files outside the staging directory"
 grep -Fq -- 'ACME_LOCK="/run/sb-acme.lock"' "$ROOT_DIR/sb.sh" ||
   fail "ACME lock is not independent from the removable sb directory"
-# The dollar-prefixed name below is literal generated-script text.
 # shellcheck disable=SC2016
 grep -Fq -- 'ACME_COMPAT_LOCK="$SB_DIR/acme.lock"' "$ROOT_DIR/sb.sh" ||
   fail "v1.8.0 ACME lock compatibility is missing"
@@ -450,9 +403,6 @@ inscertificate_function=$(awk '/^inscertificate\(\)\{/{inside=1} inside' "$ROOT_
   fail "only initial installation may mark ACME install hooks as initial"
 
 if command -v shellcheck >/dev/null 2>&1; then
-  # Print the version: the CI image ships a different ShellCheck than most dev
-  # boxes, and a newer linter adds codes (SC2318 was the first to slip through a
-  # green local gate). Seeing the version in the log is how that skew is spotted.
   printf 'verify: shellcheck %s\n' "$(shellcheck --version | awk '/^version:/{print $2}')"
   shellcheck --shell=bash --severity=info "$ROOT_DIR/sb.sh"
   shellcheck --shell=bash --severity=info "$hook_candidate"

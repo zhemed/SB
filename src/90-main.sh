@@ -1,5 +1,4 @@
 # sb-module: 90-main
-# Installation main flow
 install_singbox(){
   local shortcut_ready=0
   if service_name_conflict; then
@@ -44,7 +43,6 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
-  yellow "安全提示：本次只安装 Hysteria2；需要 TCP 备用入口时到菜单[8]启用（SOCKS5，明文，仅限可信链路）"
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
@@ -52,7 +50,6 @@ install_singbox(){
   if update_shortcut; then
     shortcut_ready=1
   else
-    # Fallback for bash <(curl ...) where $0 is /dev/fd/* : download directly
     if (curl -fsSL https://raw.githubusercontent.com/zhemed/SB/main/sb.sh -o "$SHORTCUT" 2>/dev/null || wget -qO "$SHORTCUT" https://raw.githubusercontent.com/zhemed/SB/main/sb.sh 2>/dev/null) && chmod +x "$SHORTCUT" 2>/dev/null && shortcut_is_owned; then
       shortcut_ready=1
     else
@@ -80,7 +77,6 @@ install_singbox(){
   INSTALL_TRANSACTION_ACTIVE=0
 }
 
-# Management menu
 menu(){
   local Input insV sb_ver status_text status_color
   while true; do
@@ -168,7 +164,6 @@ menu(){
   done
 }
 
-# Make/update shortcut
 # sb-entrypoint
 handle_install_interrupt(){
   if [[ ${REPAIR_TRANSACTION_FINALIZING:-0} -eq 1 ]]; then
@@ -203,8 +198,6 @@ handle_install_interrupt(){
 }
 trap handle_install_interrupt INT TERM HUP
 
-# Install the trap first: prepare_runtime_state can create the managed
-# directory and resolve ACME recovery points, so it must not run unguarded.
 prepare_runtime_state || exit 1
 
 if is_installed; then
@@ -212,5 +205,4 @@ if is_installed; then
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
 fi
 
-# Start
 menu

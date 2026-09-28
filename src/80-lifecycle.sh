@@ -1,6 +1,4 @@
 # sb-module: 80-lifecycle
-# Remove an incomplete installation only after its directory ownership has
-# been proved. Service and cron cleanup must succeed before data is deleted.
 running_from_managed_shortcut(){
   local source_path shortcut_path
   shortcut_is_owned || return 1
@@ -127,7 +125,6 @@ uninstall_locked(){
   fi
 }
 
-# Uninstall
 uninstall(){
   local menu
   if service_name_conflict; then

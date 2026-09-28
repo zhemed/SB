@@ -70,11 +70,6 @@ readp(){
   fi
 }
 
-# Confirmation gate for destructive actions.
-# Enter (empty) or y/yes in any case confirms; everything else — including an
-# explicit n/no — cancels, and returns non-zero so the caller can say that
-# nothing happened. A silent `return` looks exactly like a broken menu item.
-# EOF (Ctrl-D) also cancels: never treat a lost terminal as consent.
 confirm_yes(){
   local prompt=$1 answer
   readp "$prompt" answer || return 1
@@ -185,7 +180,6 @@ v4v6(){
   v4v6_refresh
 }
 
-# IP stack detection for domain_strategy
 v6only(){
   if ip -4 addr show 2>/dev/null | grep -oP 'inet \K[0-9.]+' | grep -qv '^127\.'; then
     ipv=prefer_ipv4
@@ -194,13 +188,6 @@ v6only(){
   fi
 }
 
-# Inbound listen address for this host.
-# "::" is a dual-stack listener (it accepts IPv4 connections too), but it is only
-# usable while the kernel still provides AF_INET6. A host that switched IPv6 off
-# -- sysctl net.ipv6.conf.all.disable_ipv6=1, or the boot parameter ipv6.disable=1
-# -- gets 0.0.0.0 instead. The answer is deterministic per host, so rewriting a
-# config never flips the listen address behind the operator's back.
-# The caller passes $IPV6_SYSCTL_ROOT; tests pass a fixture tree instead.
 server_listen_address(){
   local root=$1 disabled=
   [[ -d $root ]] || { printf '%s\n' 0.0.0.0; return 0; }
@@ -212,7 +199,6 @@ server_listen_address(){
   fi
 }
 
-# Core download
 cleanup_core_download_temp(){
   local path=${CORE_DOWNLOAD_TEMP_DIR:-}
   [[ -n $path ]] || return 0

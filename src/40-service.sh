@@ -49,15 +49,6 @@ atomic_copy_private_file(){
   fi
 }
 
-# --- Optional upstream ("线路机 -> 落地机") -------------------------------------
-# relay.conf lives in the managed directory and is the single source of truth
-# for the upstream: the config renderer re-reads it on every render, so no
-# management flow (port change, credential change, repair) can drop the relay.
-# Format is a three-line key=value file; there is deliberately no shell
-# evaluation and no unknown-key tolerance. The credentials are those of the
-# landing machine's SOCKS5 entry (fixed username `sb` + its password), so a
-# relay.conf written by an older release (a 44-character key with symbols this
-# rule rejects) fails validation here and is reported instead of being used.
 relay_config_path(){
   printf '%s\n' "$SB_DIR/relay.conf"
 }
@@ -142,8 +133,6 @@ managed_directory_is_incomplete_creation(){
   [[ -d $SB_DIR && ! -L $SB_DIR ]] || return 1
   managed_directory_is_owned && return 1
   [[ ! -e $SB_MANAGED_MARKER && ! -L $SB_MANAGED_MARKER ]] || return 1
-  # mv -fT is atomic, so an interrupt between mkdir and the marker rename can
-  # only leave an empty directory or stray marker temporaries behind.
   for entry in "$SB_DIR"/* "$SB_DIR"/.[!.]* "$SB_DIR"/..?*; do
     [[ -e $entry || -L $entry ]] || continue
     name=${entry##*/}
@@ -172,7 +161,6 @@ systemd_unit_is_owned(){
   systemd_service_has_other_units "$service_name" "$unit" && return 1
   fragment=$(systemctl show "${service_name}.service" -p FragmentPath --value 2>/dev/null || true)
   [[ -z $fragment || $fragment == "$unit" ]] || return 1
-  # Allow drop-ins (systemctl edit) — ownership of main unit still guarantees managed service
   grep -Eq "$marker_pattern" "$unit" 2>/dev/null &&
     grep -Fqx "WorkingDirectory=$directory" "$unit" 2>/dev/null &&
     grep -Fqx "ExecStart=$binary run -c $config" "$unit" 2>/dev/null
@@ -254,7 +242,6 @@ write_service_definition(){
     unit_tmp=$(mktemp "/etc/init.d/.${SB_SERVICE}.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 #!/sbin/openrc-run
-# Managed by sb.sh
 description="sb sing-box service"
 command="$SB_BIN"
 command_args="run -c $SB_CONFIG"
@@ -273,7 +260,6 @@ EOF
     unit_tmp=$(mktemp "/etc/systemd/system/.${SB_SERVICE}.service.XXXXXX") || return 1
     if ! cat > "$unit_tmp" <<EOF
 [Unit]
-# Managed by sb.sh
 Description=sb sing-box service
 After=network.target nss-lookup.target
 [Service]

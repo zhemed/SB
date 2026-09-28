@@ -41,7 +41,6 @@ expect_failure(){
   if "$@"; then fail "$name"; else pass "$name"; fi
 }
 
-# Production concatenates these files. Tests may source definition-only modules.
 # shellcheck source=/dev/null
 source "$ROOT_DIR/src/20-ports.sh"
 # shellcheck source=/dev/null
@@ -59,19 +58,14 @@ source "$ROOT_DIR/src/50-client-output.sh"
 # shellcheck source=/dev/null
 source "$ROOT_DIR/src/70-management.sh"
 
-# The production bootstrap provides this dependency to certificate metadata helpers.
 sanitize_location(){
   tr '\r\n\t' '   ' | sed 's/[[:cntrl:]]//g; s/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' | cut -c1-160
 }
-# Called indirectly by certificate identity helpers; these tests use DNS names.
 # shellcheck disable=SC2317
 valid_ipv4(){ return 1; }
 # shellcheck disable=SC2317
 valid_ipv6(){ return 1; }
 
-# Constants normally provided by src/00-bootstrap.sh, which this file does not source.
-# The colour variables are read by interpolated menu text (the matching colour
-# *functions* are replaced per test); without them `set -u` trips on ${yellow}.
 export red='' green='' yellow='' blue='' bblue='' plain=''
 export SOCKS_USERNAME=sb
 export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
@@ -110,13 +104,10 @@ expect_success "hostname is valid" valid_hostname sub.example.com
 expect_failure "single-label hostname is invalid" valid_hostname localhost
 expect_success "UUID is valid" valid_uuid 123e4567-e89b-12d3-a456-426614174000
 expect_failure "malformed UUID is invalid" valid_uuid 123e4567
-# The upstream hop authenticates with a SOCKS5 password (same rule as the entry).
 relay_password_valid="$(printf 'B%.0s' {1..24})"
 expect_success "24-character relay password is valid" valid_socks_password "$relay_password_valid"
 expect_failure "15-character relay password is invalid" valid_socks_password "$(printf 'B%.0s' {1..15})"
 expect_failure "relay password with a colon is invalid" valid_socks_password 'bad:password:value'
-# The client-facing entry credential since 4.0.0: 16-128 characters of
-# [A-Za-z0-9._~-]. The SS-2022 key above is still the *upstream* hop's secret.
 socks_password_valid="$(printf 'A%.0s' {1..16})"
 socks_password_symbols='Socks.Pass_Two-7890~X'
 expect_success "16-character SOCKS5 password is valid" valid_socks_password "$socks_password_valid"
@@ -131,8 +122,6 @@ expect_failure "empty SOCKS5 password is invalid" valid_socks_password ''
 expect_success "generated SOCKS5 password is valid" generated_socks_password_is_valid
 expect_success "generated SOCKS5 passwords differ" generated_socks_passwords_differ
 
-# server_listen_address lives in src/00-bootstrap.sh, which this file does not
-# source: extract the single function and drive it with a fixture sysctl tree.
 listen_source="$TEMP_DIR/server-listen.sh"
 awk '
   !inside && $0 == "server_listen_address(){" {inside=1; print; next}
@@ -158,8 +147,6 @@ expect_success "listen address falls back to IPv4 when IPv6 is disabled" \
 expect_success "listen address falls back to IPv4 without a sysctl tree" \
   listen_address_is 0.0.0.0 "$TEMP_DIR/absent-ipv6-sysctl"
 
-# --- upstream / relay state file -------------------------------------------
-# These run before the jq mock below, so they exercise the real jq.
 relay_roundtrip="$TEMP_DIR/relay-roundtrip"
 mkdir -p "$relay_roundtrip"
 chmod 700 "$relay_roundtrip"
@@ -174,24 +161,19 @@ relay_settings_roundtrip(){
     [[ $(stat -c '%a' "$config") == 600 ]] || return 1
     [[ $(wc -l < "$config") -eq 3 ]] || return 1
     load_relay_settings || return 1
-    # relay_server/relay_port/relay_password are assigned by load_relay_settings.
     # shellcheck disable=SC2154
     [[ $relay_server == 76.9.111.90 && $relay_port == 443 && $relay_password == "$key" ]] || return 1
-    # writing the same values again is byte-identical (idempotent)
     save_relay_settings 76.9.111.90 443 "$key" || return 1
     [[ $(cat "$config") == "$(printf 'server=%s\nport=%s\npassword=%s' 76.9.111.90 443 "$key")" ]] || return 1
-    # unusable input is refused before anything is written
     save_relay_settings 76.9.111.90 443 bad-key && return 1
     save_relay_settings not_a_host 443 "$key" && return 1
     save_relay_settings 76.9.111.90 0 "$key" && return 1
-    # an unknown key or a missing line makes the file unreadable on purpose
     printf 'server=76.9.111.90\nport=443\npassword=%s\nmethod=x\n' "$key" > "$config"
     chmod 600 "$config"
     load_relay_settings && return 1
     printf 'server=76.9.111.90\nport=443\n' > "$config"
     chmod 600 "$config"
     load_relay_settings && return 1
-    # clearing is idempotent
     save_relay_settings 76.9.111.90 443 "$key" || return 1
     clear_relay_settings || return 1
     [[ ! -e $config ]] || return 1
@@ -201,12 +183,7 @@ relay_settings_roundtrip(){
 }
 expect_success "relay state file round-trips, validates and clears" relay_settings_roundtrip
 
-# confirm_yes lives in src/00-bootstrap.sh, which this file does not source.
-# The case-sensitivity here was a real bug: typing `yes` at a `YES` prompt
-# cancelled silently, so the menu looked broken.
 confirm_source="$TEMP_DIR/confirm-yes.sh"
-# confirm_yes is followed by top-level bootstrap code, so stop at its closing
-# brace rather than at the next function definition.
 awk '
   !inside && $0 == "confirm_yes(){" {inside=1; print; next}
   inside && /^\}/ {print; exit}
@@ -214,7 +191,6 @@ awk '
 ' "$ROOT_DIR/sb.sh" > "$confirm_source"
 [[ -s $confirm_source ]] || fail "cannot extract confirm_yes"
 confirm_answer=
-# Called indirectly by the sourced confirm_yes.
 # shellcheck disable=SC2317
 readp(){ printf -v "$2" '%s' "$confirm_answer"; }
 # shellcheck source=/dev/null
@@ -237,8 +213,6 @@ expect_success "n cancels a destructive action" confirm_rejects n
 expect_success "NO cancels a destructive action" confirm_rejects NO
 expect_success "unrelated text cancels a destructive action" confirm_rejects YESPLEASE
 
-# print_socks_entry_share is what makes "enabled but no link and no password"
-# impossible: it echoes the link sbshare wrote and always prints the credentials.
 socks_share_printing(){
   (
     local dir="$relay_roundtrip/socks-print" key="$socks_password_symbols" out
@@ -250,12 +224,10 @@ socks_share_printing(){
     green(){ FLOW_MESSAGES+="green:$1"$'\n'; }
     # shellcheck disable=SC2317
     yellow(){ FLOW_MESSAGES+="yellow:$1"$'\n'; }
-    # No share file yet: it must say so instead of pretending, and still show the password.
     FLOW_MESSAGES=
     print_socks_entry_share "$key" > "$out" || return 1
     [[ $FLOW_MESSAGES == *'分享文件暂不可用'* ]] || return 1
     [[ $FLOW_MESSAGES == *"用户名/密码：$SOCKS_USERNAME / $key"* ]] || return 1
-    # With the file present the link itself is echoed for the operator to copy.
     printf '%s\n' 'socks5://sb:Socks.Pass_Two-7890~X@1.2.3.4:443#socks5-host' > "$SB_DIR/socks5.txt"
     chmod 600 "$SB_DIR/socks5.txt"
     FLOW_MESSAGES=
@@ -267,8 +239,6 @@ socks_share_printing(){
 }
 expect_success "the optional entry reports its link and password after a change" socks_share_printing
 
-# A prompt that precedes a live change must have a way out; pressing Enter at the
-# port prompt means "random", so a cancel has to be an explicit key.
 socks_port_change_can_cancel(){
   (
     local dir="$relay_roundtrip/port-cancel"
@@ -284,7 +254,6 @@ socks_port_change_can_cancel(){
     FLOW_RESPONSE_INDEX=0
     FLOW_MESSAGES=
     FLOW_PROMPTS=
-    # Called indirectly by the sourced management flows.
     # shellcheck disable=SC2317
     readp(){
       local prompt=$1 target=${2-} response
@@ -326,8 +295,6 @@ socks_port_change_can_cancel(){
 expect_success "the port-change prompt can be cancelled without touching the config" \
   socks_port_change_can_cancel
 
-# choose_socks_port reports cancellation with a distinct status so enable_socks_entry
-# can abort instead of minting a password and a random port behind the operator's back.
 choose_socks_port_cancel_status(){
   (
     # shellcheck disable=SC2317
@@ -345,8 +312,6 @@ expect_success "cancelling the port question is distinct from a random port" \
   choose_socks_port_cancel_status
 unset -f readp
 
-# The caller must also *say* that nothing happened: the original bug was a
-# silent return, so an aborted disable looked like a dead menu entry.
 cancelled_disable_is_reported(){
   (
     local dir="$relay_roundtrip/cancel"
@@ -356,12 +321,10 @@ cancelled_disable_is_reported(){
     # shellcheck disable=SC2030
     SB_CONFIG="$dir/sb.json"
     printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"socks","sniff":true,"tag":"socks5-sb","listen":"::","listen_port":443,"users":[{"username":"sb","password":"Socks.Pass_Two-7890~X"}]}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
-    # the answer is "no", so the flow must stop before any commit
     FLOW_RESPONSES=('no' '')
     FLOW_RESPONSE_INDEX=0
     FLOW_MESSAGES=
     FLOW_PROMPTS=
-    # Called indirectly by the sourced management flows.
     # shellcheck disable=SC2317
     readp(){
       local prompt=$1 target=${2-} response
@@ -414,7 +377,6 @@ empty_answer_disables_the_entry(){
     FLOW_RESPONSE_INDEX=0
     FLOW_MESSAGES=
     FLOW_PROMPTS=
-    # Called indirectly by the sourced management flows.
     # shellcheck disable=SC2317
     readp(){
       local prompt=$1 target=${2-} response
@@ -478,16 +440,13 @@ relay_candidate_builders(){
         .version == "5" and .username == "sb" and .password == $key)] | length) == 1 and
       .route.final == "relay"
     ' "$dir/with.json" >/dev/null || return 1
-    # applying it again must not duplicate the outbound
     cp -- "$dir/with.json" "$SB_CONFIG"
     relay_candidate_with_upstream "$dir/with-again.json" 76.9.111.90 443 "$key" || return 1
     jq -e '[.outbounds[] | select(.tag == "relay")] | length == 1' "$dir/with-again.json" >/dev/null || return 1
-    # removing it restores a plain direct config
     cp -- "$dir/with.json" "$SB_CONFIG"
     relay_candidate_without_upstream "$dir/without.json" || return 1
     jq -e '([.outbounds[] | select(.tag == "relay")] | length) == 0 and .route.final == "direct"' \
       "$dir/without.json" >/dev/null || return 1
-    # a duplicated relay outbound is rejected instead of silently collapsed
     jq '.outbounds += [.outbounds[] | select(.tag == "relay")]' "$dir/with.json" > "$SB_CONFIG"
     relay_candidate_with_upstream "$dir/dup.json" 76.9.111.90 443 "$key" 2>/dev/null && return 1
     return 0
@@ -510,26 +469,21 @@ socks_entry_candidate_builders(){
       ([.route.rules[] | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1 and
       .route.final == "direct"
     ' "$dir/with.json" >/dev/null || return 1
-    # the UDP block rule must come first, like the renderer emits it
     [[ $(jq -r '.route.rules[0].inbound[0]' "$dir/with.json") == socks5-sb ]] || return 1
-    # applying it twice is a no-op, not a duplicate
     cp -- "$dir/with.json" "$SB_CONFIG"
     socks_entry_candidate_with_inbound "$dir/with-again.json" 443 "$key" "::" || return 1
     jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 1 and
            ([.route.rules[] | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 1' \
       "$dir/with-again.json" >/dev/null || return 1
     cmp -s -- "$dir/with.json" "$dir/with-again.json" || return 1
-    # an existing relay final survives enabling the entry
     jq '.route.final = "relay"' "$dir/with.json" > "$SB_CONFIG"
     socks_entry_candidate_with_inbound "$dir/with-relay.json" 8443 "$key" "::" || return 1
     [[ $(jq -r '.route.final' "$dir/with-relay.json") == relay ]] || return 1
-    # removing it takes the inbound and its rule away and keeps the rest
     cp -- "$dir/with.json" "$SB_CONFIG"
     socks_entry_candidate_without_inbound "$dir/without.json" || return 1
     jq -e '([.inbounds[] | select(.tag == "socks5-sb")] | length) == 0 and
            ([.route.rules[]? | select(((.inbound // []) | index("socks5-sb")) != null)] | length) == 0 and
            ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1' "$dir/without.json" >/dev/null || return 1
-    # a duplicated inbound is refused instead of silently collapsed
     jq '.inbounds += [.inbounds[] | select(.tag == "socks5-sb")]' "$dir/with.json" > "$SB_CONFIG"
     socks_entry_candidate_with_inbound "$dir/dup.json" 443 "$key" "::" 2>/dev/null && return 1
     return 0
@@ -538,9 +492,6 @@ socks_entry_candidate_builders(){
 expect_success "optional SOCKS5 entry candidates add, repeat and remove the inbound idempotently" \
   socks_entry_candidate_builders
 
-# 5.0.0 removed the old entry, but a host that still runs one must be told so: the
-# probe reports the port so both the menus and the render can warn instead of
-# letting the entry vanish silently on the next rewrite.
 retired_ss_entry_probe_reports_the_port(){
   (
     local dir="$relay_roundtrip/retired-ss"
@@ -549,7 +500,6 @@ retired_ss_entry_probe_reports_the_port(){
     SB_CONFIG="$dir/sb.json"
     printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
     [[ $(retired_ss_entry_port) == 10086 ]] || return 1
-    # A config without one reports nothing at all, so the menus stay quiet.
     printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
     retired_ss_entry_port && return 1
     return 0
@@ -558,7 +508,6 @@ retired_ss_entry_probe_reports_the_port(){
 expect_success "the retired entry is reported (and only reported) by the probe" \
   retired_ss_entry_probe_reports_the_port
 
-# Rewriting a config that still has the retired entry must drop it *and* say so.
 retired_ss_entry_is_dropped_with_a_warning(){
   (
     local dir="$relay_roundtrip/retired-ss-render" messages
@@ -566,18 +515,14 @@ retired_ss_entry_is_dropped_with_a_warning(){
     # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
     SB_CONFIG="$dir/sb.json"
     printf '%s\n' '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","listen":"::","listen_port":8443},{"type":"shadowsocks","tag":"ss-sb","listen":"::","listen_port":10086,"network":"tcp","method":"2022-blake3-aes-256-gcm","password":"AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyA="}],"outbounds":[{"type":"direct","tag":"direct"}],"route":{"final":"direct","rules":[{"inbound":["ss-sb"],"network":"udp","outbound":"block"},{"protocol":["quic","stun"],"outbound":"block"}]}}' > "$SB_CONFIG"
-    # These are read through dynamic scope by render_server_config, not here.
     # shellcheck disable=SC2034,SC2031
     local uuid='11111111-2222-3333-4444-555555555555' port_hy2=8443 ipv=prefer_ipv4
     # shellcheck disable=SC2034,SC2031
     local certificatec_hy2="$SB_DIR/cert.pem" certificatep_hy2="$SB_DIR/private.key"
     # shellcheck disable=SC2034  # read through dynamic scope by render_server_config
     local socks_entry_enabled=0
-    # server_listen_address lives in 00-bootstrap.sh, which this harness does not
-    # source; the renderer only needs *a* listen address here.
     # shellcheck disable=SC2317
     server_listen_address(){ printf '::\n'; }
-    # The renderer reports through the colour helpers; capture them as plain text.
     # shellcheck disable=SC2317
     green(){ printf '%s\n' "$1"; }
     # shellcheck disable=SC2317
@@ -596,10 +541,6 @@ retired_ss_entry_is_dropped_with_a_warning(){
 expect_success "rewriting a config with the retired entry drops it and warns" \
   retired_ss_entry_is_dropped_with_a_warning
 
-# Generated client files are line-oriented YAML/JSON: a fragment whose trailing
-# newline was eaten by $( ) silently glues two entries together (3.1.0 shipped
-# that bug until the real-output harness caught it), and `sing-box check` cannot
-# see it because the JSON side stays parseable. This locks the structure down.
 client_files_keep_line_structure(){
   (
     local dir="$relay_roundtrip/clients"
@@ -634,27 +575,21 @@ client_files_keep_line_structure(){
     # shellcheck disable=SC2034
     socks_password="$socks_password_symbols"
     sb_client || return 1
-    # every Clash proxy group member sits on its own line
     group=$(awk '/^proxy-groups:/{f=1} f&&/^  proxies:/{g=1;next} g&&/^    - /{print} g&&!/^    - /{exit}' \
       "$SB_DIR/clash.yaml")
     [[ $(printf '%s\n' "$group" | wc -l) -eq 3 ]] || return 1
     [[ $group == *'    - DIRECT'* && $group == *'    - socks5-testhost'* ]] || return 1
-    # the group mirrors the selector: Hysteria2 (the default) first, then the
-    # optional SOCKS5 entry, then DIRECT
     clash_hy2_off=$(printf '%s\n' "$group" | grep -bo 'hysteria2-testhost' | head -1 | cut -d: -f1 || true)
     clash_socks_off=$(printf '%s\n' "$group" | grep -bo 'socks5-testhost' | head -1 | cut -d: -f1 || true)
     clash_direct_off=$(printf '%s\n' "$group" | grep -bo 'DIRECT' | head -1 | cut -d: -f1 || true)
     [[ -n $clash_hy2_off && -n $clash_socks_off && -n $clash_direct_off ]] || return 1
     [[ $clash_hy2_off -lt $clash_socks_off && $clash_socks_off -lt $clash_direct_off ]] || return 1
-    # the retired entry must not come back through the client files
     if grep -Fq -- 'ss-' "$SB_DIR/clash.yaml" || grep -Fq -- '"shadowsocks"' "$SB_DIR/sbox.json"; then
       return 1
     fi
-    # the optional proxy blocks are not glued onto the next proxy
     grep -q '^  udp: false$' "$SB_DIR/clash.yaml" || return 1
     grep -q '^  type: socks5$' "$SB_DIR/clash.yaml" || return 1
     grep -q '^- name: hysteria2-testhost$' "$SB_DIR/clash.yaml" || return 1
-    # the sing-box selector lists one member per line, Hysteria2 last
     selector=$(awk '/"default": "hy2-testhost"/{f=1;next} f&&/^        "/{print} f&&/^      \]/{exit}' \
       "$SB_DIR/sbox.json")
     [[ $(printf '%s\n' "$selector" | wc -l) -eq 2 ]] || return 1
@@ -713,7 +648,6 @@ expect_success "generated sb.sh has formal identity" script_copy_has_identity "$
 printf '%s\n' '#!/bin/bash' > "$TEMP_DIR/foreign.sh"
 expect_failure "foreign script has no formal identity" script_copy_has_identity "$TEMP_DIR/foreign.sh"
 
-# Dollar-prefixed names below are literal source text.
 # shellcheck disable=SC2016
 for fixed_move in \
   '     ! chmod 600 "$identity_tmp" || ! mv -fT -- "$identity_tmp" "$ACME_IDENTITY"; then' \
@@ -754,8 +688,6 @@ expect_success "UDP 443 conflict is detected" port_conflict 443 udp
 expect_failure "UDP 443 does not block TCP 443" port_conflict 443 tcp
 
 STATE_DIR="$TEMP_DIR/state"
-# The relay cases above rebind SB_DIR/SB_CONFIG inside their own subshells on
-# purpose; everything from here on uses this exported pair instead.
 # shellcheck disable=SC2031
 export SB_DIR="$STATE_DIR/sb"
 # shellcheck disable=SC2031
@@ -1085,7 +1017,6 @@ config_uses_self_signed_certificate(){
 config_references_acme_state(){
   [[ $MOCK_CONFIG_USES_ACME -eq 1 ]]
 }
-# Called indirectly by sourced cron functions.
 # shellcheck disable=SC2317
 red(){ :; }
 # shellcheck disable=SC2317
@@ -1156,7 +1087,6 @@ MOCK_FLOCK_MODE=fail_second_acquire
 MOCK_FLOCK_ACQUIRE_COUNT=0
 MOCK_FLOCK_RELEASE_COUNT=0
 MOCK_FLOCK_ORDER=
-# Called indirectly by the sourced dual-lock helpers.
 # shellcheck disable=SC2317
 flock(){
   local fd
@@ -1330,7 +1260,6 @@ expect_success "ACME runner restores canonical state after malicious input" "$re
 expect_success "restored renewal state is readable" load_acme_renew_state
 
 force_args_file="$SB_DIR/force-args"
-# Dollar-prefixed names below are literal fixture-script text.
 # shellcheck disable=SC2016
 printf '%s\n' '#!/bin/bash' \
   'printf '\''%s\n'\'' "$@" > "$HOME/force-args"' \
@@ -1504,7 +1433,6 @@ if [[ $TEST_HAS_NATIVE_SYMLINKS -eq 1 ]]; then
   cp -p "$TEMP_DIR/pre-migration-cert.pem" "$ACME_CERT"
   cp -p "$TEMP_DIR/pre-migration-key.pem" "$ACME_KEY"
   failing_link_hook="$TEMP_DIR/acme-reload-link-failure.sh"
-  # Dollar-prefixed names below are literal generated-hook text.
   # shellcheck disable=SC2016
   sed '/^  local destination=\$1 target=\$2 link_tmp$/a\
   if [[ $destination == "$key" \&\& ! -e $base/.test-key-link-failure ]]; then\
@@ -1530,7 +1458,6 @@ if [[ $TEST_HAS_NATIVE_SYMLINKS -eq 1 ]]; then
   cp -p "$TEMP_DIR/pre-signal-cert.pem" "$ACME_CERT"
   cp -p "$TEMP_DIR/pre-signal-key.pem" "$ACME_KEY"
   interrupted_link_hook="$TEMP_DIR/acme-reload-link-signal.sh"
-  # Dollar-prefixed names below are literal generated-hook text.
   # shellcheck disable=SC2016
   sed '/^  local destination=\$1 target=\$2 link_tmp$/a\
   if [[ $destination == "$key" \&\& ! -e $base/.test-key-link-signal ]]; then\
@@ -1657,16 +1584,13 @@ expect_success "orphaned ACME discovery accepts the repaired recovery point" \
 ACME_STATE_BACKUP=
 ORPHAN_RECOVERY_RESPONSES=(1 0)
 ORPHAN_RECOVERY_INDEX=0
-# Called indirectly by the startup recovery function.
 # shellcheck disable=SC2317
 readp(){
   printf -v "$2" '%s' "${ORPHAN_RECOVERY_RESPONSES[$ORPHAN_RECOVERY_INDEX]}"
   ORPHAN_RECOVERY_INDEX=$((ORPHAN_RECOVERY_INDEX + 1))
 }
-# Called indirectly by the startup recovery function.
 # shellcheck disable=SC2317
 green(){ :; }
-# Called indirectly by the startup recovery function.
 # shellcheck disable=SC2317
 yellow(){ :; }
 expect_failure "startup recovery rejects an unusable backup for an ACME configuration" \
@@ -1682,7 +1606,6 @@ printf '%s\n' 'replacement-certificate' > "$ACME_CERT"
 printf '%s\n' 'replacement-renew-state' > "$renew_state"
 
 FAIL_RESTORE_DEST=$ACME_KEY
-# Called indirectly by restore_acme_state_backup to simulate a partial apply failure.
 # shellcheck disable=SC2317
 mv(){
   if [[ ${*: -1} == "$FAIL_RESTORE_DEST" ]]; then
@@ -1725,13 +1648,11 @@ printf '%s\n' 'damaged.example.com' > "$ACME_IDENTITY"
 ACME_STATE_BACKUP=
 ORPHAN_RECOVERY_RESPONSES=(1)
 ORPHAN_RECOVERY_INDEX=0
-# Called indirectly by the startup recovery function.
 # shellcheck disable=SC2317
 readp(){
   printf -v "$2" '%s' "${ORPHAN_RECOVERY_RESPONSES[$ORPHAN_RECOVERY_INDEX]}"
   ORPHAN_RECOVERY_INDEX=$((ORPHAN_RECOVERY_INDEX + 1))
 }
-# Called indirectly by the startup recovery function.
 # shellcheck disable=SC2317
 service_is_active(){ return 1; }
 expect_success "startup recovery restores a discovered ACME recovery point" \
@@ -1767,7 +1688,6 @@ pass "startup recovery cleanup requires confirmation and removes only the recove
 export ACME_RELOAD="$SB_DIR/failure-hook.sh"
 printf '%s\n' '#!/bin/bash' '# preserved' > "$ACME_RELOAD"
 chmod 700 "$ACME_RELOAD"
-# Called indirectly by the sourced write_acme_reload_hook function.
 # shellcheck disable=SC2317
 mv(){ return 1; }
 expect_failure "hook replacement reports atomic move failure" write_acme_reload_hook
@@ -1816,7 +1736,6 @@ LAST_SOCKS_PASSWORD=
 LAST_SOCKS_FILTER=
 LAST_COMMITTED_CANDIDATE=
 
-# Called indirectly by the sourced management functions.
 # shellcheck disable=SC2317
 readp(){
   local prompt=$1 target=${2-} response
@@ -1831,7 +1750,6 @@ readp(){
   fi
 }
 
-# Called indirectly by the sourced changeuuid function.
 # shellcheck disable=SC2317
 red(){ FLOW_MESSAGES+="red:$1"$'\n'; }
 # shellcheck disable=SC2317
@@ -1844,8 +1762,6 @@ blue(){ FLOW_MESSAGES+="blue:$1"$'\n'; }
 sbactive(){ return 0; }
 # shellcheck disable=SC2317
 sbshare(){ return 0; }
-# change_socks_password finishes by printing the share link and the new password.
-# The real print_socks_entry_share has its own case above; this records the call.
 # shellcheck disable=SC2317
 print_socks_entry_share(){ FLOW_MESSAGES+="share:${1-}"$'\n'; }
 # shellcheck disable=SC2317
@@ -1892,7 +1808,6 @@ commit_config(){
 
 export SB_DIR="$TEMP_DIR/credentials"
 export SB_CONFIG="$SB_DIR/sb.json"
-# SB_BIN is also rebound inside the client-file case's own subshell on purpose.
 # shellcheck disable=SC2031
 export SB_BIN="$SB_DIR/sing-box"
 mkdir -p "$SB_DIR"
@@ -1987,7 +1902,6 @@ pass "SOCKS5 password rollback failure is shown"
 pass "SOCKS5 password rollback failure waits before returning"
 
 CREDENTIAL_UUID_CALLS=0
-# Called indirectly by the sourced credential menu.
 # shellcheck disable=SC2317
 changeuuid(){ CREDENTIAL_UUID_CALLS=$((CREDENTIAL_UUID_CALLS + 1)); }
 FLOW_RESPONSES=(1 2 9 0)
@@ -2000,15 +1914,12 @@ expect_success "credential menu dispatches the UUID flow only" change_credential
 pass "credential menu dispatches the UUID flow exactly once"
 [[ $FLOW_MESSAGES == *'请输入0或1'* ]] || fail "credential menu invalid choice was not shown"
 pass "credential menu reports invalid choices"
-# The credentials menu manages the Hysteria2 UUID only: the removed SS entry used to
-# leave a pointer to menu [8] here, and that pointer was noise once the entry was gone.
 [[ $FLOW_MESSAGES != *'Shadowsocks'* ]] ||
   fail "credential menu still mentions the removed Shadowsocks entry"
 pass "credential menu mentions neither the removed entry nor the upstream key"
 unset -f changeuuid
 
 SS_MENU_CALLS=
-# Called indirectly by the sourced optional-features submenu.
 # shellcheck disable=SC2317
 enable_socks_entry(){ SS_MENU_CALLS+="enable "; }
 # shellcheck disable=SC2317
@@ -2034,7 +1945,6 @@ pass "the removed fifth menu item is gone"
 unset -f enable_socks_entry disable_socks_entry change_socks_port change_socks_password
 
 OPTIONAL_CALLS=
-# Called indirectly by the sourced optional-features menu.
 # shellcheck disable=SC2317
 manage_socks_entry(){ OPTIONAL_CALLS+="socks "; }
 # shellcheck disable=SC2317
@@ -2158,7 +2068,6 @@ expect_success "outer ACME lock releases after its directory is deleted" release
   fail "outer ACME lock state was not cleared"
 pass "deleted-directory lock release clears both outer lock states"
 
-# Called indirectly by lifecycle cleanup while flock availability is mocked.
 # shellcheck disable=SC2317
 command(){
   if [[ ${1-} == -v && ${2-} == flock ]]; then

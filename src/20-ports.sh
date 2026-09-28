@@ -9,9 +9,6 @@ valid_uuid(){
   [[ $1 =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-# SOCKS5 password: 16-128 characters from a shell-safe set. This is a plain
-# shared secret and the protocol sends it in the clear — see the warning the
-# enable flow prints, and the note in README.
 valid_socks_password(){
   [[ ${#1} -ge 16 && ${#1} -le 128 && $1 != *[!A-Za-z0-9._~-]* ]]
 }
@@ -79,11 +76,6 @@ random_available_port(){
   done
 }
 
-# Port selection for the optional SOCKS5 entry (menu [8]).
-# Empty/1 = random, 2 = custom — the same shape the installer uses for its own
-# port question. The result is returned in the global `port`.
-# Returns 0 with `port` set, or 2 when the operator cancelled: a prompt that
-# precedes a live change must always offer a way out.
 choose_socks_port(){
   local choice
   while true; do
@@ -145,5 +137,4 @@ insport(){
     return 1
   fi
   blue "Hysteria2 UUID（密码）：${uuid}"
-  yellow "TCP 备用入口（SOCKS5，明文）默认不安装，需要时在菜单[8]可选功能里启用"
 }

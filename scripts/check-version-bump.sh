@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# A push to main publishes a release: `sb.sh` is served straight from main, and
-# installed hosts re-read it through the shortcut fallback. Any change under
-# src/ therefore ships a new build and must carry a new VERSION, otherwise two
-# different builds advertise the same version number and users cannot tell them
-# apart. This guard fails a change that breaks that rule.
 set -Eeuo pipefail
 
 export LC_ALL=C
@@ -35,8 +30,6 @@ done
 
 cd -- "$ROOT_DIR"
 
-# Deliberately not part of tests/verify.sh: the gate must still run from a
-# tarball or a shallow copy, where there is no history to compare against.
 [[ -d .git ]] ||
   fail "not a git checkout; run this from a clone (it is not part of tests/verify.sh)"
 

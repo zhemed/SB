@@ -1,5 +1,4 @@
 # sb-module: 10-acme
-# Certificate functions
 cert_self_signed(){
   certificatec_hy2="$SB_DIR/cert.pem"
   certificatep_hy2="$SB_DIR/private.key"
@@ -758,7 +757,6 @@ ACMERELOAD
 }
 
 acme_reload_hook_is_current(){
-  # Dollar-prefixed names in the grep patterns are literal generated-hook text.
   # shellcheck disable=SC2016
   [[ -f $ACME_RELOAD && ! -L $ACME_RELOAD && -x $ACME_RELOAD ]] &&
     [[ $(grep -Fxc "$ACME_RELOAD_IDENTITY" "$ACME_RELOAD" 2>/dev/null || true) -eq 1 ]] &&

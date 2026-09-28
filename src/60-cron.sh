@@ -1,5 +1,4 @@
 # sb-module: 60-cron
-# Manage only sb-owned crontab entries.
 load_current_crontab(){
   local error_file error_text temp_base=$SB_DIR
   CURRENT_CRONTAB=
@@ -63,7 +62,6 @@ acquire_acme_lock(){
   done
   ACME_LOCK_FD=
   ACME_COMPAT_LOCK_FD=
-  # All callers and generated runners acquire the global lock before the v1.8.0 lock.
   exec {ACME_LOCK_FD}> "$lock" || return 1
   if ! chmod 600 "$lock" || ! flock -w 30 "$ACME_LOCK_FD"; then
     release_acme_lock >/dev/null 2>&1 || true
@@ -109,7 +107,6 @@ acme_renew_runner_identity(){
   printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v2}"
 }
 
-# Parsed values are consumed by the certificate management module.
 # shellcheck disable=SC2034
 load_acme_renew_state(){
   local state line key value mode
@@ -249,7 +246,6 @@ acme_renew_runner_is_current(){
     MINGW*|MSYS*) ;;
     *) [[ $mode == 700 ]] || return 1 ;;
   esac
-  # Dollar-prefixed names below are literal generated-runner text.
   # shellcheck disable=SC2016
   [[ $(grep -Fxc -- "$identity" "$runner" 2>/dev/null || true) -eq 1 ]] &&
     grep -Fqx -- "$expected_sb_dir" "$runner" 2>/dev/null &&

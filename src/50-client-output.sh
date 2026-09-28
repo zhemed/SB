@@ -1,5 +1,4 @@
 # sb-module: 50-client-output
-# IP detection for share links
 save_server_ip(){
   local ip=$1 server_value client_value
   if valid_ipv4 "$ip"; then
@@ -62,7 +61,6 @@ refresh_saved_ip(){
   fi
 }
 
-# Read config from sb.json for share outputs
 result(){
   if [[ ! -s $SB_CONFIG ]]; then
     red "配置文件不存在，请先安装"
@@ -83,8 +81,6 @@ result(){
     return 1
   fi
   uuid=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password' "$SB_CONFIG" 2>/dev/null) || return 1
-  # The optional TCP entry is SOCKS5 since 4.0.0, and "no such inbound" is a
-  # normal state rather than a broken config: everything keys off socks_enabled.
   socks_enabled=0
   socks_port=
   socks_password=
@@ -94,8 +90,6 @@ result(){
   else
     socks_password=
   fi
-  # An entry created before 4.0.0 is no longer supported (5.0.0): it has no
-  # share link and no client entry any more.
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
@@ -173,9 +167,6 @@ ressocks5(){
   echo
 }
 
-# After enabling or changing the optional SOCKS5 entry the operator
-# needs exactly two things: the share link (sbshare has already written it) and
-# the server-side credentials. Printing only the port read as "no link and no key".
 print_socks_entry_share(){
   local password=$1 path="$SB_DIR/socks5.txt" link=
   echo
@@ -191,7 +182,6 @@ print_socks_entry_share(){
   green "用户名/密码：$SOCKS_USERNAME / $password"
 }
 
-# Client config generation (kept compatible with sing-box 1.10.7)
 sb_client(){
   local sbox_candidate clash_candidate hy2_certificate_field=
   local socks_outbound_field=
@@ -204,8 +194,6 @@ sb_client(){
   if [[ -n $hy2_certificate_json ]]; then
     hy2_certificate_field=$(printf ',\n        "certificate": %s' "$hy2_certificate_json")
   fi
-  # Client pieces are emitted per inbound that actually exists on the server:
-  # the optional SOCKS5 entry, then Hysteria2.
   if [[ $socks_enabled -eq 1 ]]; then
     socks_outbound_field=$(printf '    {\n      "type": "socks",\n      "tag": "socks5-%s",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s",\n      "network": "tcp"\n    },\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
@@ -213,9 +201,6 @@ sb_client(){
     socks_clash_proxy=$(printf -- '- name: socks5-%s\n  type: socks5\n  server: %s\n  port: %s\n  username: %s\n  password: %s\n  udp: false\n\n' \
       "$hostname" "$server_ipcl" "$socks_port" "$SOCKS_USERNAME" "$socks_password") || return 1
     socks_clash_member=$(printf '    - socks5-%s\n' "$hostname") || return 1
-    # Command substitution eats every trailing newline, so the line breaks the
-    # template relies on have to be put back explicitly. Without this the Clash
-    # proxies and the group members run into the next line.
     socks_outbound_field+=$'\n'
     socks_selector_member+=$'\n'
     socks_clash_proxy+=$'\n\n'
@@ -463,8 +448,6 @@ EOF
   mv -fT -- "$clash_candidate" "$SB_DIR/clash.yaml" || { rm -f "$clash_candidate"; return 1; }
 }
 
-# The optional entry was switched off: drop the share file it used to produce
-# instead of leaving a stale link that no longer connects.
 remove_saved_ss_link(){
   local path="$SB_DIR/ss.txt"
   [[ -e $path || -L $path ]] || return 0
@@ -484,8 +467,6 @@ sbshare(){
   if ! result; then
     return 1
   fi
-  # Share files follow what the server actually runs, in the same order as the
-  # client configuration: SOCKS5 entry, then Hysteria2.
   if [[ $socks_enabled -eq 1 ]]; then
     socks_tmp=$(mktemp "$SB_DIR/.socks5.XXXXXX") || return 1
     if ! ressocks5 "$socks_tmp"; then
@@ -525,9 +506,6 @@ sbshare(){
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
-  # ss.txt belonged to the entry that 5.0.0 no longer supports: nothing writes
-  # it any more, and a leftover file from an older release is a managed asset,
-  # so clean it up and say so if that fails.
   if ! remove_saved_ss_link; then
     yellow "本版本已不再生成 $SB_DIR/ss.txt，但遗留文件无法删除，请手动检查"
   fi
@@ -545,7 +523,6 @@ sbshare(){
   echo
 }
 
-# Switch IP priority for server outbound domain_strategy (like original sb.sh)
 switch_ip_priority(){
   local current new choose candidate retry commit_status
   if ! sbactive; then
@@ -563,9 +540,6 @@ switch_ip_priority(){
     green "切换IP优先级 (控制VPS出站时IPv4/IPv6的偏好)"
     echo -e "当前: ${yellow}$current${plain}"
     echo
-    # The four options are always listed: hiding the ones the VPS cannot use made
-    # the menu disagree with its own 【0-4】 prompt and looked like missing
-    # features. Picking an unusable family is rejected below with a clear message.
     green "1：IPV4优先 (prefer_ipv4)"
     green "2：IPV6优先 (prefer_ipv6)"
     green "3：仅IPV4 (ipv4_only)"
