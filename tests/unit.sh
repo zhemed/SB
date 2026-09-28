@@ -509,6 +509,76 @@ service_units_carry_the_marker(){
 expect_success "generated service units carry the ownership marker" \
   service_units_carry_the_marker
 
+# The crontab rewrite must never drop a line the script does not own. Status checks alone
+# cannot tell a legitimately empty result from a filter that failed halfway, so the helper
+# cross-checks every dropped line against the managed patterns.
+crontab_filter_keeps_foreign_lines(){
+  (
+    local out content
+    # shellcheck disable=SC2317
+    load_managed_cron_patterns(){
+      # shellcheck disable=SC2030,SC2034
+      MANAGED_CRON_PATTERNS=('# sb-managed-acme' '# sb-managed-restart')
+    }
+    # shellcheck disable=SC2317
+    filter_acme_cron_entries(){ grep -Fv '# sb-managed-acme'; }
+    content=$(printf '%s\n' '5 4 * * * /root/user-task' '0 0 * * * true # sb-managed-acme')
+    out=$(filter_crontab_checked "$content" filter_acme_cron_entries) || return 1
+    [[ $out == *'/root/user-task'* ]] || return 1
+    [[ $out != *'sb-managed-acme'* ]] || return 1
+    return 0
+  )
+}
+expect_success "rewriting crontab keeps lines the script does not own" \
+  crontab_filter_keeps_foreign_lines
+
+crontab_filter_refuses_to_drop_foreign_lines(){
+  (
+    # shellcheck disable=SC2317
+    load_managed_cron_patterns(){
+      # shellcheck disable=SC2030,SC2034
+      MANAGED_CRON_PATTERNS=('# sb-managed-acme' '# sb-managed-restart')
+    }
+    # shellcheck disable=SC2317
+    hostile_filter(){ grep -Fv 'user-task'; }
+    # shellcheck disable=SC2317
+    crashing_filter(){ false; }
+    local content
+    content=$(printf '%s\n' '5 4 * * * /root/user-task' '0 0 * * * true # sb-managed-acme')
+    filter_crontab_checked "$content" hostile_filter >/dev/null 2>&1
+    [[ $? -eq 3 ]] || return 1
+    filter_crontab_checked "$content" crashing_filter >/dev/null 2>&1
+    [[ $? -eq 3 ]] || return 1
+    return 0
+  )
+}
+expect_success "a filter that would drop someone else's cron line is refused" \
+  crontab_filter_refuses_to_drop_foreign_lines
+
+crontab_filter_chains_every_stage(){
+  (
+    # Regression: passing two filters used to run only the first one, so the daily
+    # restart entry survived and uninstall aborted ("清理sb定时任务失败").
+    # shellcheck disable=SC2317
+    load_managed_cron_patterns(){
+      # shellcheck disable=SC2030,SC2034
+      MANAGED_CRON_PATTERNS=('# sb-managed-acme' '# sb-managed-restart')
+    }
+    # shellcheck disable=SC2317
+    first_filter(){ grep -Fv '# sb-managed-acme'; }
+    # shellcheck disable=SC2317
+    second_filter(){ grep -Fv '# sb-managed-restart'; }
+    local content out
+    content=$(printf '%s\n' '5 4 * * * /root/user-task' '0 0 * * * true # sb-managed-acme' '0 1 * * * true # sb-managed-restart')
+    out=$(filter_crontab_checked "$content" first_filter second_filter) || return 1
+    [[ $out == *'/root/user-task'* ]] || return 1
+    [[ $out != *'sb-managed-acme'* ]] || return 1
+    [[ $out != *'sb-managed-restart'* ]] || return 1
+    return 0
+  )
+}
+expect_success "every filter in the chain runs" crontab_filter_chains_every_stage
+
 relay_candidate_builders(){
   (
     local dir="$relay_roundtrip/candidate" key="$relay_password_valid"

@@ -3409,24 +3409,57 @@ crontab_has_restart_entries(){
   printf '%s\n' "$content" | grep -Fq "$RESTART_CRON_MARKER"
 }
 
-# 过滤 crontab 前先把结果落到临时文件：管道里任何一级出错（退出码 >=2）都必须中止，
-# 不能把半截内容写回 crontab 把别人的定时任务冲掉。
-filter_crontab_checked(){
-  local current=$1 tmp out code
-  local -a stage_status=()
-  shift
-  [[ $# -ge 1 ]] || return 1
-  tmp=$(mktemp "${TMPDIR:-/tmp}/sb-crontab.XXXXXX") || return 1
-  printf '%s\n' "$current" | "$@" > "$tmp"
-  stage_status=("${PIPESTATUS[@]}")
-  for code in "${stage_status[@]}"; do
-    if [[ $code -gt 1 ]]; then
-      rm -f -- "$tmp"
-      return 2
+# 只允许删掉"本脚本管理的行"。过滤结果除了要写盘，还必须通过一次交叉校验：
+# 凡是原来有、过滤后没了的行，都必须命中某个托管模式，否则说明过滤器出错或被截断，
+# 调用方必须中止而不是把别人的定时任务冲掉。
+MANAGED_CRON_PATTERNS=()
+
+load_managed_cron_patterns(){
+  local runner=
+  runner=$(acme_renew_runner_path 2>/dev/null) || runner=
+  MANAGED_CRON_PATTERNS=("$ACME_CRON_MARKER" "$RESTART_CRON_MARKER" "$ACME_BIN --cron" "$SB_DIR/cert_renew.sh")
+  if [[ -n $runner ]]; then
+    MANAGED_CRON_PATTERNS+=("$runner")
+  fi
+  return 0
+}
+
+cron_line_is_managed(){
+  local line=$1 pattern
+  for pattern in "${MANAGED_CRON_PATTERNS[@]}"; do
+    if [[ -n $pattern && $line == *"$pattern"* ]]; then
+      return 0
     fi
   done
-  out=$(cat "$tmp") || { rm -f -- "$tmp"; return 1; }
-  rm -f -- "$tmp"
+  return 1
+}
+
+filter_crontab_checked(){
+  local current=$1 tmp out code line
+  shift
+  [[ $# -ge 1 ]] || return 1
+  load_managed_cron_patterns
+  # 过滤器是一个链：每一级读上一级的结果，逐级执行（不能把它们当成一条管道的多级）。
+  tmp=$(mktemp -d "${TMPDIR:-/tmp}/sb-crontab.XXXXXX") || return 1
+  printf '%s\n' "$current" > "$tmp/0" || { rm -rf -- "$tmp"; return 1; }
+  local stage=0 filter=
+  for filter in "$@"; do
+    : > "$tmp/$((stage + 1))" || { rm -rf -- "$tmp"; return 1; }
+    "$filter" < "$tmp/$stage" > "$tmp/$((stage + 1))"
+    code=$?
+    if [[ $code -gt 1 ]]; then
+      rm -rf -- "$tmp"
+      return 2
+    fi
+    stage=$((stage + 1))
+  done
+  out=$(cat "$tmp/$stage") || { rm -rf -- "$tmp"; return 1; }
+  rm -rf -- "$tmp"
+  while IFS= read -r line; do
+    [[ -n $line ]] || continue
+    printf '%s\n' "$out" | grep -Fqx -- "$line" && continue
+    cron_line_is_managed "$line" || return 3
+  done <<< "$current"
   printf '%s\n' "$out"
 }
 

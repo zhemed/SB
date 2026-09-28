@@ -1,0 +1,3997 @@
+[
+ {
+  "name": "red",
+  "sb": 60,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 57,
+  "root": false,
+  "mocked": true,
+  "invoked": 10,
+  "inv": [
+   [
+    "unit.sh",
+    288,
+    "red(){ FLOW_MESSAGES+=\"red:$1\"$'\\n'; }"
+   ],
+   [
+    "unit.sh",
+    318,
+    "red(){ :; }"
+   ],
+   [
+    "unit.sh",
+    335,
+    "red(){ :; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "green",
+  "sb": 61,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 58,
+  "root": false,
+  "mocked": true,
+  "invoked": 8,
+  "inv": [
+   [
+    "unit.sh",
+    224,
+    "green(){ FLOW_MESSAGES+=\"green:$1\"$'\\n'; }"
+   ],
+   [
+    "unit.sh",
+    286,
+    "green(){ FLOW_MESSAGES+=\"green:$1\"$'\\n'; }"
+   ],
+   [
+    "unit.sh",
+    400,
+    "green(){ FLOW_MESSAGES+=\"green:$1\"$'\\n'; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "yellow",
+  "sb": 62,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 59,
+  "root": false,
+  "mocked": true,
+  "invoked": 10,
+  "inv": [
+   [
+    "unit.sh",
+    226,
+    "yellow(){ FLOW_MESSAGES+=\"yellow:$1\"$'\\n'; }"
+   ],
+   [
+    "unit.sh",
+    284,
+    "yellow(){ FLOW_MESSAGES+=\"yellow:$1\"$'\\n'; }"
+   ],
+   [
+    "unit.sh",
+    316,
+    "yellow(){ :; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "blue",
+  "sb": 63,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 60,
+  "root": false,
+  "mocked": true,
+  "invoked": 7,
+  "inv": [
+   [
+    "unit.sh",
+    290,
+    "blue(){ FLOW_MESSAGES+=\"blue:$1\"$'\\n'; }"
+   ],
+   [
+    "unit.sh",
+    337,
+    "blue(){ :; }"
+   ],
+   [
+    "unit.sh",
+    357,
+    "blue(){ :; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "white",
+  "sb": 64,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 61,
+  "root": false,
+  "mocked": true,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    292,
+    "white(){ :; }"
+   ],
+   [
+    "unit.sh",
+    404,
+    "white(){ :; }"
+   ],
+   [
+    "unit.sh",
+    456,
+    "white(){ :; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "readp",
+  "sb": 65,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 62,
+  "root": false,
+  "mocked": true,
+  "invoked": 12,
+  "inv": [
+   [
+    "unit.sh",
+    195,
+    "readp(){ printf -v \"$2\" '%s' \"$confirm_answer\"; }"
+   ],
+   [
+    "unit.sh",
+    271,
+    "readp(){"
+   ],
+   [
+    "unit.sh",
+    314,
+    "readp(){ printf -v \"$2\" '%s' \"$CANNED\"; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "confirm_yes",
+  "sb": 73,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 70,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    201,
+    "confirm_yes \"prompt\""
+   ],
+   [
+    "unit.sh",
+    205,
+    "! confirm_yes \"prompt\""
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "valid_ipv4",
+  "sb": 108,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 105,
+  "root": false,
+  "mocked": true,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    65,
+    "valid_ipv4(){ return 1; }"
+   ],
+   [
+    "repair.sh",
+    56,
+    "valid_ipv4(){ [[ ${1-} == 192.0.2.10 ]]; }"
+   ],
+   [
+    "repair.sh",
+    70,
+    "valid_ipv4(){ [[ ${1-} == 192.0.2.11 ]]; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "valid_ipv6",
+  "sb": 117,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 114,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    67,
+    "valid_ipv6(){ return 1; }"
+   ],
+   [
+    "repair.sh",
+    590,
+    "valid_ipv6(){ return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "sanitize_location",
+  "sb": 139,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 136,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    61,
+    "sanitize_location(){"
+   ],
+   [
+    "repair.sh",
+    592,
+    "sanitize_location(){"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "v4v6_refresh",
+  "sb": 143,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 140,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "read_ip_cache",
+  "sb": 161,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 158,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "v4v6",
+  "sb": 173,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 170,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "v6only",
+  "sb": 184,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 181,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "server_listen_address",
+  "sb": 192,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 189,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    608,
+    "server_listen_address(){ printf '::\\n'; }"
+   ],
+   [
+    "repair.sh",
+    591,
+    "server_listen_address(){ printf '%s\\n' '::'; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "cleanup_core_download_temp",
+  "sb": 203,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 200,
+  "root": false,
+  "mocked": true,
+  "invoked": 3,
+  "inv": [
+   [
+    "repair.sh",
+    249,
+    "cleanup_core_download_temp(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    447,
+    "cleanup_core_download_temp(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    462,
+    "cleanup_core_download_temp(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "inssb",
+  "sb": 216,
+  "src": "src/00-bootstrap.sh",
+  "src_line": 213,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    43,
+    "inssb(){"
+   ],
+   [
+    "repair.sh",
+    46,
+    "quarantine_invalid_core_path && inssb && installed_core_is_current || return 1"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "cert_self_signed",
+  "sb": 283,
+  "src": "src/10-acme.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "certificate_san_text",
+  "sb": 289,
+  "src": "src/10-acme.sh",
+  "src_line": 8,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "certificate_identity_matches",
+  "sb": 299,
+  "src": "src/10-acme.sh",
+  "src_line": 18,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "certificate_time_valid",
+  "sb": 320,
+  "src": "src/10-acme.sh",
+  "src_line": 39,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "certificate_key_matches",
+  "sb": 330,
+  "src": "src/10-acme.sh",
+  "src_line": 49,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "format_epoch_utc",
+  "sb": 337,
+  "src": "src/10-acme.sh",
+  "src_line": 56,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "certificate_dns_names",
+  "sb": 343,
+  "src": "src/10-acme.sh",
+  "src_line": 62,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "load_certificate_metadata",
+  "sb": 351,
+  "src": "src/10-acme.sh",
+  "src_line": 70,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "managed_acme_live_layout_is_valid",
+  "sb": 411,
+  "src": "src/10-acme.sh",
+  "src_line": 130,
+  "root": false,
+  "mocked": true,
+  "invoked": 5,
+  "inv": [
+   [
+    "unit.sh",
+    1066,
+    "managed_acme_live_layout_is_valid(){ return 0; }"
+   ],
+   [
+    "unit.sh",
+    1491,
+    "managed_acme_live_layout_is_valid"
+   ],
+   [
+    "unit.sh",
+    1510,
+    "managed_acme_live_layout_is_valid"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_domain_conf_path",
+  "sb": 430,
+  "src": "src/10-acme.sh",
+  "src_line": 149,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "read_acme_domain_conf_value",
+  "sb": 436,
+  "src": "src/10-acme.sh",
+  "src_line": 155,
+  "root": true,
+  "mocked": false,
+  "invoked": 10,
+  "inv": [
+   [
+    "unit.sh",
+    837,
+    "read_acme_domain_conf_value \"$@\" >/dev/null"
+   ],
+   [
+    "unit.sh",
+    860,
+    "read_acme_domain_conf_value example.com Le_Unknown"
+   ],
+   [
+    "unit.sh",
+    862,
+    "read_acme_domain_conf_value '../example.com' Le_Domain"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_deployment_config_is_current",
+  "sb": 472,
+  "src": "src/10-acme.sh",
+  "src_line": 191,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1049,
+    "acme_deployment_config_is_current example.com"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "load_acme_certificate_schedule",
+  "sb": 479,
+  "src": "src/10-acme.sh",
+  "src_line": 198,
+  "root": true,
+  "mocked": false,
+  "invoked": 3,
+  "inv": [
+   [
+    "unit.sh",
+    852,
+    "load_acme_certificate_schedule example.com"
+   ],
+   [
+    "unit.sh",
+    896,
+    "load_acme_certificate_schedule example.com"
+   ],
+   [
+    "unit.sh",
+    904,
+    "load_acme_certificate_schedule example.com"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "cloudflare_acme_credentials_present",
+  "sb": 503,
+  "src": "src/10-acme.sh",
+  "src_line": 222,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "read_acme_identity",
+  "sb": 511,
+  "src": "src/10-acme.sh",
+  "src_line": 230,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "write_acme_identity",
+  "sb": 522,
+  "src": "src/10-acme.sh",
+  "src_line": 241,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    810,
+    "write_acme_identity \"$@\" 2>/dev/null"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "detect_acme_identity",
+  "sb": 533,
+  "src": "src/10-acme.sh",
+  "src_line": 252,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    109,
+    "detect_acme_identity(){ printf '%s\\n' example.com; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "cert_acme",
+  "sb": 551,
+  "src": "src/10-acme.sh",
+  "src_line": 270,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2224,
+    "cert_acme(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "normalize_acme_domain",
+  "sb": 563,
+  "src": "src/10-acme.sh",
+  "src_line": 282,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    695,
+    "normalize_acme_domain ' Example.COM. ' || fail \"single-domain normalization\""
+   ],
+   [
+    "unit.sh",
+    700,
+    "normalize_acme_domain '*.Example.COM' || fail \"wildcard normalization\""
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "valid_cloudflare_account_id",
+  "sb": 581,
+  "src": "src/10-acme.sh",
+  "src_line": 300,
+  "root": true,
+  "mocked": false,
+  "invoked": 3,
+  "inv": [
+   [
+    "unit.sh",
+    688,
+    "valid_cloudflare_account_id 0123456789ABCDEF0123456789abcdef"
+   ],
+   [
+    "unit.sh",
+    691,
+    "valid_cloudflare_account_id 0123456789abcdef0123456789abcde"
+   ],
+   [
+    "unit.sh",
+    693,
+    "valid_cloudflare_account_id 0123456789abcdef0123456789abcdeg"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "install_official_acme",
+  "sb": 585,
+  "src": "src/10-acme.sh",
+  "src_line": 304,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "write_acme_reload_hook",
+  "sb": 629,
+  "src": "src/10-acme.sh",
+  "src_line": 348,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "cleanup_deploy_files",
+  "sb": 659,
+  "src": "src/10-acme.sh",
+  "src_line": 378,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "switch_current",
+  "sb": 664,
+  "src": "src/10-acme.sh",
+  "src_line": 383,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "install_managed_link",
+  "sb": 676,
+  "src": "src/10-acme.sh",
+  "src_line": 395,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "rollback_deployment",
+  "sb": 686,
+  "src": "src/10-acme.sh",
+  "src_line": 405,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "commit_deployment",
+  "sb": 724,
+  "src": "src/10-acme.sh",
+  "src_line": 443,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "handle_deploy_signal",
+  "sb": 737,
+  "src": "src/10-acme.sh",
+  "src_line": 456,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "managed_service_active",
+  "sb": 743,
+  "src": "src/10-acme.sh",
+  "src_line": 462,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "restart_managed_service",
+  "sb": 751,
+  "src": "src/10-acme.sh",
+  "src_line": 470,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "acme_reload_hook_is_current",
+  "sb": 1042,
+  "src": "src/10-acme.sh",
+  "src_line": 761,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1591,
+    "acme_reload_hook_is_current"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "prepare_acme_deploy_stage",
+  "sb": 1078,
+  "src": "src/10-acme.sh",
+  "src_line": 797,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "valid_acme_renewal_identity",
+  "sb": 1092,
+  "src": "src/10-acme.sh",
+  "src_line": 811,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "recover_acme_renewal_identity",
+  "sb": 1105,
+  "src": "src/10-acme.sh",
+  "src_line": 824,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "register_acme_certificate_deployment",
+  "sb": 1113,
+  "src": "src/10-acme.sh",
+  "src_line": 832,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "config_uses_acme_certificate",
+  "sb": 1146,
+  "src": "src/10-acme.sh",
+  "src_line": 865,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    1094,
+    "config_uses_acme_certificate(){"
+   ],
+   [
+    "repair.sh",
+    175,
+    "config_uses_acme_certificate(){ return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "config_uses_self_signed_certificate",
+  "sb": 1154,
+  "src": "src/10-acme.sh",
+  "src_line": 873,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1097,
+    "config_uses_self_signed_certificate(){"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "config_references_acme_state",
+  "sb": 1162,
+  "src": "src/10-acme.sh",
+  "src_line": 881,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1100,
+    "config_references_acme_state(){"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "validate_acme_state_backup",
+  "sb": 1170,
+  "src": "src/10-acme.sh",
+  "src_line": 889,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "acme_state_backup_certificate_pair_is_valid",
+  "sb": 1228,
+  "src": "src/10-acme.sh",
+  "src_line": 947,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "current_acme_state_is_safe_to_keep",
+  "sb": 1252,
+  "src": "src/10-acme.sh",
+  "src_line": 971,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "find_orphaned_acme_state_backup",
+  "sb": 1261,
+  "src": "src/10-acme.sh",
+  "src_line": 980,
+  "root": true,
+  "mocked": false,
+  "invoked": 5,
+  "inv": [
+   [
+    "unit.sh",
+    1635,
+    "find_orphaned_acme_state_backup"
+   ],
+   [
+    "unit.sh",
+    1644,
+    "find_orphaned_acme_state_backup"
+   ],
+   [
+    "unit.sh",
+    1657,
+    "find_orphaned_acme_state_backup"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_state_backup_candidates_exist",
+  "sb": 1283,
+  "src": "src/10-acme.sh",
+  "src_line": 1002,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "resolve_orphaned_acme_state_backup",
+  "sb": 1291,
+  "src": "src/10-acme.sh",
+  "src_line": 1010,
+  "root": true,
+  "mocked": false,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    1680,
+    "resolve_orphaned_acme_state_backup"
+   ],
+   [
+    "unit.sh",
+    1742,
+    "resolve_orphaned_acme_state_backup"
+   ],
+   [
+    "unit.sh",
+    1757,
+    "resolve_orphaned_acme_state_backup"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "begin_acme_state_backup",
+  "sb": 1365,
+  "src": "src/10-acme.sh",
+  "src_line": 1084,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "clear_acme_state_backup",
+  "sb": 1413,
+  "src": "src/10-acme.sh",
+  "src_line": 1132,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "restore_acme_state_backup",
+  "sb": 1421,
+  "src": "src/10-acme.sh",
+  "src_line": 1140,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    446,
+    "restore_acme_state_backup(){ printf '%s\\n' restored >> \"$case_dir/restored.log\"; }"
+   ],
+   [
+    "repair.sh",
+    461,
+    "restore_acme_state_backup(){ printf '%s\\n' restored >> \"$case_dir/restored.log\"; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "discard_acme_state",
+  "sb": 1501,
+  "src": "src/10-acme.sh",
+  "src_line": 1220,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "reset_acme_state",
+  "sb": 1518,
+  "src": "src/10-acme.sh",
+  "src_line": 1237,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "issue_cloudflare_certificate",
+  "sb": 1536,
+  "src": "src/10-acme.sh",
+  "src_line": 1255,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2219,
+    "issue_cloudflare_certificate(){"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "self_signed_certificate_is_valid",
+  "sb": 1650,
+  "src": "src/10-acme.sh",
+  "src_line": 1369,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "generate_self_signed_certificate",
+  "sb": 1656,
+  "src": "src/10-acme.sh",
+  "src_line": 1375,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "inscertificate",
+  "sb": 1731,
+  "src": "src/10-acme.sh",
+  "src_line": 1450,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "valid_port",
+  "sb": 1789,
+  "src": "src/20-ports.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "valid_uuid",
+  "sb": 1795,
+  "src": "src/20-ports.sh",
+  "src_line": 8,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "valid_socks_password",
+  "sb": 1799,
+  "src": "src/20-ports.sh",
+  "src_line": 12,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    86,
+    "valid_socks_password \"$password\""
+   ],
+   [
+    "unit.sh",
+    115,
+    "valid_socks_password \"$socks_password_symbols\""
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "generate_socks_password",
+  "sb": 1803,
+  "src": "src/20-ports.sh",
+  "src_line": 16,
+  "root": true,
+  "mocked": false,
+  "invoked": 3,
+  "inv": [
+   [
+    "unit.sh",
+    85,
+    "password=$(generate_socks_password) || return 1"
+   ],
+   [
+    "unit.sh",
+    91,
+    "first=$(generate_socks_password) || return 1"
+   ],
+   [
+    "unit.sh",
+    92,
+    "second=$(generate_socks_password) || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "valid_hostname",
+  "sb": 1811,
+  "src": "src/20-ports.sh",
+  "src_line": 24,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "port_conflict",
+  "sb": 1822,
+  "src": "src/20-ports.sh",
+  "src_line": 35,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    339,
+    "port_conflict(){ return 0; }"
+   ],
+   [
+    "unit.sh",
+    359,
+    "port_conflict(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "chooseport",
+  "sb": 1834,
+  "src": "src/20-ports.sh",
+  "src_line": 47,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    341,
+    "chooseport tcp"
+   ],
+   [
+    "unit.sh",
+    361,
+    "chooseport tcp"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "random_available_port",
+  "sb": 1855,
+  "src": "src/20-ports.sh",
+  "src_line": 68,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "choose_socks_port",
+  "sb": 1867,
+  "src": "src/20-ports.sh",
+  "src_line": 80,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    320,
+    "choose_socks_port"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "hy2port",
+  "sb": 1891,
+  "src": "src/20-ports.sh",
+  "src_line": 104,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "insport",
+  "sb": 1898,
+  "src": "src/20-ports.sh",
+  "src_line": 111,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "render_server_config",
+  "sb": 1935,
+  "src": "src/30-server-config.sh",
+  "src_line": 2,
+  "root": true,
+  "mocked": false,
+  "invoked": 5,
+  "inv": [
+   [
+    "unit.sh",
+    615,
+    "messages=$(render_server_config \"$dir/rendered.json\" 2>&1) || return 1"
+   ],
+   [
+    "repair.sh",
+    509,
+    "render_server_config \"$case_dir/hy2-only.json\" || return 1"
+   ],
+   [
+    "repair.sh",
+    535,
+    "render_server_config \"$case_dir/source.json\" || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "inssbjson",
+  "sb": 2027,
+  "src": "src/30-server-config.sh",
+  "src_line": 94,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "managed_path_is_trusted",
+  "sb": 2045,
+  "src": "src/40-service.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "managed_regular_file_is_trusted",
+  "sb": 2055,
+  "src": "src/40-service.sh",
+  "src_line": 12,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "managed_symlink_is_trusted",
+  "sb": 2060,
+  "src": "src/40-service.sh",
+  "src_line": 17,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "atomic_write_private_text",
+  "sb": 2068,
+  "src": "src/40-service.sh",
+  "src_line": 25,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    87,
+    "atomic_write_private_text \"$SB_DIR/SHA256.txt\" \"$value\" || return 1"
+   ],
+   [
+    "repair.sh",
+    98,
+    "atomic_write_private_text \"$SB_DIR/SHA256.txt\" \"$value\" >/dev/null 2>&1 && status=1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "atomic_copy_private_file",
+  "sb": 2081,
+  "src": "src/40-service.sh",
+  "src_line": 38,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "relay_config_path",
+  "sb": 2095,
+  "src": "src/40-service.sh",
+  "src_line": 52,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "relay_settings_present",
+  "sb": 2099,
+  "src": "src/40-service.sh",
+  "src_line": 56,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "relay_server_is_valid",
+  "sb": 2103,
+  "src": "src/40-service.sh",
+  "src_line": 60,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "load_relay_settings",
+  "sb": 2107,
+  "src": "src/40-service.sh",
+  "src_line": 64,
+  "root": true,
+  "mocked": false,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    159,
+    "load_relay_settings && return 1"
+   ],
+   [
+    "unit.sh",
+    163,
+    "load_relay_settings || return 1"
+   ],
+   [
+    "unit.sh",
+    173,
+    "load_relay_settings && return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "save_relay_settings",
+  "sb": 2132,
+  "src": "src/40-service.sh",
+  "src_line": 89,
+  "root": true,
+  "mocked": false,
+  "invoked": 6,
+  "inv": [
+   [
+    "unit.sh",
+    160,
+    "save_relay_settings 76.9.111.90 443 \"$key\" || return 1"
+   ],
+   [
+    "unit.sh",
+    166,
+    "save_relay_settings 76.9.111.90 443 \"$key\" || return 1"
+   ],
+   [
+    "unit.sh",
+    168,
+    "save_relay_settings 76.9.111.90 443 bad-key && return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "clear_relay_settings",
+  "sb": 2141,
+  "src": "src/40-service.sh",
+  "src_line": 98,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    178,
+    "clear_relay_settings || return 1"
+   ],
+   [
+    "unit.sh",
+    180,
+    "clear_relay_settings || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "write_managed_marker_at",
+  "sb": 2149,
+  "src": "src/40-service.sh",
+  "src_line": 106,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "write_managed_marker",
+  "sb": 2162,
+  "src": "src/40-service.sh",
+  "src_line": 119,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "managed_directory_is_owned",
+  "sb": 2166,
+  "src": "src/40-service.sh",
+  "src_line": 123,
+  "root": false,
+  "mocked": true,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    2078,
+    "managed_directory_is_owned(){"
+   ],
+   [
+    "repair.sh",
+    190,
+    "managed_directory_is_owned(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    406,
+    "prepare_managed_directory && managed_directory_is_owned || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "managed_directory_is_incomplete_creation",
+  "sb": 2174,
+  "src": "src/40-service.sh",
+  "src_line": 131,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "prepare_managed_directory",
+  "sb": 2186,
+  "src": "src/40-service.sh",
+  "src_line": 143,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    406,
+    "prepare_managed_directory && managed_directory_is_owned || return 1"
+   ],
+   [
+    "repair.sh",
+    412,
+    "prepare_managed_directory && managed_directory_is_owned || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "systemd_unit_is_owned",
+  "sb": 2200,
+  "src": "src/40-service.sh",
+  "src_line": 157,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    501,
+    "systemd_unit_is_owned \"$SYSTEMD_UNIT\" \"$SB_DIR\" \"$SB_BIN\" \"$SB_CONFIG\" '^# Managed by sb\\.sh$' || rc=1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "systemd_service_has_other_units",
+  "sb": 2212,
+  "src": "src/40-service.sh",
+  "src_line": 169,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    244,
+    "systemd_service_has_other_units(){ return 1; }"
+   ],
+   [
+    "repair.sh",
+    767,
+    "systemd_service_has_other_units(){ return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "systemd_service_has_dropins",
+  "sb": 2223,
+  "src": "src/40-service.sh",
+  "src_line": 180,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    245,
+    "systemd_service_has_dropins(){ return 1; }"
+   ],
+   [
+    "repair.sh",
+    768,
+    "systemd_service_has_dropins(){ return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "systemd_service_definition_present",
+  "sb": 2240,
+  "src": "src/40-service.sh",
+  "src_line": 197,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "openrc_unit_is_owned",
+  "sb": 2251,
+  "src": "src/40-service.sh",
+  "src_line": 208,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    504,
+    "openrc_unit_is_owned \"$OPENRC_UNIT\" \"$SB_BIN\" \"$SB_CONFIG\" '^# Managed by sb\\.sh$' || rc=1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "systemd_service_definition_is_repairable",
+  "sb": 2259,
+  "src": "src/40-service.sh",
+  "src_line": 216,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "openrc_service_definition_is_repairable",
+  "sb": 2268,
+  "src": "src/40-service.sh",
+  "src_line": 225,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "service_definition_is_repairable",
+  "sb": 2274,
+  "src": "src/40-service.sh",
+  "src_line": 231,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    192,
+    "service_definition_is_repairable(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    251,
+    "service_definition_is_repairable || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "write_service_definition",
+  "sb": 2282,
+  "src": "src/40-service.sh",
+  "src_line": 239,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    494,
+    "if ! write_service_definition 2>/dev/null; then"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "sbservice",
+  "sb": 2334,
+  "src": "src/40-service.sh",
+  "src_line": 291,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "repair_managed_service",
+  "sb": 2378,
+  "src": "src/40-service.sh",
+  "src_line": 335,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    168,
+    "repair_managed_service(){ order=\"${order}service \"; return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "restartsb",
+  "sb": 2406,
+  "src": "src/40-service.sh",
+  "src_line": 363,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    248,
+    "restartsb(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    358,
+    "restartsb(){ : > \"$case_dir/service-restarted\"; return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "service_is_active",
+  "sb": 2414,
+  "src": "src/40-service.sh",
+  "src_line": 371,
+  "root": false,
+  "mocked": true,
+  "invoked": 3,
+  "inv": [
+   [
+    "unit.sh",
+    1740,
+    "service_is_active(){ return 1; }"
+   ],
+   [
+    "repair.sh",
+    247,
+    "service_is_active(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    357,
+    "service_is_active(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "service_is_owned",
+  "sb": 2422,
+  "src": "src/40-service.sh",
+  "src_line": 379,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "formal_service_present",
+  "sb": 2432,
+  "src": "src/40-service.sh",
+  "src_line": 389,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "service_name_conflict",
+  "sb": 2437,
+  "src": "src/40-service.sh",
+  "src_line": 394,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    2065,
+    "service_name_conflict(){ [[ $MOCK_SERVICE_CONFLICT -eq 1 ]]; }"
+   ],
+   [
+    "repair.sh",
+    193,
+    "service_name_conflict(){ return 1; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "service_exists",
+  "sb": 2444,
+  "src": "src/40-service.sh",
+  "src_line": 401,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    250,
+    "service_exists && return 1"
+   ],
+   [
+    "repair.sh",
+    356,
+    "service_exists(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "is_installed",
+  "sb": 2448,
+  "src": "src/40-service.sh",
+  "src_line": 405,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "managed_install_data_present",
+  "sb": 2452,
+  "src": "src/40-service.sh",
+  "src_line": 409,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    191,
+    "managed_install_data_present(){ return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "installed_core_is_current",
+  "sb": 2458,
+  "src": "src/40-service.sh",
+  "src_line": 415,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    46,
+    "quarantine_invalid_core_path && inssb && installed_core_is_current || return 1"
+   ],
+   [
+    "repair.sh",
+    166,
+    "installed_core_is_current(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "managed_config_file_is_valid",
+  "sb": 2466,
+  "src": "src/40-service.sh",
+  "src_line": 423,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "save_last_good_config",
+  "sb": 2473,
+  "src": "src/40-service.sh",
+  "src_line": 430,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    170,
+    "save_last_good_config(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "cleanup_service",
+  "sb": 2491,
+  "src": "src/40-service.sh",
+  "src_line": 448,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2070,
+    "cleanup_service(){"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "sbactive",
+  "sb": 2513,
+  "src": "src/40-service.sh",
+  "src_line": 470,
+  "root": false,
+  "mocked": true,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    294,
+    "sbactive(){ return 0; }"
+   ],
+   [
+    "unit.sh",
+    406,
+    "sbactive(){ return 0; }"
+   ],
+   [
+    "unit.sh",
+    458,
+    "sbactive(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "commit_config",
+  "sb": 2524,
+  "src": "src/40-service.sh",
+  "src_line": 481,
+  "root": false,
+  "mocked": true,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    298,
+    "commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }"
+   ],
+   [
+    "unit.sh",
+    409,
+    "commit_config(){ COMMIT_INDEX=$((COMMIT_INDEX + 1)); return 0; }"
+   ],
+   [
+    "unit.sh",
+    463,
+    "commit_config(){"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "save_server_ip",
+  "sb": 2563,
+  "src": "src/50-client-output.sh",
+  "src_line": 2,
+  "root": true,
+  "mocked": false,
+  "invoked": 3,
+  "inv": [
+   [
+    "repair.sh",
+    60,
+    "save_server_ip 192.0.2.10 || return 1"
+   ],
+   [
+    "repair.sh",
+    73,
+    "save_server_ip 192.0.2.11 >/dev/null 2>&1 && status=1"
+   ],
+   [
+    "repair.sh",
+    76,
+    "save_server_ip 192.0.2.11 || status=1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "ipuuid",
+  "sb": 2578,
+  "src": "src/50-client-output.sh",
+  "src_line": 17,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "refresh_saved_ip",
+  "sb": 2603,
+  "src": "src/50-client-output.sh",
+  "src_line": 42,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "result",
+  "sb": 2625,
+  "src": "src/50-client-output.sh",
+  "src_line": 64,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "reshy2",
+  "sb": 2724,
+  "src": "src/50-client-output.sh",
+  "src_line": 163,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "ressocks5",
+  "sb": 2741,
+  "src": "src/50-client-output.sh",
+  "src_line": 180,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "print_socks_entry_share",
+  "sb": 2758,
+  "src": "src/50-client-output.sh",
+  "src_line": 197,
+  "root": false,
+  "mocked": true,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    228,
+    "print_socks_entry_share \"$key\" > \"$out\" || return 1"
+   ],
+   [
+    "unit.sh",
+    241,
+    "print_socks_entry_share \"$key\" > \"$out\" || return 1"
+   ],
+   [
+    "unit.sh",
+    247,
+    "print_socks_entry_share \"$key\" > \"$out\" || return 1"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "sb_client",
+  "sb": 2772,
+  "src": "src/50-client-output.sh",
+  "src_line": 211,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    660,
+    "sb_client || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "remove_saved_ss_link",
+  "sb": 3037,
+  "src": "src/50-client-output.sh",
+  "src_line": 476,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "remove_saved_socks_link",
+  "sb": 3044,
+  "src": "src/50-client-output.sh",
+  "src_line": 483,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "sbshare",
+  "sb": 3051,
+  "src": "src/50-client-output.sh",
+  "src_line": 490,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1847,
+    "sbshare(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "switch_ip_priority",
+  "sb": 3112,
+  "src": "src/50-client-output.sh",
+  "src_line": 551,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "load_current_crontab",
+  "sb": 3191,
+  "src": "src/60-cron.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "acme_lock_path",
+  "sb": 3213,
+  "src": "src/60-cron.sh",
+  "src_line": 24,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1373,
+    "lock_file=$(acme_lock_path)"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_compat_lock_path",
+  "sb": 3217,
+  "src": "src/60-cron.sh",
+  "src_line": 28,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1390,
+    "compat_lock_file=$(acme_compat_lock_path)"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "release_acme_lock",
+  "sb": 3221,
+  "src": "src/60-cron.sh",
+  "src_line": 32,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "acquire_acme_lock",
+  "sb": 3241,
+  "src": "src/60-cron.sh",
+  "src_line": 52,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "with_acme_lock",
+  "sb": 3270,
+  "src": "src/60-cron.sh",
+  "src_line": 81,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1159,
+    "with_acme_lock dual_acme_lock_state_is_valid"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_renew_runner_path",
+  "sb": 3287,
+  "src": "src/60-cron.sh",
+  "src_line": 98,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1221,
+    "renew_runner=$(acme_renew_runner_path)"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_renew_state_path",
+  "sb": 3291,
+  "src": "src/60-cron.sh",
+  "src_line": 102,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1222,
+    "renew_state=$(acme_renew_state_path)"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_renew_runner_identity",
+  "sb": 3295,
+  "src": "src/60-cron.sh",
+  "src_line": 106,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "load_acme_renew_state",
+  "sb": 3300,
+  "src": "src/60-cron.sh",
+  "src_line": 111,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "crontab_has_acme_entries",
+  "sb": 3371,
+  "src": "src/60-cron.sh",
+  "src_line": 182,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "acme_renew_cron_entry",
+  "sb": 3380,
+  "src": "src/60-cron.sh",
+  "src_line": 191,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    710,
+    "expected_cron=$(acme_renew_cron_entry)"
+   ],
+   [
+    "unit.sh",
+    1121,
+    "expected_cron=$(acme_renew_cron_entry)"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "acme_renew_cron_is_current",
+  "sb": 3386,
+  "src": "src/60-cron.sh",
+  "src_line": 197,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "filter_acme_cron_entries",
+  "sb": 3398,
+  "src": "src/60-cron.sh",
+  "src_line": 209,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "crontab_has_restart_entries",
+  "sb": 3407,
+  "src": "src/60-cron.sh",
+  "src_line": 218,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "filter_crontab_checked",
+  "sb": 3414,
+  "src": "src/60-cron.sh",
+  "src_line": 225,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "filter_restart_cron_entries",
+  "sb": 3433,
+  "src": "src/60-cron.sh",
+  "src_line": 244,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "acme_renew_runner_is_current",
+  "sb": 3437,
+  "src": "src/60-cron.sh",
+  "src_line": 248,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "write_acme_renew_runner",
+  "sb": 3487,
+  "src": "src/60-cron.sh",
+  "src_line": 298,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "certificate_fingerprint",
+  "sb": 3508,
+  "src": "src/60-cron.sh",
+  "src_line": 319,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "valid_acme_identity",
+  "sb": 3516,
+  "src": "src/60-cron.sh",
+  "src_line": 327,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "read_runner_acme_identity",
+  "sb": 3527,
+  "src": "src/60-cron.sh",
+  "src_line": 338,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "remove_acme_renew_artifacts",
+  "sb": 3639,
+  "src": "src/60-cron.sh",
+  "src_line": 450,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "acme_renew_artifacts_exist",
+  "sb": 3646,
+  "src": "src/60-cron.sh",
+  "src_line": 457,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "remove_acme_renew_cron",
+  "sb": 3655,
+  "src": "src/60-cron.sh",
+  "src_line": 466,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "remove_all_managed_crons",
+  "sb": 3675,
+  "src": "src/60-cron.sh",
+  "src_line": 486,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2074,
+    "remove_all_managed_crons(){"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "setup_acme_renew_cron",
+  "sb": 3695,
+  "src": "src/60-cron.sh",
+  "src_line": 506,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "ensure_acme_renew_cron",
+  "sb": 3730,
+  "src": "src/60-cron.sh",
+  "src_line": 541,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    176,
+    "ensure_acme_renew_cron(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "current_certificate_mode",
+  "sb": 3763,
+  "src": "src/70-management.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "certificate_action_service_ready",
+  "sb": 3773,
+  "src": "src/70-management.sh",
+  "src_line": 12,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2218,
+    "certificate_action_service_ready(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "activate_managed_certificate",
+  "sb": 3781,
+  "src": "src/70-management.sh",
+  "src_line": 20,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2225,
+    "activate_managed_certificate(){ return 2; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "show_certificate_metadata",
+  "sb": 3829,
+  "src": "src/70-management.sh",
+  "src_line": 68,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "show_acme_certificate_schedule",
+  "sb": 3869,
+  "src": "src/70-management.sh",
+  "src_line": 108,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "inspect_acme_renewal_health",
+  "sb": 3882,
+  "src": "src/70-management.sh",
+  "src_line": 121,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "show_acme_renewal_status",
+  "sb": 3957,
+  "src": "src/70-management.sh",
+  "src_line": 196,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "show_certificate_dashboard",
+  "sb": 3992,
+  "src": "src/70-management.sh",
+  "src_line": 231,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "finish_acme_replacement",
+  "sb": 4034,
+  "src": "src/70-management.sh",
+  "src_line": 273,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "rollback_new_acme_state",
+  "sb": 4046,
+  "src": "src/70-management.sh",
+  "src_line": 285,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2226,
+    "rollback_new_acme_state(){ MANAGEMENT_ROLLBACK_CALLS=$((MANAGEMENT_ROLLBACK_CALLS + 1)); }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "restore_previous_active_acme",
+  "sb": 4059,
+  "src": "src/70-management.sh",
+  "src_line": 298,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "apply_new_cloudflare_certificate",
+  "sb": 4077,
+  "src": "src/70-management.sh",
+  "src_line": 316,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "replace_active_acme_certificate",
+  "sb": 4121,
+  "src": "src/70-management.sh",
+  "src_line": 360,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "run_acme_renewal_check",
+  "sb": 4183,
+  "src": "src/70-management.sh",
+  "src_line": 422,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "force_acme_reissue",
+  "sb": 4200,
+  "src": "src/70-management.sh",
+  "src_line": 439,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "change_cert_mode",
+  "sb": 4228,
+  "src": "src/70-management.sh",
+  "src_line": 467,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "change_ports",
+  "sb": 4316,
+  "src": "src/70-management.sh",
+  "src_line": 555,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "refresh_share_files_after_change",
+  "sb": 4397,
+  "src": "src/70-management.sh",
+  "src_line": 636,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    460,
+    "refresh_share_files_after_change(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    178,
+    "refresh_share_files_after_change(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "changeuuid",
+  "sb": 4404,
+  "src": "src/70-management.sh",
+  "src_line": 643,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1989,
+    "changeuuid(){ CREDENTIAL_UUID_CALLS=$((CREDENTIAL_UUID_CALLS + 1)); }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "change_socks_password",
+  "sb": 4468,
+  "src": "src/70-management.sh",
+  "src_line": 707,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2013,
+    "change_socks_password(){ SS_MENU_CALLS+=\"key \"; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "change_credentials",
+  "sb": 4538,
+  "src": "src/70-management.sh",
+  "src_line": 777,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "relay_upstream_reachable",
+  "sb": 4554,
+  "src": "src/70-management.sh",
+  "src_line": 793,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "relay_candidate_with_upstream",
+  "sb": 4561,
+  "src": "src/70-management.sh",
+  "src_line": 800,
+  "root": true,
+  "mocked": false,
+  "invoked": 3,
+  "inv": [
+   [
+    "unit.sh",
+    519,
+    "relay_candidate_with_upstream \"$dir/with.json\" 76.9.111.90 443 \"$key\" || return 1"
+   ],
+   [
+    "unit.sh",
+    527,
+    "relay_candidate_with_upstream \"$dir/with-again.json\" 76.9.111.90 443 \"$key\" || return 1"
+   ],
+   [
+    "unit.sh",
+    534,
+    "relay_candidate_with_upstream \"$dir/dup.json\" 76.9.111.90 443 \"$key\" 2>/dev/null && return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "relay_candidate_without_upstream",
+  "sb": 4580,
+  "src": "src/70-management.sh",
+  "src_line": 819,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    530,
+    "relay_candidate_without_upstream \"$dir/without.json\" || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "set_relay_upstream",
+  "sb": 4589,
+  "src": "src/70-management.sh",
+  "src_line": 828,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "clear_relay_upstream",
+  "sb": 4691,
+  "src": "src/70-management.sh",
+  "src_line": 930,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "manage_relay",
+  "sb": 4746,
+  "src": "src/70-management.sh",
+  "src_line": 985,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2034,
+    "manage_relay(){ OPTIONAL_CALLS+=\"relay \"; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "socks_entry_is_enabled",
+  "sb": 4772,
+  "src": "src/70-management.sh",
+  "src_line": 1011,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "socks_entry_port",
+  "sb": 4778,
+  "src": "src/70-management.sh",
+  "src_line": 1017,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    235,
+    "socks_entry_port(){ printf '%s\\n' 443; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "socks_entry_password",
+  "sb": 4783,
+  "src": "src/70-management.sh",
+  "src_line": 1022,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "retired_ss_entry_port",
+  "sb": 4788,
+  "src": "src/70-management.sh",
+  "src_line": 1027,
+  "root": true,
+  "mocked": false,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    585,
+    "[[ $(retired_ss_entry_port) == 10086 ]] || return 1"
+   ],
+   [
+    "unit.sh",
+    587,
+    "retired_ss_entry_port && return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "socks_entry_candidate_with_inbound",
+  "sb": 4796,
+  "src": "src/70-management.sh",
+  "src_line": 1035,
+  "root": true,
+  "mocked": false,
+  "invoked": 4,
+  "inv": [
+   [
+    "unit.sh",
+    547,
+    "socks_entry_candidate_with_inbound \"$dir/with.json\" 443 \"$key\" \"::\" || return 1"
+   ],
+   [
+    "unit.sh",
+    557,
+    "socks_entry_candidate_with_inbound \"$dir/with-again.json\" 443 \"$key\" \"::\" || return 1"
+   ],
+   [
+    "unit.sh",
+    563,
+    "socks_entry_candidate_with_inbound \"$dir/with-relay.json\" 8443 \"$key\" \"::\" || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "socks_entry_candidate_without_inbound",
+  "sb": 4818,
+  "src": "src/70-management.sh",
+  "src_line": 1057,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    566,
+    "socks_entry_candidate_without_inbound \"$dir/without.json\" || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "enable_socks_entry",
+  "sb": 4829,
+  "src": "src/70-management.sh",
+  "src_line": 1068,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2007,
+    "enable_socks_entry(){ SS_MENU_CALLS+=\"enable \"; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "disable_socks_entry",
+  "sb": 4898,
+  "src": "src/70-management.sh",
+  "src_line": 1137,
+  "root": false,
+  "mocked": true,
+  "invoked": 3,
+  "inv": [
+   [
+    "unit.sh",
+    411,
+    "disable_socks_entry || return 1"
+   ],
+   [
+    "unit.sh",
+    471,
+    "disable_socks_entry || return 1"
+   ],
+   [
+    "unit.sh",
+    2009,
+    "disable_socks_entry(){ SS_MENU_CALLS+=\"disable \"; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "change_socks_port",
+  "sb": 4945,
+  "src": "src/70-management.sh",
+  "src_line": 1184,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "unit.sh",
+    300,
+    "change_socks_port || return 1"
+   ],
+   [
+    "unit.sh",
+    2011,
+    "change_socks_port(){ SS_MENU_CALLS+=\"port \"; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "manage_socks_entry",
+  "sb": 5014,
+  "src": "src/70-management.sh",
+  "src_line": 1253,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2032,
+    "manage_socks_entry(){ OPTIONAL_CALLS+=\"socks \"; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "manage_optional_features",
+  "sb": 5041,
+  "src": "src/70-management.sh",
+  "src_line": 1280,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "running_from_managed_shortcut",
+  "sb": 5071,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2082,
+    "running_from_managed_shortcut(){ [[ $MOCK_RUNNING_SHORTCUT -eq 1 ]]; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "lifecycle_acme_state_exists",
+  "sb": 5080,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 11,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "with_lifecycle_acme_lock",
+  "sb": 5093,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 24,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    195,
+    "with_lifecycle_acme_lock(){ repair_reached=1; return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "cleanup_incomplete_install_locked",
+  "sb": 5113,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 44,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "cleanup_incomplete_install",
+  "sb": 5146,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 77,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "cleanup_install_transaction",
+  "sb": 5158,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 89,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "abort_install_transaction",
+  "sb": 5164,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 95,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "uninstall_locked",
+  "sb": 5174,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 105,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "uninstall",
+  "sb": 5197,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 128,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2204,
+    "run_confirmed_uninstall(){ ( uninstall >/dev/null ); }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "cronsb",
+  "sb": 5219,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 150,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    177,
+    "cronsb(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "script_copy_has_identity",
+  "sb": 5241,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 172,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "script_copy_version",
+  "sb": 5254,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 185,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "version_is_older",
+  "sb": 5260,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 191,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "shortcut_is_owned",
+  "sb": 5270,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 201,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    2081,
+    "shortcut_is_owned(){ [[ $MOCK_SHORTCUT_OWNED -eq 1 && -f $SHORTCUT ]]; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "script_source_is_valid",
+  "sb": 5274,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 205,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "atomic_install_shortcut",
+  "sb": 5279,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 210,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "update_shortcut",
+  "sb": 5290,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 221,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    174,
+    "update_shortcut(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "prepare_runtime_state",
+  "sb": 5367,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 298,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "cron_daemon_is_active",
+  "sb": 5382,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 313,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "unit.sh",
+    1073,
+    "cron_daemon_is_active(){"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "enable_cron_daemon",
+  "sb": 5391,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 322,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "core_dependencies_ready",
+  "sb": 5410,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 341,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    194,
+    "core_dependencies_ready(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "dependencies_ready",
+  "sb": 5423,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 354,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    172,
+    "dependencies_ready(){ return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "install_dependencies",
+  "sb": 5432,
+  "src": "src/80-lifecycle.sh",
+  "src_line": 363,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    173,
+    "install_dependencies(){ order=\"${order}maintenance \"; return 1; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "load_repair_config_values",
+  "sb": 5457,
+  "src": "src/85-repair.sh",
+  "src_line": 2,
+  "root": true,
+  "mocked": false,
+  "invoked": 7,
+  "inv": [
+   [
+    "repair.sh",
+    492,
+    "load_repair_config_values \"$SB_CONFIG\" || return 1"
+   ],
+   [
+    "repair.sh",
+    515,
+    "load_repair_config_values \"$SB_CONFIG\" || return 1"
+   ],
+   [
+    "repair.sh",
+    539,
+    "load_repair_config_values \"$case_dir/source.json\" || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "render_repair_config",
+  "sb": 5502,
+  "src": "src/85-repair.sh",
+  "src_line": 47,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    783,
+    "render_repair_config \"$cleanup_candidate\" || fail \"cannot render cleanup candidate\""
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "managed_tree_is_trusted",
+  "sb": 5516,
+  "src": "src/85-repair.sh",
+  "src_line": 61,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "active_acme_pair_is_trusted",
+  "sb": 5528,
+  "src": "src/85-repair.sh",
+  "src_line": 73,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    110,
+    "active_acme_pair_is_trusted(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "acme_maintenance_components_are_trusted",
+  "sb": 5538,
+  "src": "src/85-repair.sh",
+  "src_line": 83,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    111,
+    "acme_maintenance_components_are_trusted(){ return 1; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "repair_acme_certificate_from_storage",
+  "sb": 5549,
+  "src": "src/85-repair.sh",
+  "src_line": 94,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    135,
+    "repair_acme_certificate_from_storage(){ return 1; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "ensure_repair_certificate",
+  "sb": 5577,
+  "src": "src/85-repair.sh",
+  "src_line": 122,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    112,
+    "ensure_repair_certificate || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "preserve_config_before_repair",
+  "sb": 5614,
+  "src": "src/85-repair.sh",
+  "src_line": 159,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "install_repair_config",
+  "sb": 5627,
+  "src": "src/85-repair.sh",
+  "src_line": 172,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    788,
+    "install_repair_config \"$cleanup_candidate\" \"cleanup fixture\""
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "config_contains_removed_protocol",
+  "sb": 5646,
+  "src": "src/85-repair.sh",
+  "src_line": 191,
+  "root": true,
+  "mocked": false,
+  "invoked": 5,
+  "inv": [
+   [
+    "repair.sh",
+    493,
+    "config_contains_removed_protocol \"$SB_CONFIG\" || return 1"
+   ],
+   [
+    "repair.sh",
+    517,
+    "config_contains_removed_protocol \"$SB_CONFIG\" && return 1"
+   ],
+   [
+    "repair.sh",
+    542,
+    "config_contains_removed_protocol \"$case_dir/source.json\" && return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "try_repair_config_source",
+  "sb": 5652,
+  "src": "src/85-repair.sh",
+  "src_line": 197,
+  "root": true,
+  "mocked": false,
+  "invoked": 5,
+  "inv": [
+   [
+    "repair.sh",
+    136,
+    "try_repair_config_source \"$SB_CONFIG\" \"ACME fallback fixture\" || return 1"
+   ],
+   [
+    "repair.sh",
+    494,
+    "try_repair_config_source \"$SB_CONFIG\" \"已从当前节点参数重建标准配置\" || return 1"
+   ],
+   [
+    "repair.sh",
+    518,
+    "try_repair_config_source \"$SB_CONFIG\" \"已从当前节点参数重建标准配置\" || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "repair_or_restore_config",
+  "sb": 5674,
+  "src": "src/85-repair.sh",
+  "src_line": 219,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    167,
+    "repair_or_restore_config(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "rebuild_config_in_place",
+  "sb": 5708,
+  "src": "src/85-repair.sh",
+  "src_line": 253,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "repair_managed_permissions",
+  "sb": 5748,
+  "src": "src/85-repair.sh",
+  "src_line": 293,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    171,
+    "repair_managed_permissions(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "repair_acme_permissions",
+  "sb": 5764,
+  "src": "src/85-repair.sh",
+  "src_line": 309,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "initialize_repair_report",
+  "sb": 5807,
+  "src": "src/85-repair.sh",
+  "src_line": 352,
+  "root": true,
+  "mocked": false,
+  "invoked": 6,
+  "inv": [
+   [
+    "repair.sh",
+    42,
+    "initialize_repair_report"
+   ],
+   [
+    "repair.sh",
+    152,
+    "initialize_repair_report"
+   ],
+   [
+    "repair.sh",
+    205,
+    "initialize_repair_report"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "cleanup_repair_temporary_files",
+  "sb": 5837,
+  "src": "src/85-repair.sh",
+  "src_line": 382,
+  "root": false,
+  "mocked": true,
+  "invoked": 2,
+  "inv": [
+   [
+    "repair.sh",
+    156,
+    "cleanup_repair_temporary_files(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    214,
+    "cleanup_repair_temporary_files(){ return 0; }"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "begin_repair_transaction",
+  "sb": 5856,
+  "src": "src/85-repair.sh",
+  "src_line": 401,
+  "root": false,
+  "mocked": true,
+  "invoked": 3,
+  "inv": [
+   [
+    "repair.sh",
+    165,
+    "begin_repair_transaction(){ return 0; }"
+   ],
+   [
+    "repair.sh",
+    253,
+    "begin_repair_transaction || return 1"
+   ],
+   [
+    "repair.sh",
+    365,
+    "begin_repair_transaction || exit 90"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "quarantine_invalid_core_path",
+  "sb": 5896,
+  "src": "src/85-repair.sh",
+  "src_line": 441,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    46,
+    "quarantine_invalid_core_path && inssb && installed_core_is_current || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "restore_repair_service_definition",
+  "sb": 5908,
+  "src": "src/85-repair.sh",
+  "src_line": 453,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": true
+ },
+ {
+  "name": "preserve_repair_target_core_snapshot",
+  "sb": 5924,
+  "src": "src/85-repair.sh",
+  "src_line": 469,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "preserve_repair_target_config_snapshot",
+  "sb": 5936,
+  "src": "src/85-repair.sh",
+  "src_line": 481,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "restore_repair_target_config_snapshot",
+  "sb": 5948,
+  "src": "src/85-repair.sh",
+  "src_line": 493,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "restore_original_repair_stack",
+  "sb": 5961,
+  "src": "src/85-repair.sh",
+  "src_line": 506,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    209,
+    "restore_original_repair_stack(){"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "abort_repair_transaction",
+  "sb": 6052,
+  "src": "src/85-repair.sh",
+  "src_line": 597,
+  "root": true,
+  "mocked": false,
+  "invoked": 3,
+  "inv": [
+   [
+    "repair.sh",
+    157,
+    "abort_repair_transaction || return 1"
+   ],
+   [
+    "repair.sh",
+    215,
+    "abort_repair_transaction || return 1"
+   ],
+   [
+    "repair.sh",
+    259,
+    "abort_repair_transaction || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "commit_repair_transaction",
+  "sb": 6080,
+  "src": "src/85-repair.sh",
+  "src_line": 625,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    169,
+    "commit_repair_transaction(){ return 0; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "show_repair_report",
+  "sb": 6096,
+  "src": "src/85-repair.sh",
+  "src_line": 641,
+  "root": false,
+  "mocked": true,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    179,
+    "show_repair_report(){ :; }"
+   ]
+  ],
+  "reach": false
+ },
+ {
+  "name": "repair_singbox_locked",
+  "sb": 6120,
+  "src": "src/85-repair.sh",
+  "src_line": 665,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "repair_singbox",
+  "sb": 6253,
+  "src": "src/85-repair.sh",
+  "src_line": 798,
+  "root": true,
+  "mocked": false,
+  "invoked": 1,
+  "inv": [
+   [
+    "repair.sh",
+    197,
+    "repair_singbox >/dev/null 2>&1 || return 1"
+   ]
+  ],
+  "reach": true
+ },
+ {
+  "name": "install_singbox",
+  "sb": 6284,
+  "src": "src/90-main.sh",
+  "src_line": 2,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "menu",
+  "sb": 6362,
+  "src": "src/90-main.sh",
+  "src_line": 80,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ },
+ {
+  "name": "handle_install_interrupt",
+  "sb": 6450,
+  "src": "src/90-main.sh",
+  "src_line": 168,
+  "root": false,
+  "mocked": false,
+  "invoked": 0,
+  "inv": [],
+  "reach": false
+ }
+]
