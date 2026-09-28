@@ -45,14 +45,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'RELAY_METHOD="2022-blake3-aes-256-gcm"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "upstream Shadowsocks-2022 cipher is not pinned to 2022-blake3-aes-256-gcm"
-[[ $(grep -Fxc 'sb_version="v5.0.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.0.1"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.0.1' ]] ||
-  fail "VERSION file is not 5.0.1"
-grep -Fq -- "当前项目版本：\`5.0.1\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.0.1"
+[[ $(grep -Fxc 'sb_version="v5.1.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.1.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.1.0' ]] ||
+  fail "VERSION file is not 5.1.0"
+grep -Fq -- "当前项目版本：\`5.1.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.1.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -102,7 +100,7 @@ done
 # shellcheck disable=SC2016
 for socks_pattern in \
   'SOCKS_USERNAME="sb"' \
-  'RELAY_METHOD="2022-blake3-aes-256-gcm"' \
+  '"tag": "relay"' \
   '"type": "socks"' \
   '"tag": "socks5-sb"' \
   '"username": "%s"' \
@@ -114,7 +112,6 @@ for socks_pattern in \
   'choose_socks_port()' \
   'generate_socks_password()' \
   'valid_socks_password()' \
-  'valid_ss_password()' \
   'server_listen_address()' \
   'IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"' \
   'local root=$1 disabled=' \
@@ -148,13 +145,32 @@ for socks_pattern in \
   grep -Fq -- "$socks_pattern" "$ROOT_DIR/sb.sh" ||
     fail "missing SOCKS5 integration: $socks_pattern"
 done
-# 5.0.0 removed the Shadowsocks-2022 *entry* for good: no producers, no
-# preservation, no removal flow. Everything below must stay gone — only the
-# upstream/relay hop still speaks SS-2022 (RELAY_METHOD, valid_ss_password).
+# 5.0.0 removed the old entry for good, and 5.1.0 removed the last protocol use
+# (the upstream hop, which now borrows the landing machine's SOCKS5 entry). The
+# retired names, the cipher and the protocol spelling must stay gone from the
+# shipped script entirely — that is what "removed" has to mean here.
 if grep -Eq '^(ss_entry_is_enabled|ss_entry_candidate_with_inbound|ss_entry_candidate_without_inbound|enable_ss_entry|disable_ss_entry|change_ss_password|change_ss_port|choose_ss_port|generate_ss_password|print_ss_entry_share|preserved_ss_entry_is_enabled|preserved_ss_entry_port|preserved_ss_candidate_without_inbound|remove_preserved_ss_entry|resss)\(\)\{' \
   "$ROOT_DIR/sb.sh"; then
   fail "a retired Shadowsocks-2022-entry function is still defined"
 fi
+# The project must not contain the retired protocol in any form: no producer,
+# no consumer, no cipher constant, no validator. `ss-sb` stays only as the tag
+# of a legacy inbound that the rewrite drops (matched by tag, never by type).
+for retired_protocol_pattern in \
+  'RELAY_METHOD' \
+  '2022-blake3' \
+  'valid_ss_password' \
+  'shadowsocks' \
+  'Shadowsocks'; do
+  if grep -Fiq -- "$retired_protocol_pattern" "$ROOT_DIR/sb.sh" ||
+     grep -Fiq -- "$retired_protocol_pattern" "$ROOT_DIR/src"; then
+    fail "the retired protocol is still present: $retired_protocol_pattern"
+  fi
+done
+grep -Fq -- '"type": "socks"' "$ROOT_DIR/sb.sh" ||
+  fail "the upstream hop no longer uses the landing machine's SOCKS5 entry"
+grep -Fq -- '"tag": "relay"' "$ROOT_DIR/sb.sh" ||
+  fail "the upstream outbound tag is missing"
 for removed_pattern in \
   'REPAIR_SS_ENABLED' \
   'REPAIR_SS_PASSWORD' \
@@ -317,17 +333,19 @@ grep -Fq -- '"socks5-sb"\n        ],\n        "network": "udp",\n        "outbou
   fail "the optional SOCKS5 entry no longer blocks inbound UDP"
 grep -Fq -- 'TCP 备用入口（SOCKS5，明文）默认不安装' "$ROOT_DIR/sb.sh" ||
   fail "install does not state that the TCP fallback entry is optional"
-# The upstream hop is still Shadowsocks-2022, so its warnings must survive the
-# removal of the entry: the key is not derivable, and the protocol relies on
-# timestamps, which means both ends need a working clock.
-grep -Fq -- '密钥不可推导' "$ROOT_DIR/sb.sh" ||
-  fail "Shadowsocks-2022 key-loss warning is missing"
-grep -Fq -- '时间戳抗重放' "$ROOT_DIR/sb.sh" ||
-  fail "Shadowsocks-2022 clock-synchronisation warning is missing"
+# The upstream hop borrows the landing machine's SOCKS5 entry, so the flow has to
+# say so (and say that it is plaintext) — otherwise the operator cannot set the
+# landing machine up correctly.
+grep -Fq -- '这一跳走的是落地机的 SOCKS5 入口' "$ROOT_DIR/sb.sh" ||
+  fail "the upstream flow does not explain which entry it uses"
+grep -Fq -- '它不加密（明文）' "$ROOT_DIR/sb.sh" ||
+  fail "the upstream flow does not warn that the hop is plaintext"
+grep -Fq -- '请输入落地机 SOCKS5 入口的密码' "$ROOT_DIR/sb.sh" ||
+  fail "the upstream credential prompt does not name the SOCKS5 password"
 # Removing the entry must not remove the *warning* about a config that still has
 # one: dropping it silently would cut users off without notice.
-grep -Fq -- '本版本已不再支持它' "$ROOT_DIR/sb.sh" ||
-  fail "the retired Shadowsocks-2022 entry is dropped without a warning"
+grep -Fq -- '本版本已不再支持' "$ROOT_DIR/sb.sh" ||
+  fail "the retired entry is dropped without a warning"
 grep -Fq -- '本次重写会移除该入口' "$ROOT_DIR/sb.sh" ||
   fail "the rewrite does not say that the retired entry is being removed"
 

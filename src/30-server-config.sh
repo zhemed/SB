@@ -17,13 +17,13 @@ render_server_config(){
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
-  # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is no longer supported as of
-  # 5.0.0: the rewrite below does not carry it over, so say it out loud instead
-  # of letting the entry disappear silently. People still connecting through it
-  # will be cut off, and that is the operator's call to make.
+  # An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: the
+  # rewrite below does not carry it over, so say it out loud instead of letting
+  # the entry disappear silently. People still connecting through it will be cut
+  # off, and that is the operator's call to make.
   if retired_ss_port=$(retired_ss_entry_port); then
-    yellow "当前配置里还有 4.0.0 之前的 Shadowsocks-2022 入口（端口 ${retired_ss_port}），本版本已不再支持它"
-    yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请改用菜单[8]里的 SOCKS5"
+    yellow "当前配置里还有一个 4.0.0 之前创建的旧入口（端口 ${retired_ss_port}），本版本已不再支持"
+    yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请用菜单[8]里的 SOCKS5"
   fi
   # The optional upstream is re-read from relay.conf on every render, so a
   # rewritten config keeps the relay instead of silently falling back to a
@@ -31,13 +31,14 @@ render_server_config(){
   if relay_settings_present; then
     if load_relay_settings; then
       route_final=relay
-      relay_outbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s"\n    }' \
-        "$relay_server" "$relay_port" "$RELAY_METHOD" "$relay_password") || return 1
+      relay_outbound_suffix=$(printf ',\n    {\n      "type": "socks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s"\n    }' \
+        "$relay_server" "$relay_port" "$SOCKS_USERNAME" "$relay_password") || return 1
     else
       red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
+      yellow "上游凭据是落地机 SOCKS5 入口的密码；旧版填的密钥格式已不再支持，请在菜单[8]上游/中转里重新设置一次"
     fi
   elif [[ -s $SB_CONFIG ]] &&
-       jq -e '[.outbounds[]? | select(.type == "shadowsocks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
+       jq -e '[.outbounds[]? | select(.type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
     # A hand-edited upstream outbound is not a state file we know about; say so
     # rather than letting the rewrite silently send traffic out directly again.
     yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"

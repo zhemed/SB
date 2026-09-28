@@ -110,8 +110,8 @@ Re-indenting these lines, or rewriting `mv -fT` as `mv -Tf`, fails the suite.
 
 `tests/verify.sh:27-45` pins `CORE_VERSION`, `ACME_VERSION`, four SHA-256 digests (each required
 exactly once), the HTTPS-only policy string, the verified acme.sh archive URL, and the **absence** of
-`--install-online`. `tests/verify.sh:46-53` pins `SS_METHOD="2022-blake3-aes-256-gcm"`, `sb_version`,
-`VERSION`, and the README version line. See `spec/build/version-pins.md`.
+`--install-online`. `tests/verify.sh:46-53` pins `SOCKS_USERNAME="sb"`, `sb_version`, `VERSION`, and the README
+version line. See `spec/build/version-pins.md`.
 
 ### (d) User-visible messages
 
@@ -183,11 +183,11 @@ Documented as-is; do not assume coverage that does not exist.
     proven valid here. The gate will pass on a config real sing-box would reject.
   - Treat any such change as requiring one real-host install before it is trusted. The VLESS Reality
     removal (2.0.0) was verified that way; until then the config's validity was an assumption, not a
-    tested fact. The inbound swaps (SOCKS5 → Shadowsocks-2022 in 3.0.0, back to SOCKS5 in 4.0.0)
-    replace exactly this surface — `"type"`, `"tag"`, `"network"`, `"method"`, `"password"` — and the
-    explicit `"route": {"final": ...}` is equally invisible to the gate. The 5.0.0 removal of the
-    Shadowsocks-2022 entry is the same story in reverse: a config that still carries `ss-sb` is only
-    proven to be dropped correctly by rendering it with the real binary and starting the result.
+    tested fact. The second-inbound swaps in 3.0.0 and 4.0.0 replace exactly this surface —
+    `"type"`, `"tag"`, `"network"`, `"method"`, `"password"` — and the explicit
+    `"route": {"final": ...}` is equally invisible to the gate. Its removal is the same story in
+    reverse: a config that still carries the retired inbound is only proven to be dropped correctly
+    by rendering it with the real binary and starting the result.
   - Prefer keeping the untouched remainder of the config byte-identical when editing it, so the
     unverifiable surface stays as small as possible.
 

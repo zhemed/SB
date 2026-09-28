@@ -54,7 +54,10 @@ atomic_copy_private_file(){
 # for the upstream: the config renderer re-reads it on every render, so no
 # management flow (port change, credential change, repair) can drop the relay.
 # Format is a three-line key=value file; there is deliberately no shell
-# evaluation and no unknown-key tolerance.
+# evaluation and no unknown-key tolerance. The credentials are those of the
+# landing machine's SOCKS5 entry (fixed username `sb` + its password), so a
+# relay.conf written by an older release (a 44-character key with symbols this
+# rule rejects) fails validation here and is reported instead of being used.
 relay_config_path(){
   printf '%s\n' "$SB_DIR/relay.conf"
 }
@@ -89,14 +92,14 @@ load_relay_settings(){
   [[ $count -eq 3 ]] || return 1
   relay_server_is_valid "$relay_server" || return 1
   valid_port "$relay_port" || return 1
-  valid_ss_password "$relay_password" || return 1
+  valid_socks_password "$relay_password" || return 1
 }
 
 save_relay_settings(){
   local server=$1 port=$2 password=$3 payload
   relay_server_is_valid "$server" || return 1
   valid_port "$port" || return 1
-  valid_ss_password "$password" || return 1
+  valid_socks_password "$password" || return 1
   payload=$(printf 'server=%s\nport=%s\npassword=%s' "$server" "$port" "$password") || return 1
   atomic_write_private_text "$(relay_config_path)" "$payload"
 }

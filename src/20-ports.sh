@@ -9,13 +9,6 @@ valid_uuid(){
   [[ $1 =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-# Shadowsocks-2022 pre-shared key: exactly 44 base64 characters = 32 raw bytes,
-# padded. Since 4.0.0 this is only used by the *upstream* hop (server-to-server),
-# which stays SS-2022; the client-facing entry is SOCKS5.
-valid_ss_password(){
-  [[ $1 =~ ^[A-Za-z0-9+/]{43}=$ ]]
-}
-
 # SOCKS5 password: 16-128 characters from a shell-safe set. This is a plain
 # shared secret and the protocol sends it in the clear — see the warning the
 # enable flow prints, and the note in README.

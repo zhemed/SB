@@ -14,9 +14,9 @@ the one that is "closest" to the call site.
 | `src/40-service.sh` | Managed-path trust checks, atomic private writers, the optional-upstream state file (`relay.conf` load/save/clear), systemd/OpenRC unit rendering + ownership, `commit_config`, last-good config, service start/stop/state |
 | `src/50-client-output.sh` | Share links (Hysteria2 plus the optional SOCKS5 entry), the cleanup of a leftover `ss.txt` from the retired entry, and generated client files `sbox.json` / `clash.yaml` |
 | `src/60-cron.sh` | Crontab marker management, the `ACMERENEW` renewal runner, daily restart task, `with_acme_lock` |
-| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, and the optional features — the SOCKS5 entry (enable/disable/port/password), the read-only probe for a retired Shadowsocks-2022 entry, and the upstream/relay |
+| `src/70-management.sh` | Management menus 4–8: certificate mode, ports, credentials, IP priority, and the optional features — the SOCKS5 entry (enable/disable/port/password), the read-only probe for a retired entry, and the upstream/relay (a SOCKS5 hop) |
 | `src/80-lifecycle.sh` | Dependency installation, `/usr/bin/sb` shortcut, `prepare_runtime_state`, uninstall |
-| `src/85-repair.sh` | Diagnosis and the repair transaction (a config still carrying a pre-4.0.0 Shadowsocks-2022 entry counts as a removed protocol, so the rewrite drops it and says so) |
+| `src/85-repair.sh` | Diagnosis and the repair transaction (a config still carrying a pre-4.0.0 entry counts as a removed protocol, so the rewrite drops it and says so) |
 | `src/90-main.sh` | Install flow, main menu, interrupt trap, the entrypoint |
 
 Practical consequences:

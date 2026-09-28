@@ -27,7 +27,6 @@ The full family (all in `src/20-ports.sh` unless noted):
 | `valid_port` | 1–65535, optional minimum via `$2` (`src/20-ports.sh:2-6`) |
 | `valid_uuid` | canonical 8-4-4-4-12 hex UUID |
 | `valid_socks_password` | 16-128 characters of `[A-Za-z0-9._~-]` — the optional entry credential |
-| `valid_ss_password` | exactly 44 characters: `^[A-Za-z0-9+/]{43}=$`, i.e. 32 raw bytes of padded base64; since 5.0.0 only the upstream/relay key uses this rule (the entry that used it is gone) |
 | `valid_hostname` | ≤253 chars, ≥2 labels, per-label 1–63, no leading/trailing hyphen |
 | `valid_ipv4` | `src/00-bootstrap.sh:98-105`, octets ≤255 via `10#` |
 | `valid_ipv6` | `src/00-bootstrap.sh:107-127`, rejects `::1`, `FE80::/10`, `FC00::/7`, double `::` |
@@ -93,25 +92,27 @@ Conventions shown here, all of them expected in new input code:
   `shuf -i 10000-65535 -n 1` port and then re-checks it for conflicts.
 - The failure message names the **specific** problem (`已被占用`), not "input invalid".
 - The retry prompt restates the accepted range and the empty-input behaviour.
-- There are currently **no cross-field port constraints** left: Hysteria2 listens on UDP and
-  Shadowsocks-2022 on TCP (which is also why the SS-2022 inbound pins `"network": "tcp"`), so they
-  cannot collide. `chooseport` therefore takes only the network family; the `$reserved` parameter and
-  its retry branch were removed together with the protocol that needed them. Do not reintroduce a
+- There are currently **no cross-field port constraints** left: Hysteria2 listens on UDP and the
+  optional TCP entry on TCP (which is why that inbound pins `"network": "tcp"`), so they cannot
+  collide. `chooseport` therefore takes only the network family; the `$reserved` parameter and its
+  retry branch were removed together with the protocol that needed them. Do not reintroduce a
   reserved argument without a real caller.
 
 ```bash
-choose_ss_port(){
+choose_socks_port(){
   local choice
   while true; do
     yellow "1：自动生成随机端口 (10000-65535范围内)，回车默认"
     yellow "2：自定义端口"
-    readp "请输入【1-2】：" choice || return 1
+    yellow "0：取消"
+    readp "请输入【0-2】：" choice || return 1
     case "$choice" in
       ""|1) port=$(random_available_port tcp) || return 1; return 0 ;;
-      2) readp "\n设置Shadowsocks-2022端口 (可输入1-65535，留空随机10000-65535)：" port || return 1
+      2) readp "\n设置 SOCKS5 端口（1-65535，留空随机 10000-65535）：" port || return 1
          chooseport tcp
          return $? ;;
-      *) red "请输入1或2" ;;
+      0) return 2 ;;
+      *) red "请输入0、1或2" ;;
     esac
   done
 }
@@ -133,10 +134,10 @@ A prompt that asks for a value which is about to be written into the live config
 explicit escape: `输入0取消` in the question, and cancelling prints `已取消，未做任何修改` before
 returning. **Empty input is not a cancel** — in the port prompts it means "pick a random free port"
 (that is the documented default), so an operator who presses Enter expecting to back out gets a silent
-port change instead. That shipped in 3.1.2: `change_ss_port` asked for a port with no cancel key and
-rewrote a working listener. Fixed in 3.1.4 for the Shadowsocks-2022 port, the Hysteria2 port and the
-upstream fields, with `choose_ss_port` returning a distinct status (2) so `enable_ss_entry` aborts
-instead of minting a key and a random port.
+port change instead. That shipped in 3.1.2, when the optional entry's port prompt had no cancel key
+and a stray Enter rewrote a working listener. Fixed in 3.1.4 for that port, the Hysteria2 port and the
+upstream fields, with `choose_socks_port` returning a distinct status (2) so the enable flow aborts
+instead of minting credentials and a random port.
 
 ### Destructive confirmations
 
@@ -144,7 +145,7 @@ Anything that changes or removes a working listener goes through `confirm_yes`
 (`src/00-bootstrap.sh:76-88`), never a bare `readp` plus a string comparison:
 
 ```bash
-if ! confirm_yes "确认停用 Shadowsocks-2022 入口？[回车/y 确认，n 取消]："; then
+if ! confirm_yes "确认停用 SOCKS5 入口？[回车/y 确认，n 取消]："; then
   yellow "已取消，未做任何修改"
   readp "按回车返回可选功能..."
   return 0

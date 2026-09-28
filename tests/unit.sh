@@ -74,7 +74,6 @@ valid_ipv6(){ return 1; }
 # *functions* are replaced per test); without them `set -u` trips on ${yellow}.
 export red='' green='' yellow='' blue='' bblue='' plain=''
 export SOCKS_USERNAME=sb
-export RELAY_METHOD="2022-blake3-aes-256-gcm"
 export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
 export SB_DIR=/etc/sb
 export SB_CONFIG="$SB_DIR/sb.json"
@@ -111,18 +110,11 @@ expect_success "hostname is valid" valid_hostname sub.example.com
 expect_failure "single-label hostname is invalid" valid_hostname localhost
 expect_success "UUID is valid" valid_uuid 123e4567-e89b-12d3-a456-426614174000
 expect_failure "malformed UUID is invalid" valid_uuid 123e4567
-# A Shadowsocks-2022 psk is exactly 32 raw bytes: 44 base64 characters, padded.
-ss_key_valid="$(printf 'A%.0s' {1..43})="
-ss_key_valid_symbols="$(printf 'A%.0s' {1..20})+/$(printf 'A%.0s' {1..21})="
-expect_success "44-character padded base64 SS-2022 key is valid" valid_ss_password "$ss_key_valid"
-expect_success "base64 key with + and / is valid" valid_ss_password "$ss_key_valid_symbols"
-expect_failure "unpadded 43-character base64 key is invalid" valid_ss_password "${ss_key_valid%=}"
-expect_failure "16-byte (24-character) base64 key is invalid" valid_ss_password "$(printf 'A%.0s' {1..23})="
-expect_failure "48-character hex key is invalid" valid_ss_password "$(printf 'a%.0s' {1..48})"
-expect_failure "44 key characters without padding are invalid" valid_ss_password "$(printf 'A%.0s' {1..44})"
-expect_failure "45-character base64 key is invalid" valid_ss_password "$(printf 'A%.0s' {1..44})="
-expect_failure "SS-2022 key with a space is invalid" valid_ss_password 'bad password value'
-expect_failure "SS-2022 key with a colon is invalid" valid_ss_password 'bad:password:value'
+# The upstream hop authenticates with a SOCKS5 password (same rule as the entry).
+relay_password_valid="$(printf 'B%.0s' {1..24})"
+expect_success "24-character relay password is valid" valid_socks_password "$relay_password_valid"
+expect_failure "15-character relay password is invalid" valid_socks_password "$(printf 'B%.0s' {1..15})"
+expect_failure "relay password with a colon is invalid" valid_socks_password 'bad:password:value'
 # The client-facing entry credential since 4.0.0: 16-128 characters of
 # [A-Za-z0-9._~-]. The SS-2022 key above is still the *upstream* hop's secret.
 socks_password_valid="$(printf 'A%.0s' {1..16})"
@@ -174,7 +166,7 @@ chmod 700 "$relay_roundtrip"
 
 relay_settings_roundtrip(){
   (
-    local config="$relay_roundtrip/relay.conf" key="$ss_key_valid"
+    local config="$relay_roundtrip/relay.conf" key="$relay_password_valid"
     # shellcheck disable=SC2030  # the subshell is the point: it owns SB_DIR
     SB_DIR="$relay_roundtrip"
     load_relay_settings && return 1
@@ -474,16 +466,16 @@ expect_success "Enter (the default answer) disables the optional entry" \
 
 relay_candidate_builders(){
   (
-    local dir="$relay_roundtrip/candidate" key="$ss_key_valid"
+    local dir="$relay_roundtrip/candidate" key="$relay_password_valid"
     mkdir -p "$dir"
     # shellcheck disable=SC2030  # the subshell is the point: it owns SB_CONFIG
     SB_CONFIG="$dir/sb.json"
     printf '%s\n' '{"inbounds":[],"outbounds":[{"type":"direct","tag":"direct"},{"type":"block","tag":"block"}],"route":{"final":"direct","rules":[]}}' > "$SB_CONFIG"
     relay_candidate_with_upstream "$dir/with.json" 76.9.111.90 443 "$key" || return 1
     jq -e --arg key "$key" '
-      ([.outbounds[] | select(.tag == "relay" and .type == "shadowsocks" and
+      ([.outbounds[] | select(.tag == "relay" and .type == "socks" and
         .server == "76.9.111.90" and .server_port == 443 and
-        .method == "2022-blake3-aes-256-gcm" and .password == $key)] | length) == 1 and
+        .version == "5" and .username == "sb" and .password == $key)] | length) == 1 and
       .route.final == "relay"
     ' "$dir/with.json" >/dev/null || return 1
     # applying it again must not duplicate the outbound
@@ -546,9 +538,9 @@ socks_entry_candidate_builders(){
 expect_success "optional SOCKS5 entry candidates add, repeat and remove the inbound idempotently" \
   socks_entry_candidate_builders
 
-# 5.0.0 removed the Shadowsocks-2022 entry, but a host that still runs one must be
-# told so: the probe reports the port so both the menus and the render can warn
-# instead of letting the entry vanish silently on the next rewrite.
+# 5.0.0 removed the old entry, but a host that still runs one must be told so: the
+# probe reports the port so both the menus and the render can warn instead of
+# letting the entry vanish silently on the next rewrite.
 retired_ss_entry_probe_reports_the_port(){
   (
     local dir="$relay_roundtrip/retired-ss"
@@ -563,7 +555,7 @@ retired_ss_entry_probe_reports_the_port(){
     return 0
   )
 }
-expect_success "the retired SS-2022 entry is reported (and only reported) by the probe" \
+expect_success "the retired entry is reported (and only reported) by the probe" \
   retired_ss_entry_probe_reports_the_port
 
 # Rewriting a config that still has the retired entry must drop it *and* say so.
@@ -593,15 +585,15 @@ retired_ss_entry_is_dropped_with_a_warning(){
     # shellcheck disable=SC2317
     red(){ printf '%s\n' "$1"; }
     messages=$(render_server_config "$dir/rendered.json" 2>&1) || return 1
-    [[ $messages == *'本版本已不再支持它'* && $messages == *'本次重写会移除该入口'* ]] || return 1
-    jq -e '([.inbounds[] | select(.type == "shadowsocks")] | length) == 0 and
+    [[ $messages == *'本版本已不再支持'* && $messages == *'本次重写会移除该入口'* ]] || return 1
+    jq -e '([.inbounds[] | select(.tag == "ss-sb")] | length) == 0 and
            ([.route.rules[]? | select(((.inbound // []) | index("ss-sb")) != null)] | length) == 0 and
            ([.inbounds[] | select(.tag == "hy2-sb")] | length) == 1 and
            ([.route.rules[]? | select(.protocol != null)] | length) == 1' "$dir/rendered.json" >/dev/null || return 1
     return 0
   )
 }
-expect_success "rewriting a config with the retired SS-2022 entry drops it and warns" \
+expect_success "rewriting a config with the retired entry drops it and warns" \
   retired_ss_entry_is_dropped_with_a_warning
 
 # Generated client files are line-oriented YAML/JSON: a fragment whose trailing
@@ -654,7 +646,7 @@ client_files_keep_line_structure(){
     clash_direct_off=$(printf '%s\n' "$group" | grep -bo 'DIRECT' | head -1 | cut -d: -f1 || true)
     [[ -n $clash_hy2_off && -n $clash_socks_off && -n $clash_direct_off ]] || return 1
     [[ $clash_hy2_off -lt $clash_socks_off && $clash_socks_off -lt $clash_direct_off ]] || return 1
-    # the retired SS-2022 entry must not come back through the client files
+    # the retired entry must not come back through the client files
     if grep -Fq -- 'ss-' "$SB_DIR/clash.yaml" || grep -Fq -- '"shadowsocks"' "$SB_DIR/sbox.json"; then
       return 1
     fi

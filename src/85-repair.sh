@@ -16,7 +16,7 @@ load_repair_config_values(){
     type == "object" and (.inbounds | type == "array") and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
     ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) <= 1 and
-    ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) <= 1 and
+    ([.inbounds[] | select(.tag == "ss-sb")] | length) <= 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
@@ -198,13 +198,13 @@ install_repair_config(){
 }
 
 # True when the config still carries a protocol this version no longer ships: the
-# VLESS inbound removed in 2.0.0, and a Shadowsocks-2022 entry created before
-# 4.0.0 (support removed in 5.0.0, after being preserved for one release). Such a
-# config must be rewritten rather than declared healthy, otherwise the retired
-# inbound would live on unnoticed.
+# VLESS inbound removed in 2.0.0, and an entry created before 4.0.0 (support
+# removed in 5.0.0, after being preserved for one release). Such a config must be
+# rewritten rather than declared healthy, otherwise the retired inbound would
+# live on unnoticed. Matching is by tag alone.
 config_contains_removed_protocol(){
   local source=$1
-  jq -e '[.inbounds[]? | select(.type == "vless" or (.type == "shadowsocks" and .tag == "ss-sb"))] | length > 0' \
+  jq -e '[.inbounds[]? | select(.type == "vless" or .tag == "ss-sb")] | length > 0' \
     "$source" >/dev/null 2>&1
 }
 
@@ -218,12 +218,12 @@ try_repair_config_source(){
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
   fi
-  # A config that still carries a removed protocol (VLESS, or a pre-4.0.0
-  # Shadowsocks-2022 entry) must be rewritten rather than left untouched:
-  # sing-box still accepts both, so the version check alone would classify them
-  # as healthy and keep the retired inbound alive.
+  # A config that still carries a removed protocol (VLESS, or an entry created
+  # before 4.0.0) must be rewritten rather than left untouched: sing-box still
+  # accepts both, so the version check alone would classify them as healthy and
+  # keep the retired inbound alive.
   if config_contains_removed_protocol "$source"; then
-    label+="，并移除已废弃的 inbound（VLESS / Shadowsocks-2022 入口）"
+    label+="，并移除已废弃的 inbound（VLESS / 4.0.0 之前的入口）"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||

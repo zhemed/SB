@@ -12,9 +12,6 @@ CORE_SHA256_ARM64="15b43a0a50b4e6962aca819d4f3055aaac75ca7481350d4aaebe93ed06b7a
 CORE_SHA256_ARMV7="691882d609c877f97bc8d6f8645b97d12de81b6f7b89651df66489ef11b4c5d0"
 ACME_ARCHIVE_SHA256="e5f8e187bbf5251e0cd8891f2622daab9850366bd17bea9f92c2fe2ee091fd32"
 SOCKS_USERNAME="sb"
-# The upstream ("线路机 -> 落地机") hop is a server-to-server Shadowsocks-2022 link;
-# it is independent of the client-facing entry, which is SOCKS5 since 4.0.0.
-RELAY_METHOD="2022-blake3-aes-256-gcm"
 IPV6_SYSCTL_ROOT="/proc/sys/net/ipv6"
 SB_DIR="/etc/sb"
 SB_CONFIG="$SB_DIR/sb.json"
@@ -110,7 +107,7 @@ x86_64) cpu=amd64;;
 esac
 
 hostname=$(hostname)
-sb_version="v5.0.1"
+sb_version="v5.1.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1799,13 +1796,6 @@ valid_uuid(){
   [[ $1 =~ ^[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}$ ]]
 }
 
-# Shadowsocks-2022 pre-shared key: exactly 44 base64 characters = 32 raw bytes,
-# padded. Since 4.0.0 this is only used by the *upstream* hop (server-to-server),
-# which stays SS-2022; the client-facing entry is SOCKS5.
-valid_ss_password(){
-  [[ $1 =~ ^[A-Za-z0-9+/]{43}=$ ]]
-}
-
 # SOCKS5 password: 16-128 characters from a shell-safe set. This is a plain
 # shared secret and the protocol sends it in the clear — see the warning the
 # enable flow prints, and the note in README.
@@ -1963,13 +1953,13 @@ render_server_config(){
     entry_inbounds+=$'\n'
     entry_rules=$(printf '      {\n        "inbound": [\n          "socks5-sb"\n        ],\n        "network": "udp",\n        "outbound": "block"\n      },\n') || return 1
   fi
-  # A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is no longer supported as of
-  # 5.0.0: the rewrite below does not carry it over, so say it out loud instead
-  # of letting the entry disappear silently. People still connecting through it
-  # will be cut off, and that is the operator's call to make.
+  # An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: the
+  # rewrite below does not carry it over, so say it out loud instead of letting
+  # the entry disappear silently. People still connecting through it will be cut
+  # off, and that is the operator's call to make.
   if retired_ss_port=$(retired_ss_entry_port); then
-    yellow "当前配置里还有 4.0.0 之前的 Shadowsocks-2022 入口（端口 ${retired_ss_port}），本版本已不再支持它"
-    yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请改用菜单[8]里的 SOCKS5"
+    yellow "当前配置里还有一个 4.0.0 之前创建的旧入口（端口 ${retired_ss_port}），本版本已不再支持"
+    yellow "本次重写会移除该入口；仍在用它连接的人会断开，需要 TCP 备用入口请用菜单[8]里的 SOCKS5"
   fi
   # The optional upstream is re-read from relay.conf on every render, so a
   # rewritten config keeps the relay instead of silently falling back to a
@@ -1977,13 +1967,14 @@ render_server_config(){
   if relay_settings_present; then
     if load_relay_settings; then
       route_final=relay
-      relay_outbound_suffix=$(printf ',\n    {\n      "type": "shadowsocks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "method": "%s",\n      "password": "%s"\n    }' \
-        "$relay_server" "$relay_port" "$RELAY_METHOD" "$relay_password") || return 1
+      relay_outbound_suffix=$(printf ',\n    {\n      "type": "socks",\n      "tag": "relay",\n      "server": "%s",\n      "server_port": %s,\n      "version": "5",\n      "username": "%s",\n      "password": "%s"\n    }' \
+        "$relay_server" "$relay_port" "$SOCKS_USERNAME" "$relay_password") || return 1
     else
       red "上游配置 $(relay_config_path) 无效，本次未启用上游（仍按直连出网）"
+      yellow "上游凭据是落地机 SOCKS5 入口的密码；旧版填的密钥格式已不再支持，请在菜单[8]上游/中转里重新设置一次"
     fi
   elif [[ -s $SB_CONFIG ]] &&
-       jq -e '[.outbounds[]? | select(.type == "shadowsocks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
+       jq -e '[.outbounds[]? | select(.type == "socks")] | length > 0' "$SB_CONFIG" >/dev/null 2>&1; then
     # A hand-edited upstream outbound is not a state file we know about; say so
     # rather than letting the rewrite silently send traffic out directly again.
     yellow "当前配置里有一条上游出站，但 $(relay_config_path) 不存在，本次重写不会保留它"
@@ -2120,7 +2111,10 @@ atomic_copy_private_file(){
 # for the upstream: the config renderer re-reads it on every render, so no
 # management flow (port change, credential change, repair) can drop the relay.
 # Format is a three-line key=value file; there is deliberately no shell
-# evaluation and no unknown-key tolerance.
+# evaluation and no unknown-key tolerance. The credentials are those of the
+# landing machine's SOCKS5 entry (fixed username `sb` + its password), so a
+# relay.conf written by an older release (a 44-character key with symbols this
+# rule rejects) fails validation here and is reported instead of being used.
 relay_config_path(){
   printf '%s\n' "$SB_DIR/relay.conf"
 }
@@ -2155,14 +2149,14 @@ load_relay_settings(){
   [[ $count -eq 3 ]] || return 1
   relay_server_is_valid "$relay_server" || return 1
   valid_port "$relay_port" || return 1
-  valid_ss_password "$relay_password" || return 1
+  valid_socks_password "$relay_password" || return 1
 }
 
 save_relay_settings(){
   local server=$1 port=$2 password=$3 payload
   relay_server_is_valid "$server" || return 1
   valid_port "$port" || return 1
-  valid_ss_password "$password" || return 1
+  valid_socks_password "$password" || return 1
   payload=$(printf 'server=%s\nport=%s\npassword=%s' "$server" "$port" "$password") || return 1
   atomic_write_private_text "$(relay_config_path)" "$payload"
 }
@@ -2692,8 +2686,8 @@ result(){
   else
     socks_password=
   fi
-  # A Shadowsocks-2022 entry created before 4.0.0 is no longer supported (5.0.0):
-  # it has no share link and no client entry any more.
+  # An entry created before 4.0.0 is no longer supported (5.0.0): it has no
+  # share link and no client entry any more.
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
@@ -3123,9 +3117,9 @@ sbshare(){
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
-  # ss.txt belongs to the Shadowsocks-2022 entry that 5.0.0 no longer supports:
-  # nothing writes it any more, and a leftover file from an older release is a
-  # managed asset, so clean it up and say so if that fails.
+  # ss.txt belonged to the entry that 5.0.0 no longer supports: nothing writes
+  # it any more, and a leftover file from an older release is a managed asset,
+  # so clean it up and say so if that fails.
   if ! remove_saved_ss_link; then
     yellow "本版本已不再生成 $SB_DIR/ss.txt，但遗留文件无法删除，请手动检查"
   fi
@@ -4558,13 +4552,14 @@ relay_upstream_reachable(){
 
 relay_candidate_with_upstream(){
   local output=$1 server=$2 port=$3 password=$4
-  jq --arg server "$server" --argjson port "$port" --arg password "$password" --arg method "$RELAY_METHOD" '
+  jq --arg server "$server" --argjson port "$port" --arg password "$password" \
+     --arg username "$SOCKS_USERNAME" '
     if ([.outbounds[] | select(.tag == "relay")] | length) > 1 then
       error("duplicated relay outbound")
     else
       .outbounds = ([.outbounds[] | select(.tag != "relay")] +
-        [{type: "shadowsocks", tag: "relay", server: $server, server_port: $port,
-          method: $method, password: $password}]) |
+        [{type: "socks", tag: "relay", server: $server, server_port: $port,
+          version: "5", username: $username, password: $password}]) |
       .route.final = "relay"
     end
   ' "$SB_CONFIG" > "$output" || return 1
@@ -4611,14 +4606,14 @@ set_relay_upstream(){
       red "端口必须是1-65535之间的整数"
       continue
     fi
-    readp "请输入落地机的Shadowsocks-2022密钥（44位base64，输入0取消）：" password || return 1
+    readp "请输入落地机 SOCKS5 入口的密码（16-128位安全字符，输入0取消）：" password || return 1
     if [[ $password == 0 ]]; then
       yellow "已取消，未做任何修改"
       readp "按回车返回上游/中转菜单..."
       return 0
     fi
-    if ! valid_ss_password "$password"; then
-      red "密钥必须是44位标准base64（32字节密钥，末尾一个=号）"
+    if ! valid_socks_password "$password"; then
+      red "密码必须是16-128位安全字符（字母、数字、. _ ~ -）"
       continue
     fi
     if ! relay_upstream_reachable "$server" "$port"; then
@@ -4646,7 +4641,8 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "这一跳仍是 Shadowsocks-2022：密钥不可推导，两端都需要 NTP 正常（协议用时间戳抗重放）"
+        yellow "这一跳走的是落地机的 SOCKS5 入口：用户名固定 ${SOCKS_USERNAME}，密码就是刚填的那个"
+        yellow "它不加密（明文），只承载 TCP；落地机要已在菜单[8]启用 SOCKS5 入口并放行其 TCP 端口"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -4724,7 +4720,7 @@ manage_relay(){
     if ! relay_settings_present; then
       green "当前上游：${yellow}未配置${green}（全部直连出网）"
     elif load_relay_settings; then
-      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（$RELAY_METHOD）"
+      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（落地机 SOCKS5 入口）"
     else
       red "上游状态文件存在但无法解析：$(relay_config_path)"
     fi
@@ -4759,15 +4755,15 @@ socks_entry_password(){
     "$SB_CONFIG" 2>/dev/null
 }
 
-# A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is no longer supported as of
-# 5.0.0: nothing preserves it any more, and the next rewrite drops it. This probe
-# only *reports* what is still there so the menus and the render can warn instead
-# of letting the entry vanish silently. It is read-only on purpose — there is no
-# conversion and no removal action left in the script.
+# An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: nothing
+# preserves it any more, and the next rewrite drops it. This probe only *reports*
+# what is still there so the menus and the render can warn instead of letting the
+# entry vanish silently. It is read-only on purpose — there is no conversion and
+# no removal action left in the script. Matching is by tag alone.
 retired_ss_entry_port(){
   local port
   [[ -s $SB_CONFIG ]] || return 1
-  port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$SB_CONFIG" 2>/dev/null) || return 1
+  port=$(jq -er '.inbounds[] | select(.tag == "ss-sb") | .listen_port | select(type == "number")' "$SB_CONFIG" 2>/dev/null) || return 1
   valid_port "$port" || return 1
   printf '%s\n' "$port"
 }
@@ -5025,7 +5021,7 @@ manage_optional_features(){
       green "1：SOCKS5 入口 ${yellow}未启用${plain}"
     fi
     if retired_port=$(retired_ss_entry_port); then
-      yellow "   警告：配置里还有 4.0.0 之前的 Shadowsocks-2022 入口（端口 $retired_port），本版本已不再支持"
+      yellow "   警告：配置里还有一个 4.0.0 之前创建的旧入口（端口 $retired_port），本版本已不再支持"
       yellow "   下次重写配置（改端口/凭据、修复）会移除它，仍在用它连接的人会断开"
     fi
     if load_relay_settings; then
@@ -5446,7 +5442,7 @@ load_repair_config_values(){
     type == "object" and (.inbounds | type == "array") and
     ([.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb")] | length) == 1 and
     ([.inbounds[] | select(.type == "socks" and .tag == "socks5-sb")] | length) <= 1 and
-    ([.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb")] | length) <= 1 and
+    ([.inbounds[] | select(.tag == "ss-sb")] | length) <= 1 and
     ([.outbounds[] | select(.type == "direct" and .tag == "direct")] | length) == 1
   ' "$source" >/dev/null 2>&1 || return 1
   REPAIR_UUID=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .users[0].password | select(type == "string")' "$source") || return 1
@@ -5628,13 +5624,13 @@ install_repair_config(){
 }
 
 # True when the config still carries a protocol this version no longer ships: the
-# VLESS inbound removed in 2.0.0, and a Shadowsocks-2022 entry created before
-# 4.0.0 (support removed in 5.0.0, after being preserved for one release). Such a
-# config must be rewritten rather than declared healthy, otherwise the retired
-# inbound would live on unnoticed.
+# VLESS inbound removed in 2.0.0, and an entry created before 4.0.0 (support
+# removed in 5.0.0, after being preserved for one release). Such a config must be
+# rewritten rather than declared healthy, otherwise the retired inbound would
+# live on unnoticed. Matching is by tag alone.
 config_contains_removed_protocol(){
   local source=$1
-  jq -e '[.inbounds[]? | select(.type == "vless" or (.type == "shadowsocks" and .tag == "ss-sb"))] | length > 0' \
+  jq -e '[.inbounds[]? | select(.type == "vless" or .tag == "ss-sb")] | length > 0' \
     "$source" >/dev/null 2>&1
 }
 
@@ -5648,12 +5644,12 @@ try_repair_config_source(){
     REPAIR_CONFIG_ACTION="当前配置正常，节点参数保持不变"
     return 0
   fi
-  # A config that still carries a removed protocol (VLESS, or a pre-4.0.0
-  # Shadowsocks-2022 entry) must be rewritten rather than left untouched:
-  # sing-box still accepts both, so the version check alone would classify them
-  # as healthy and keep the retired inbound alive.
+  # A config that still carries a removed protocol (VLESS, or an entry created
+  # before 4.0.0) must be rewritten rather than left untouched: sing-box still
+  # accepts both, so the version check alone would classify them as healthy and
+  # keep the retired inbound alive.
   if config_contains_removed_protocol "$source"; then
-    label+="，并移除已废弃的 inbound（VLESS / Shadowsocks-2022 入口）"
+    label+="，并移除已废弃的 inbound（VLESS / 4.0.0 之前的入口）"
   fi
   candidate=$(mktemp "$SB_DIR/.sb.json.repair.XXXXXX") || return 1
   if ! render_repair_config "$candidate" || ! chmod 600 "$candidate" ||

@@ -94,8 +94,8 @@ result(){
   else
     socks_password=
   fi
-  # A Shadowsocks-2022 entry created before 4.0.0 is no longer supported (5.0.0):
-  # it has no share link and no client entry any more.
+  # An entry created before 4.0.0 is no longer supported (5.0.0): it has no
+  # share link and no client entry any more.
   hy2_port=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .listen_port' "$SB_CONFIG" 2>/dev/null) || return 1
   hy2_sniname=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.key_path' "$SB_CONFIG" 2>/dev/null) || return 1
   if ! valid_uuid "$uuid" || ! valid_port "$hy2_port"; then
@@ -525,9 +525,9 @@ sbshare(){
   elif ! remove_saved_socks_link; then
     yellow "SOCKS5 入口未启用，但遗留的 $SB_DIR/socks5.txt 无法删除，请手动检查"
   fi
-  # ss.txt belongs to the Shadowsocks-2022 entry that 5.0.0 no longer supports:
-  # nothing writes it any more, and a leftover file from an older release is a
-  # managed asset, so clean it up and say so if that fails.
+  # ss.txt belonged to the entry that 5.0.0 no longer supports: nothing writes
+  # it any more, and a leftover file from an older release is a managed asset,
+  # so clean it up and say so if that fails.
   if ! remove_saved_ss_link; then
     yellow "本版本已不再生成 $SB_DIR/ss.txt，但遗留文件无法删除，请手动检查"
   fi

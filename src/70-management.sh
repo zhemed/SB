@@ -771,13 +771,14 @@ relay_upstream_reachable(){
 
 relay_candidate_with_upstream(){
   local output=$1 server=$2 port=$3 password=$4
-  jq --arg server "$server" --argjson port "$port" --arg password "$password" --arg method "$RELAY_METHOD" '
+  jq --arg server "$server" --argjson port "$port" --arg password "$password" \
+     --arg username "$SOCKS_USERNAME" '
     if ([.outbounds[] | select(.tag == "relay")] | length) > 1 then
       error("duplicated relay outbound")
     else
       .outbounds = ([.outbounds[] | select(.tag != "relay")] +
-        [{type: "shadowsocks", tag: "relay", server: $server, server_port: $port,
-          method: $method, password: $password}]) |
+        [{type: "socks", tag: "relay", server: $server, server_port: $port,
+          version: "5", username: $username, password: $password}]) |
       .route.final = "relay"
     end
   ' "$SB_CONFIG" > "$output" || return 1
@@ -824,14 +825,14 @@ set_relay_upstream(){
       red "端口必须是1-65535之间的整数"
       continue
     fi
-    readp "请输入落地机的Shadowsocks-2022密钥（44位base64，输入0取消）：" password || return 1
+    readp "请输入落地机 SOCKS5 入口的密码（16-128位安全字符，输入0取消）：" password || return 1
     if [[ $password == 0 ]]; then
       yellow "已取消，未做任何修改"
       readp "按回车返回上游/中转菜单..."
       return 0
     fi
-    if ! valid_ss_password "$password"; then
-      red "密钥必须是44位标准base64（32字节密钥，末尾一个=号）"
+    if ! valid_socks_password "$password"; then
+      red "密码必须是16-128位安全字符（字母、数字、. _ ~ -）"
       continue
     fi
     if ! relay_upstream_reachable "$server" "$port"; then
@@ -859,7 +860,8 @@ set_relay_upstream(){
       if save_relay_settings "$server" "$port" "$password"; then
         green "上游已启用：${server}:${port}"
         yellow "出网流量已交给落地机；清除上游可恢复直连"
-        yellow "这一跳仍是 Shadowsocks-2022：密钥不可推导，两端都需要 NTP 正常（协议用时间戳抗重放）"
+        yellow "这一跳走的是落地机的 SOCKS5 入口：用户名固定 ${SOCKS_USERNAME}，密码就是刚填的那个"
+        yellow "它不加密（明文），只承载 TCP；落地机要已在菜单[8]启用 SOCKS5 入口并放行其 TCP 端口"
       else
         red "服务端已切换，但上游状态文件写入失败！修复或重建配置后上游会丢失，请重新设置一次"
       fi
@@ -937,7 +939,7 @@ manage_relay(){
     if ! relay_settings_present; then
       green "当前上游：${yellow}未配置${green}（全部直连出网）"
     elif load_relay_settings; then
-      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（$RELAY_METHOD）"
+      green "当前上游：${yellow}${relay_server}:${relay_port}${green}（落地机 SOCKS5 入口）"
     else
       red "上游状态文件存在但无法解析：$(relay_config_path)"
     fi
@@ -972,15 +974,15 @@ socks_entry_password(){
     "$SB_CONFIG" 2>/dev/null
 }
 
-# A Shadowsocks-2022 entry created by 3.0.0-3.1.4 is no longer supported as of
-# 5.0.0: nothing preserves it any more, and the next rewrite drops it. This probe
-# only *reports* what is still there so the menus and the render can warn instead
-# of letting the entry vanish silently. It is read-only on purpose — there is no
-# conversion and no removal action left in the script.
+# An entry created by 3.0.0-3.1.4 is no longer supported as of 5.0.0: nothing
+# preserves it any more, and the next rewrite drops it. This probe only *reports*
+# what is still there so the menus and the render can warn instead of letting the
+# entry vanish silently. It is read-only on purpose — there is no conversion and
+# no removal action left in the script. Matching is by tag alone.
 retired_ss_entry_port(){
   local port
   [[ -s $SB_CONFIG ]] || return 1
-  port=$(jq -er '.inbounds[] | select(.type == "shadowsocks" and .tag == "ss-sb") | .listen_port | select(type == "number")' "$SB_CONFIG" 2>/dev/null) || return 1
+  port=$(jq -er '.inbounds[] | select(.tag == "ss-sb") | .listen_port | select(type == "number")' "$SB_CONFIG" 2>/dev/null) || return 1
   valid_port "$port" || return 1
   printf '%s\n' "$port"
 }
@@ -1238,7 +1240,7 @@ manage_optional_features(){
       green "1：SOCKS5 入口 ${yellow}未启用${plain}"
     fi
     if retired_port=$(retired_ss_entry_port); then
-      yellow "   警告：配置里还有 4.0.0 之前的 Shadowsocks-2022 入口（端口 $retired_port），本版本已不再支持"
+      yellow "   警告：配置里还有一个 4.0.0 之前创建的旧入口（端口 $retired_port），本版本已不再支持"
       yellow "   下次重写配置（改端口/凭据、修复）会移除它，仍在用它连接的人会断开"
     fi
     if load_relay_settings; then

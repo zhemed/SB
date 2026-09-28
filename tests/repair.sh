@@ -634,7 +634,6 @@ source "$ROOT_DIR/src/50-client-output.sh"
 source "$ROOT_DIR/src/85-repair.sh"
 
 export CORE_VERSION=1.10.7
-export RELAY_METHOD="2022-blake3-aes-256-gcm"
 export SOCKS_USERNAME=sb
 export IPV6_SYSCTL_ROOT=/proc/sys/net/ipv6
 export SB_DIR="$TEMP_DIR/sb"
