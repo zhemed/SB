@@ -16,7 +16,7 @@ save_server_ip(){
 
 ipuuid(){
   local menu
-  v4v6_refresh || true
+  v4v6_bg
   if [[ -n $v4 && -n $v6 ]]; then
     green "调整IPv4/IPV6配置输出"
     yellow "1：刷新本地IP，使用IPV4配置输出 (回车默认) "
@@ -24,8 +24,18 @@ ipuuid(){
     while true; do
       readp "请选择【1-2】：" menu
       case "$menu" in
-        ""|1) save_server_ip "$v4" || return 1; break ;;
-        2) save_server_ip "$v6" || return 1; break ;;
+        ""|1)
+          v4v6_refresh >/dev/null 2>&1 || true
+          [[ -n $v4 ]] || { red "未探测到公网IPv4地址"; continue; }
+          save_server_ip "$v4" || return 1
+          break
+          ;;
+        2)
+          v4v6_refresh >/dev/null 2>&1 || true
+          [[ -n $v6 ]] || { red "未探测到公网IPv6地址"; continue; }
+          save_server_ip "$v6" || return 1
+          break
+          ;;
         *) red "请输入1或2" ;;
       esac
     done
@@ -45,7 +55,7 @@ refresh_saved_ip(){
   if managed_regular_file_is_trusted "$SB_DIR/server_ipcl.log"; then
     previous=$(cat "$SB_DIR/server_ipcl.log" 2>/dev/null)
   fi
-  v4v6_refresh || true
+  v4v6_bg
   if valid_ipv6 "$previous" && [[ -n $v6 ]]; then
     save_server_ip "$v6"
   elif valid_ipv4 "$previous" && [[ -n $v4 ]]; then
@@ -561,7 +571,7 @@ switch_ip_priority(){
     readp "按回车返回主菜单..."
     return 1
   fi
-  v4v6_refresh || true
+  v4v6_bg
   if ! current=$(jq -er '.outbounds[] | select(.type == "direct" and .tag == "direct") | .domain_strategy // "prefer_ipv4"' "$SB_CONFIG" 2>/dev/null); then
     red "读取当前IP优先级失败，配置未修改"
     readp "按回车返回主菜单..."

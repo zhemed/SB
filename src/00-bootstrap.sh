@@ -108,7 +108,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.1.1"
+sb_version="v5.1.2"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -145,34 +145,98 @@ sanitize_location(){
   tr '\r\n\t' '   ' | sed 's/[[:cntrl:]]//g; s/[[:space:]][[:space:]]*/ /g; s/^ //; s/ $//' | cut -c1-160
 }
 
+# 七个候选探测并发跑（每次最多 2 秒），按优先级取第一个有效结果：
+# 原来串行等 7×5 秒，网络不通时每一处操作都要卡 35 秒。
+ip_probe_parallel(){
+  local dir=$1
+  local -a jobs=()
+  ( curl --fail --silent --max-time 2 -4 https://myip.ipip.net 2>/dev/null > "$dir/v4.ipip" ) &
+  jobs+=($!)
+  ( curl --fail --silent --max-time 2 -4 https://myip.ipip.net 2>/dev/null | sed 's/.*来自于：//; s/.*来自：//; s/.*Location: //' | sanitize_location > "$dir/v4dq.ipip" ) &
+  jobs+=($!)
+  ( curl --fail --silent --max-time 2 -4 https://4.ipw.cn 2>/dev/null | tr -d '\r\n ' > "$dir/v4.ipw" ) &
+  jobs+=($!)
+  ( curl --fail --silent --max-time 2 -4 https://icanhazip.com 2>/dev/null | tr -d '\r\n ' > "$dir/v4.icanhaz" ) &
+  jobs+=($!)
+  ( curl --fail --silent --max-time 2 -6 https://icanhazip.com 2>/dev/null | tr -d '\r\n ' > "$dir/v6.icanhaz" ) &
+  jobs+=($!)
+  ( curl --fail --silent --max-time 2 -6 https://6.ipw.cn 2>/dev/null | tr -d '\r\n ' > "$dir/v6.ipw" ) &
+  jobs+=($!)
+  ( curl --fail --silent --max-time 2 -6 https://ip.fm 2>/dev/null | sed 's/.*来自于：//; s/.*来自：//; s/.*Location: //' | sanitize_location > "$dir/v6dq.fm" ) &
+  jobs+=($!)
+  wait "${jobs[@]}" 2>/dev/null || true
+}
+
+pick_first_ipv4(){
+  local dir=$1 file value
+  for file in "$dir/v4.ipip" "$dir/v4.ipw" "$dir/v4.icanhaz"; do
+    value=$(grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' "$file" 2>/dev/null | head -1) || value=
+    if valid_ipv4 "$value"; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  return 1
+}
+
+pick_first_ipv6(){
+  local dir=$1 file value
+  for file in "$dir/v6.icanhaz" "$dir/v6.ipw"; do
+    value=$(tr -d '\r\n ' < "$file" 2>/dev/null) || value=
+    if valid_ipv6 "$value"; then
+      printf '%s\n' "$value"
+      return 0
+    fi
+  done
+  value=$(ip -6 addr show 2>/dev/null | grep 'inet6.*global' | awk '{print $2}' | cut -d/ -f1 | head -1) || value=
+  if valid_ipv6 "$value"; then
+    printf '%s\n' "$value"
+    return 0
+  fi
+  return 1
+}
+
+first_location(){
+  local file value
+  for file in "$@"; do
+    value=$(cat "$file" 2>/dev/null) || value=
+    [[ -n $value ]] && { printf '%s\n' "$value"; return 0; }
+  done
+  return 0
+}
+
 v4v6_refresh(){
-  local cache_file="$SB_DIR/.ip_cache" cache_tmp
-  v4=$(curl --fail --silent --show-error -4 --max-time 5 https://myip.ipip.net 2>/dev/null | grep -oE '([0-9]{1,3}\.){3}[0-9]{1,3}' | head -1)
-  [[ -z $v4 ]] && v4=$(curl --fail --silent --show-error -4 --max-time 5 https://4.ipw.cn 2>/dev/null | tr -d '\r\n ')
-  [[ -z $v4 ]] && v4=$(curl --fail --silent --show-error -4 --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '\r\n ')
-  valid_ipv4 "$v4" || v4=
-  v6=$(curl --fail --silent --show-error -6 --max-time 5 https://icanhazip.com 2>/dev/null | tr -d '\r\n ')
-  [[ -z $v6 ]] && v6=$(curl --fail --silent --show-error -6 --max-time 5 https://6.ipw.cn 2>/dev/null | tr -d '\r\n ')
-  [[ -z $v6 ]] && v6=$(ip -6 addr show 2>/dev/null | grep 'inet6.*global' | awk '{print $2}' | cut -d/ -f1 | head -1)
-  valid_ipv6 "$v6" || v6=
-  v4dq=$(curl --fail --silent --show-error -4 --max-time 5 https://myip.ipip.net 2>/dev/null | sed 's/.*来自于：//; s/.*来自：//; s/.*Location: //' | sanitize_location)
-  v6dq=$(curl --fail --silent --show-error -6 --max-time 5 https://ip.fm 2>/dev/null | sed 's/.*来自于：//; s/.*来自：//; s/.*Location: //' | sanitize_location)
+  local cache_file="$SB_DIR/.ip_cache" cache_tmp probe_dir
+  probe_dir=$(mktemp -d "$SB_DIR/.ip-probe.XXXXXX") || return 1
+  ip_probe_parallel "$probe_dir"
+  v4=$(pick_first_ipv4 "$probe_dir") || v4=
+  v6=$(pick_first_ipv6 "$probe_dir") || v6=
+  v4dq=$(first_location "$probe_dir/v4dq.ipip")
+  v6dq=$(first_location "$probe_dir/v6dq.fm")
+  rm -rf -- "$probe_dir"
   cache_tmp=$(mktemp "$SB_DIR/.ip_cache.XXXXXX") || return 1
   printf '%s\n%s\n%s\n%s\n' "$v4" "$v6" "$v4dq" "$v6dq" > "$cache_tmp"
   chmod 600 "$cache_tmp"
   mv -fT -- "$cache_tmp" "$cache_file"
 }
 
-read_ip_cache(){
-  local cache_file="$SB_DIR/.ip_cache"
-  mapfile -t ip_cache < "$cache_file" 2>/dev/null || return 1
-  v4=${ip_cache[0]-}
-  v6=${ip_cache[1]-}
-  v4dq=${ip_cache[2]-}
-  v6dq=${ip_cache[3]-}
-  valid_ipv4 "$v4" || v4=
-  valid_ipv6 "$v6" || v6=
-  [[ -n $v4 || -n $v6 ]]
+# 界面用：有缓存就先用着（不管多久），过期就在后台刷新，绝不阻塞；没有缓存才同步探测一次。
+v4v6_bg(){
+  local cache_file="$SB_DIR/.ip_cache" stamp="$SB_DIR/.ip_refresh.stamp" now age=99999 stamp_age=99999
+  now=$(date +%s)
+  if [[ -f $cache_file ]]; then
+    age=$((now - $(stat -c %Y "$cache_file" 2>/dev/null || echo 0)))
+    read_ip_cache || true
+    if [[ $age -gt 60 ]]; then
+      [[ -f $stamp ]] && stamp_age=$((now - $(stat -c %Y "$stamp" 2>/dev/null || echo 0)))
+      if [[ $stamp_age -gt 60 ]]; then
+        : > "$stamp" && chmod 600 "$stamp"
+        v4v6_refresh >/dev/null 2>&1 &
+      fi
+    fi
+    return 0
+  fi
+  v4v6_refresh
 }
 
 v4v6(){

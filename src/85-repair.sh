@@ -403,7 +403,7 @@ cleanup_repair_temporary_files(){
   for path in "$SB_DIR"/.sing-box.* "$SB_DIR"/.sb.json.repair.* \
     "$SB_DIR"/.sb.json.rebuild.* "$SB_DIR"/.public.key.* \
     "$SB_DIR"/.socks5.txt.* "$SB_DIR"/.hy2.txt.* "$SB_DIR"/.jhdy.txt.* \
-    "$SB_DIR"/.sb.json.?????? \
+    "$SB_DIR"/.sb.json.?????? "$SB_DIR"/.ip-probe.* "$SB_DIR"/.ip_cache.?????? \
     "$SB_DIR"/.reality-key.* "$SB_DIR"/.repair-old-* \
     "$SB_DIR"/.repair-target-* "$SB_DIR"/.repair-core-backup.* \
     "$SB_DIR"/.repair-service-backup.* "$SB_DIR"/.sb.json.backup.*; do

@@ -95,7 +95,7 @@ menu(){
     status_text=$(service_is_active && [[ -s $SB_CONFIG ]] && echo "运行中" || echo "未运行")
     status_color=$([[ "$status_text" = "运行中" ]] && echo "$green" || echo "$yellow")
     echo -e "  版本: ${green}${insV}${plain}  |  Sing-box: ${green}${sb_ver}${plain}  |  状态: ${status_color}${status_text}${plain}"
-    v4v6
+    v4v6_bg
     [[ -n $v4 ]] && echo -e "  IPV4: ${blue}${v4}${plain}${v4dq:+ (${v4dq})}"
     [[ -n $v6 ]] && echo -e "  IPV6: ${blue}${v6}${plain}${v6dq:+ (${v6dq})}"
     red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"

@@ -137,6 +137,9 @@ JSON
     save_last_good_config() { cp -f "$1" "$SB_LAST_GOOD" 2>/dev/null; return 0; }
     systemctl() { return 0; }
     crontab() { return 0; }
+    # 回放绝不联网：IP 探测类调用一律立刻失败
+    curl() { return 28; }
+    wget() { return 1; }
 
     case $flow in
       uuid_ok) answers=("aaaaaaaa-9999-8888-7777-666666666666" ""); run_fn=changeuuid ;;

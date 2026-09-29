@@ -14,6 +14,9 @@ overwriting or deleting anything, and it must never touch a file it does not own
 | `SB_LAST_GOOD` | `/etc/sb/sb.json.last-good` | Last known-good config, 600 |
 | `SB_BIN` | `/etc/sb/sing-box` | Pinned core binary, 755 |
 | `SB_MANAGED_MARKER` | `/etc/sb/.sb-managed` | Ownership marker, 600 |
+| `/etc/sb/.ip_cache` | 公网 IP 探测缓存（600）；界面只读它，过期时后台刷新 |
+| `/etc/sb/.ip_refresh.stamp` | 后台刷新节流标记（600），避免并发探测 |
+| `/etc/sb/.ip-probe.*` | 并发探测的临时目录，探测结束即删，修复流程兜底清理 |
 | `SYSTEMD_UNIT` | `/etc/systemd/system/sb.service` | Unit, 600 |
 | `OPENRC_UNIT` | `/etc/init.d/sb` | Unit, 700 |
 | `SHORTCUT` | `/usr/bin/sb` | Installed copy of the script, 755 |
