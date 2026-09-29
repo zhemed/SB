@@ -1,0 +1,43 @@
+GRN|调整IPv4/IPV6配置输出
+YEL|1：刷新本地IP，使用IPV4配置输出 (回车默认) 
+YEL|2：刷新本地IP，使用IPV6配置输出
+RC=0
+{
+  "inbounds": [
+    {
+      "listen": "::",
+      "listen_port": 23456,
+      "tag": "hy2-sb",
+      "tls": {
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/tmp/x.crt",
+        "enabled": true,
+        "key_path": "/tmp/x.key",
+        "min_version": "1.3"
+      },
+      "type": "hysteria2",
+      "users": [
+        {
+          "password": "aaaaaaaa-1111-2222-3333-444444444444"
+        }
+      ]
+    }
+  ],
+  "log": {
+    "level": "warn"
+  },
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct",
+    "rules": []
+  }
+}
+RELAY_CONF=none
+LEFTOVERS=.ip_cache sb.json server_ip.log server_ipcl.log 

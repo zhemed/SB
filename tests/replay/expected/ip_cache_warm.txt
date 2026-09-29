@@ -1,0 +1,41 @@
+V4=203.0.113.7 V6=2001:db8::7 V4DQ=某地 V6DQ=某地
+RC=0
+{
+  "inbounds": [
+    {
+      "listen": "::",
+      "listen_port": 23456,
+      "tag": "hy2-sb",
+      "tls": {
+        "alpn": [
+          "h3"
+        ],
+        "certificate_path": "/tmp/x.crt",
+        "enabled": true,
+        "key_path": "/tmp/x.key",
+        "min_version": "1.3"
+      },
+      "type": "hysteria2",
+      "users": [
+        {
+          "password": "aaaaaaaa-1111-2222-3333-444444444444"
+        }
+      ]
+    }
+  ],
+  "log": {
+    "level": "warn"
+  },
+  "outbounds": [
+    {
+      "tag": "direct",
+      "type": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct",
+    "rules": []
+  }
+}
+RELAY_CONF=none
+LEFTOVERS=.ip_cache sb.json 

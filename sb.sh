@@ -108,7 +108,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.1.2"
+sb_version="v5.1.3"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -214,6 +214,19 @@ v4v6_refresh(){
   v4dq=$(first_location "$probe_dir/v4dq.ipip")
   v6dq=$(first_location "$probe_dir/v6dq.fm")
   rm -rf -- "$probe_dir"
+  # 探测失败的家族沿用上一次的好结果：直接被空值覆盖会让菜单与分享刷新都拿不到 IP，
+  # 也会把"缓存兜底"废掉；两个家族都没拿到才什么也不写。
+  local -a previous=()
+  if [[ -f $cache_file ]]; then
+    mapfile -t previous < "$cache_file" 2>/dev/null || previous=()
+  fi
+  [[ -n $v4 ]] || v4=${previous[0]-}
+  [[ -n $v6 ]] || v6=${previous[1]-}
+  [[ -n $v4dq ]] || v4dq=${previous[2]-}
+  [[ -n $v6dq ]] || v6dq=${previous[3]-}
+  if [[ -z $v4 && -z $v6 ]]; then
+    return 0
+  fi
   cache_tmp=$(mktemp "$SB_DIR/.ip_cache.XXXXXX") || return 1
   printf '%s\n%s\n%s\n%s\n' "$v4" "$v6" "$v4dq" "$v6dq" > "$cache_tmp"
   chmod 600 "$cache_tmp"
@@ -221,6 +234,18 @@ v4v6_refresh(){
 }
 
 # 界面用：有缓存就先用着（不管多久），过期就在后台刷新，绝不阻塞；没有缓存才同步探测一次。
+read_ip_cache(){
+  local cache_file="$SB_DIR/.ip_cache"
+  mapfile -t ip_cache < "$cache_file" 2>/dev/null || return 1
+  v4=${ip_cache[0]-}
+  v6=${ip_cache[1]-}
+  v4dq=${ip_cache[2]-}
+  v6dq=${ip_cache[3]-}
+  valid_ipv4 "$v4" || v4=
+  valid_ipv6 "$v6" || v6=
+  [[ -n $v4 || -n $v6 ]]
+}
+
 v4v6_bg(){
   local cache_file="$SB_DIR/.ip_cache" stamp="$SB_DIR/.ip_refresh.stamp" now age=99999 stamp_age=99999
   now=$(date +%s)
@@ -2661,17 +2686,28 @@ ipuuid(){
     yellow "1：刷新本地IP，使用IPV4配置输出 (回车默认) "
     yellow "2：刷新本地IP，使用IPV6配置输出"
     while true; do
-      readp "请选择【1-2】：" menu
+      readp "请选择【1-2】：" menu || return 1
       case "$menu" in
         ""|1)
           v4v6_refresh >/dev/null 2>&1 || true
-          [[ -n $v4 ]] || { red "未探测到公网IPv4地址"; continue; }
+          # 探测失败就用缓存兜底（原来会把缓存里的值清掉，然后原地打转）
+          [[ -n $v4 ]] || { read_ip_cache || true; }
+          if [[ -z $v4 ]]; then
+            red "未能获取公网IPv4地址，请检查本机网络后重试"
+            readp "按回车返回主菜单..."
+            return 1
+          fi
           save_server_ip "$v4" || return 1
           break
           ;;
         2)
           v4v6_refresh >/dev/null 2>&1 || true
-          [[ -n $v6 ]] || { red "未探测到公网IPv6地址"; continue; }
+          [[ -n $v6 ]] || { read_ip_cache || true; }
+          if [[ -z $v6 ]]; then
+            red "未能获取公网IPv6地址，请检查本机网络后重试"
+            readp "按回车返回主菜单..."
+            return 1
+          fi
           save_server_ip "$v6" || return 1
           break
           ;;

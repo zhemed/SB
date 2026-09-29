@@ -22,17 +22,28 @@ ipuuid(){
     yellow "1：刷新本地IP，使用IPV4配置输出 (回车默认) "
     yellow "2：刷新本地IP，使用IPV6配置输出"
     while true; do
-      readp "请选择【1-2】：" menu
+      readp "请选择【1-2】：" menu || return 1
       case "$menu" in
         ""|1)
           v4v6_refresh >/dev/null 2>&1 || true
-          [[ -n $v4 ]] || { red "未探测到公网IPv4地址"; continue; }
+          # 探测失败就用缓存兜底（原来会把缓存里的值清掉，然后原地打转）
+          [[ -n $v4 ]] || { read_ip_cache || true; }
+          if [[ -z $v4 ]]; then
+            red "未能获取公网IPv4地址，请检查本机网络后重试"
+            readp "按回车返回主菜单..."
+            return 1
+          fi
           save_server_ip "$v4" || return 1
           break
           ;;
         2)
           v4v6_refresh >/dev/null 2>&1 || true
-          [[ -n $v6 ]] || { red "未探测到公网IPv6地址"; continue; }
+          [[ -n $v6 ]] || { read_ip_cache || true; }
+          if [[ -z $v6 ]]; then
+            red "未能获取公网IPv6地址，请检查本机网络后重试"
+            readp "按回车返回主菜单..."
+            return 1
+          fi
           save_server_ip "$v6" || return 1
           break
           ;;

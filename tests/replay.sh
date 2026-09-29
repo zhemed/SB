@@ -16,10 +16,19 @@ set -uo pipefail
 ROOT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 EXPECTED_DIR="$ROOT_DIR/tests/replay/expected"
 UPDATE=0
-[[ ${1-} == --update ]] && UPDATE=1
+RUN_ONE=
+case ${1-} in
+  --update) UPDATE=1 ;;
+  --run-one) RUN_ONE=${2-} ;;
+esac
 
-WORK_ROOT=$(mktemp -d "${TMPDIR:-/tmp}/sb-replay.XXXXXX") || exit 1
-trap 'rm -rf "$WORK_ROOT"' EXIT
+# 每条流程在子进程里跑（便于加超时），两边必须用同一个沙箱根目录，
+# 否则输出里的路径前缀对不上、比对会全线误报。
+WORK_ROOT=${SB_REPLAY_WORK_ROOT:-$(mktemp -d "${TMPDIR:-/tmp}/sb-replay.XXXXXX")}
+export SB_REPLAY_WORK_ROOT="$WORK_ROOT"
+if [[ -z ${SB_REPLAY_SUBPROCESS:-} ]]; then
+  trap 'rm -rf "$WORK_ROOT"' EXIT
+fi
 FUNCS="$WORK_ROOT/functions.sh"
 
 # Pull every function definition out of the generated script, keeping heredoc bodies
@@ -137,6 +146,27 @@ JSON
     save_last_good_config() { cp -f "$1" "$SB_LAST_GOOD" 2>/dev/null; return 0; }
     systemctl() { return 0; }
     crontab() { return 0; }
+    # 本机地址探测一律返回空，回放必须与本机环境无关
+    ip() { return 0; }
+
+    replay_ip_cache_warm() {
+      v4=; v6=; v4dq=; v6dq=
+      v4v6_bg
+      printf 'V4=%s V6=%s V4DQ=%s V6DQ=%s\n' "${v4-}" "${v6-}" "${v4dq-}" "${v6dq-}"
+    }
+    replay_ip_cache_stale() {
+      v4=; v6=
+      v4v6_bg
+      sleep 0.5
+      printf 'V4=%s V6=%s STAMP=%s CACHE=%s\n' "${v4-}" "${v6-}" \
+        "$([[ -f $SB_DIR/.ip_refresh.stamp ]] && echo yes || echo no)" \
+        "$([[ -f $SB_DIR/.ip_cache ]] && echo yes || echo no)"
+    }
+    replay_ip_cache_missing() {
+      v4=; v6=
+      v4v6_bg || true
+      printf 'V4=%s V6=%s\n' "${v4-}" "${v6-}"
+    }
     # 回放绝不联网：IP 探测类调用一律立刻失败
     curl() { return 28; }
     wget() { return 1; }
@@ -159,6 +189,33 @@ JSON
       relay_set_ok) answers=("1.2.3.4" "1080" "Socks.Pass_One-234" ""); run_fn=set_relay_upstream ;;
       relay_set_cancel) answers=("0"); run_fn=set_relay_upstream ;;
       relay_clear_ok) answers=(""); run_fn=clear_relay_upstream ;;
+      ip_cache_warm)
+        printf '203.0.113.7\n2001:db8::7\n某地\n某地\n' > "$SB_DIR/.ip_cache"
+        chmod 600 "$SB_DIR/.ip_cache"
+        answers=()
+        run_fn=replay_ip_cache_warm
+        ;;
+      ip_cache_stale)
+        printf '203.0.113.7\n2001:db8::7\n\n\n' > "$SB_DIR/.ip_cache"
+        chmod 600 "$SB_DIR/.ip_cache"
+        touch -d '10 minutes ago' "$SB_DIR/.ip_cache"
+        answers=()
+        run_fn=replay_ip_cache_stale
+        ;;
+      ip_cache_missing)
+        answers=()
+        run_fn=replay_ip_cache_missing
+        ;;
+      ipuuid_warm_cache)
+        printf '203.0.113.7\n2001:db8::7\n某地\n某地\n' > "$SB_DIR/.ip_cache"
+        chmod 600 "$SB_DIR/.ip_cache"
+        answers=("" "")
+        run_fn=ipuuid
+        ;;
+      ipuuid_probe_fails)
+        answers=("" "")
+        run_fn=ipuuid
+        ;;
       *) echo "unknown flow: $flow" >&2; exit 2 ;;
     esac
 
@@ -190,6 +247,12 @@ normalize() {
 
 extract_functions || { echo "replay: cannot extract functions from sb.sh"; exit 1; }
 
+if [[ -n $RUN_ONE ]]; then
+  extract_functions || { echo "replay: cannot extract functions from sb.sh"; exit 1; }
+  run_flow "$RUN_ONE"
+  exit $?
+fi
+
 FLOWS=(
   uuid_ok uuid_same uuid_bad uuid_cancel
   socks_pw_ok socks_pw_cancel
@@ -197,6 +260,8 @@ FLOWS=(
   sock_enable_commit_fail sock_enable_rollback_fail
   sock_disable_yes sock_disable_no sock_disable_commit_fail
   relay_set_ok relay_set_cancel relay_clear_ok
+  ip_cache_warm ip_cache_stale ip_cache_missing
+  ipuuid_warm_cache ipuuid_probe_fails
 )
 
 mkdir -p "$EXPECTED_DIR"
@@ -204,7 +269,10 @@ index=0
 failures=0
 for flow in "${FLOWS[@]}"; do
   index=$((index + 1))
-  actual=$(run_flow "$flow" 2>&1 | normalize)
+  actual=$(SB_REPLAY_SUBPROCESS=1 timeout 30 bash "$0" --run-one "$flow" 2>&1 | normalize)
+  if [[ $? -eq 124 ]]; then
+    actual="TIMEOUT: $flow 未在 30 秒内结束"
+  fi
   expected_file="$EXPECTED_DIR/$flow.txt"
   if [[ $UPDATE -eq 1 ]]; then
     printf '%s\n' "$actual" > "$expected_file"
