@@ -1040,11 +1040,13 @@ acme_credential_prompts_fill_caller_variables(){
     # shellcheck disable=SC2317
     yellow(){ :; }
     # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
     red(){ :; }
     prompt_cloudflare_acme_credentials account_id cf_token || return 1
     [[ $account_id == 0123456789abcdef0123456789abcdef ]] || return 1
     [[ $cf_token == fixture_token_123 ]] || return 1
-    answers=('AKIDEXAMPLE1234567890' 'abcdefghijklmnop+/=' 'cn-north-4')
+    answers=('AKIDEXAMPLE1234567890' 'abcdefghijklmnop+/=' '1')
     index=0
     prompt_huaweicloud_acme_credentials hw_access_key hw_secret_key hw_region || return 1
     [[ $hw_access_key == AKIDEXAMPLE1234567890 ]] || return 1
@@ -1054,6 +1056,36 @@ acme_credential_prompts_fill_caller_variables(){
 }
 expect_success "ACME credential prompts fill the caller's variables" \
   acme_credential_prompts_fill_caller_variables
+
+# 常用区域菜单：回车默认北京，数字选项直达，5 可手动输入并校验重试。
+huaweicloud_region_menu_offers_common_regions(){
+  (
+    local hw_region
+    local -a answers=('' '2' '4' '5' 'bad-region!' 'cn-north-9' '9' '3')
+    local index=0
+    # shellcheck disable=SC2317
+    readp(){
+      printf -v "$2" '%s' "${answers[$index]}"
+      index=$((index + 1))
+    }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    prompt_huaweicloud_region || return 1
+    [[ $hw_region == cn-north-4 ]] || return 1
+    prompt_huaweicloud_region || return 1
+    [[ $hw_region == cn-east-3 ]] || return 1
+    prompt_huaweicloud_region || return 1
+    [[ $hw_region == ap-southeast-1 ]] || return 1
+    prompt_huaweicloud_region || return 1
+    [[ $hw_region == cn-north-9 ]] || return 1
+    prompt_huaweicloud_region || return 1
+    [[ $hw_region == cn-south-1 ]]
+  )
+}
+expect_success "Huawei Cloud region menu covers common regions and manual entry" \
+  huaweicloud_region_menu_offers_common_regions
 
 
 normalize_acme_domain ' Example.COM. ' || fail "single-domain normalization"

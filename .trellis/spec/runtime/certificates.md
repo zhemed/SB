@@ -351,6 +351,11 @@ Credentials are read with the **visible** `readp` (same policy as the Cloudflare
 through the environment, cleared on every success/failure path, and never printed. The plugin
 persists them into `account.conf` (root 600) so `acme.sh --cron` renews unattended.
 
+The Region prompt is a menu (`prompt_huaweicloud_region`): 北京 `cn-north-4` (default), 上海
+`cn-east-3`, 广州 `cn-south-1`, 香港 `ap-southeast-1`, plus a manual Region ID entry validated by
+`valid_huaweicloud_region`. Do not turn it back into a free-text-only prompt — users should not have
+to look up Region IDs.
+
 ### Issuance
 
 `issue_acme_certificate` (formerly `issue_cloudflare_certificate`) prompts domain → provider →

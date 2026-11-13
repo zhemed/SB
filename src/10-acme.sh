@@ -1558,9 +1558,39 @@ prompt_cloudflare_acme_credentials(){
   fi
 }
 
+prompt_huaweicloud_region(){
+  local region_choice
+  while true; do
+    green "请选择华为云 Region（决定 DNS API 域名 dns.<region>.myhuaweicloud.com）"
+    green "1：北京 cn-north-4（默认）"
+    green "2：上海 cn-east-3"
+    green "3：广州 cn-south-1"
+    green "4：香港 ap-southeast-1"
+    green "5：手动输入 Region ID"
+    readp "请选择【1-5】（回车默认 1）：" region_choice || return 3
+    case $region_choice in
+      ""|1) hw_region=cn-north-4; return 0 ;;
+      2) hw_region=cn-east-3; return 0 ;;
+      3) hw_region=cn-south-1; return 0 ;;
+      4) hw_region=ap-southeast-1; return 0 ;;
+      5)
+        while true; do
+          readp "请输入华为云 Region ID（如 cn-north-4）：" hw_region || return 3
+          hw_region=$(printf '%s' "$hw_region" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
+          if valid_huaweicloud_region "$hw_region"; then
+            return 0
+          fi
+          red "Region 格式错误：应为 2-32 位字母、数字、下划线或连字符（如 cn-north-4）"
+        done
+        ;;
+      *) red "请输入1、2、3、4或5" ;;
+    esac
+  done
+}
+
 prompt_huaweicloud_acme_credentials(){
   yellow "华为云 AK/SK 在控制台「我的凭证」→「访问密钥」创建，建议使用仅授 DNS 云解析权限的子账号"
-  yellow "Region 决定 API 域名 dns.<region>.myhuaweicloud.com，国内建议 cn-north-4"
+  yellow "Region 决定 DNS API 域名 dns.<region>.myhuaweicloud.com"
   yellow "AK/SK 将由 acme.sh 保存在仅 root 可读的 $ACME_HOME 配置中，用于自动续期"
   while true; do
     readp "请输入华为云 Access Key ID：" hw_access_key || return 3
@@ -1578,14 +1608,7 @@ prompt_huaweicloud_acme_credentials(){
     fi
     red "Secret Access Key 格式错误：应为 16-128 位字母、数字、+、/、=、_ 或连字符"
   done
-  while true; do
-    readp "请输入华为云 Region（如 cn-north-4）：" hw_region || return 3
-    hw_region=$(printf '%s' "$hw_region" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    if valid_huaweicloud_region "$hw_region"; then
-      break
-    fi
-    red "Region 格式错误：应为 2-32 位字母、数字、下划线或连字符（如 cn-north-4）"
-  done
+  prompt_huaweicloud_region || return $?
 }
 
 issue_acme_certificate(){

@@ -68,14 +68,16 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`5.2.0`。
+- 当前项目版本：`5.2.1`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
 - DNS API 支持 Cloudflare 与华为云（5.2.0 起）。
 - Cloudflare 使用 `Account ID + API Token`；API Token 使用普通可见输入，Zone ID 由 acme.sh 自动识别。
-- 华为云使用 AK/SK + Region（如 `cn-north-4`）：AK/SK 在控制台「我的凭证」→「访问密钥」创建，
-  建议使用只授 DNS 云解析权限的子账号；Region 决定 API 域名 `dns.<region>.myhuaweicloud.com`。
+- 华为云使用 AK/SK + Region：AK/SK 在控制台「我的凭证」→「访问密钥」创建，
+  建议使用只授 DNS 云解析权限的子账号；Region 决定 API 域名 `dns.<region>.myhuaweicloud.com`，
+  申请时提供常用区域菜单（北京 `cn-north-4`（默认）/ 上海 `cn-east-3` / 广州 `cn-south-1` /
+  香港 `ap-southeast-1`），也可手动输入 Region ID。
   凭据由 acme.sh 保存在仅 root 可读的 `/etc/sb/acme/account.conf`，任何状态页都不会回显。
 - 证书管理页会显示当前与备用证书的 SAN、签发机构、生效/到期时间、剩余天数、
   SHA-256 指纹和证书/私钥匹配状态；任何状态页都不会回显 API Token。

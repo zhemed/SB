@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.2.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.2.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.2.0' ]] ||
-  fail "VERSION file is not 5.2.0"
-grep -Fq -- "当前项目版本：\`5.2.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.2.0"
+[[ $(grep -Fxc 'sb_version="v5.2.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.2.1"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.2.1' ]] ||
+  fail "VERSION file is not 5.2.1"
+grep -Fq -- "当前项目版本：\`5.2.1\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.2.1"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -91,7 +91,13 @@ for huawei_pattern in \
   '请选择 DNS 供应商' \
   'readp "请输入华为云 Access Key ID：' \
   'readp "请输入华为云 Secret Access Key：' \
-  'readp "请输入华为云 Region（如 cn-north-4）：' \
+  '请选择华为云 Region' \
+  '北京 cn-north-4' \
+  '上海 cn-east-3' \
+  '广州 cn-south-1' \
+  '香港 ap-southeast-1' \
+  '手动输入 Region ID' \
+  'readp "请输入华为云 Region ID（如 cn-north-4）：' \
   'dns_huaweicloud_aksk' \
   'SDK-HMAC-SHA256'; do
   grep -Fq -- "$huawei_pattern" "$ROOT_DIR/sb.sh" ||
