@@ -999,7 +999,7 @@ cert_store_list_adoptable(){
 
 cert_store_owner_present(){
   case ${1-} in
-    sb) return 0 ;;
+    sb) [[ -s $ACME_IDENTITY ]] ;;
     acme-nginx) [[ -d /etc/acme-nginx || -x /usr/local/bin/acme-nginx ]] ;;
     *) return 1 ;;
   esac

@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.7.0"
+sb_version="v5.7.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1379,7 +1379,7 @@ cert_store_list_adoptable(){
 
 cert_store_owner_present(){
   case ${1-} in
-    sb) return 0 ;;
+    sb) [[ -s $ACME_IDENTITY ]] ;;
     acme-nginx) [[ -d /etc/acme-nginx || -x /usr/local/bin/acme-nginx ]] ;;
     *) return 1 ;;
   esac
@@ -7857,6 +7857,10 @@ install_singbox(){
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
+  if config_uses_shared_certificate; then
+    shared_apex=$(shared_certificate_domain 2>/dev/null || true)
+    [[ -n $shared_apex ]] && cert_store_reconcile_ownership "$shared_apex" || true
+  fi
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
