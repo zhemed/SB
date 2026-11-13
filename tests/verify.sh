@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.7.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.7.1"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.1' ]] ||
-  fail "VERSION file is not 5.7.1"
-grep -Fq -- "当前项目版本：\`5.7.1\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.7.1"
+[[ $(grep -Fxc 'sb_version="v5.7.2"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.7.2"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.2' ]] ||
+  fail "VERSION file is not 5.7.2"
+grep -Fq -- "当前项目版本：\`5.7.2\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.7.2"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -184,6 +184,8 @@ grep -Fq -- 'nginx -t >/dev/null 2>&1 && systemctl reload nginx' "$ROOT_DIR/sb.s
   fail "auto-created nginx reload hook content is missing"
 grep -Fq -- 'ensure_acme_nginx_sb_restart_hook(){' "$ROOT_DIR/sb.sh" ||
   fail "sb does not auto-create the acme-nginx sb restart hook"
+grep -Fq -- 'ensure_shared_cert_store_published(){' "$ROOT_DIR/sb.sh" ||
+  fail "clean-machine shared store bootstrap is missing"
 for owner_pattern in 'cert_store_release_ownership(){' 'cert_store_reconcile_ownership(){' \
   'cert_store_owner_present(){'; do
   grep -Fq -- "$owner_pattern" "$ROOT_DIR/sb.sh" ||

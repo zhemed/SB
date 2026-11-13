@@ -43,6 +43,8 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
+  ensure_shared_cert_store_published || true
+  ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
   if config_uses_shared_certificate; then
@@ -209,6 +211,8 @@ prepare_runtime_state || exit 1
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
+  ensure_shared_cert_store_published || true
+  ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
 fi

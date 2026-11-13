@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.7.1"
+sb_version="v5.7.2"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1486,6 +1486,28 @@ ensure_acme_nginx_sb_restart_hook(){
     rm -f "$tmp"
     return 1
   fi
+}
+
+# 干净机器检测到对端消费者工具时，自动创建共享库并发布当前 ACME 证书（不重新签发）。
+ensure_shared_cert_store_published(){
+  local root identity cert key alt
+  root=$(cert_store_root) || return 0
+  [[ -d $root && ! -L $root ]] && return 0
+  config_uses_acme_certificate || return 0
+  identity=$(read_acme_identity 2>/dev/null) || return 0
+  load_certificate_metadata "$ACME_CERT" "$ACME_KEY" 2>/dev/null || return 0
+  [[ $CERT_META_STATE == valid ]] || return 0
+  cert=$ACME_CERT
+  key=$ACME_KEY
+  [[ -L $cert ]] && cert=$(readlink -f -- "$cert")
+  [[ -L $key ]] && key=$(readlink -f -- "$key")
+  alt=
+  if certificate_dns_names "$ACME_CERT" 2>/dev/null | tr ',' '\n' |
+       sed 's/^[[:space:]]*//' | grep -Fxiq -- "*.$identity"; then
+    alt="*.$identity"
+  fi
+  cert_store_publish "$identity" "$cert" "$key" "$alt" sb letsencrypt >/dev/null 2>&1 || return 0
+  yellow "检测到对端证书消费者，已自动创建共享证书库并发布当前证书（owner: sb）"
 }
 
 shared_certificate_is_valid(){
@@ -7855,6 +7877,8 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
+  ensure_shared_cert_store_published || true
+  ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
   if config_uses_shared_certificate; then
@@ -8021,6 +8045,8 @@ prepare_runtime_state || exit 1
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
+  ensure_shared_cert_store_published || true
+  ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
 fi

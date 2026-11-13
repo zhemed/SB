@@ -1108,6 +1108,28 @@ ensure_acme_nginx_sb_restart_hook(){
   fi
 }
 
+# 干净机器检测到对端消费者工具时，自动创建共享库并发布当前 ACME 证书（不重新签发）。
+ensure_shared_cert_store_published(){
+  local root identity cert key alt
+  root=$(cert_store_root) || return 0
+  [[ -d $root && ! -L $root ]] && return 0
+  config_uses_acme_certificate || return 0
+  identity=$(read_acme_identity 2>/dev/null) || return 0
+  load_certificate_metadata "$ACME_CERT" "$ACME_KEY" 2>/dev/null || return 0
+  [[ $CERT_META_STATE == valid ]] || return 0
+  cert=$ACME_CERT
+  key=$ACME_KEY
+  [[ -L $cert ]] && cert=$(readlink -f -- "$cert")
+  [[ -L $key ]] && key=$(readlink -f -- "$key")
+  alt=
+  if certificate_dns_names "$ACME_CERT" 2>/dev/null | tr ',' '\n' |
+       sed 's/^[[:space:]]*//' | grep -Fxiq -- "*.$identity"; then
+    alt="*.$identity"
+  fi
+  cert_store_publish "$identity" "$cert" "$key" "$alt" sb letsencrypt >/dev/null 2>&1 || return 0
+  yellow "检测到对端证书消费者，已自动创建共享证书库并发布当前证书（owner: sb）"
+}
+
 shared_certificate_is_valid(){
   local apex wildcard
   config_uses_shared_certificate || return 1
