@@ -456,3 +456,43 @@
 
 - 用真实华为云 AK/SK + 托管域名在一台 VPS 上实测签发/续期（本机无网络凭据，未实测 API）
 - CI 的 ShellCheck 版本若高于本地 0.8.0，需观察是否出现新增告警
+
+
+## Session 16: 5.2.1：华为云 Region 菜单 + 49.9刀 VPS 华为云证书真机验证
+<!-- trellis-session: v=2 fp=3daa9611ee4194a9 -->
+
+**Date**: 2026-11-13
+**Task**: 5.2.1：华为云 Region 菜单 + 49.9刀 VPS 华为云证书真机验证
+**Branch**: `main`
+
+### Summary
+
+华为云证书申请 Region 改为常用区域菜单（默认北京 cn-north-4），发布 5.2.1；随后在 49.9刀-VPS（zrco.cc）只读检查已装好的 sb：华为云 AK/SK DNS-01 真实签发 Let's Encrypt 证书成功，续期组件/部署/服务均正常。
+
+### Main Changes
+
+- src/10-acme.sh：新增 prompt_huaweicloud_region（北京/上海/广州/香港 + 手动输入，默认北京），凭据流程改调它
+- tests/unit.sh：区域菜单用例（默认值/数字选项/手动输入/非法重试）；tests/verify.sh：菜单文案 pin、版本 pin 升 5.2.1
+- README/VERSION/00-bootstrap：5.2.0 → 5.2.1；.trellis/spec/runtime/certificates.md 记录 Region 菜单契约
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `59fdebe` | [task:11-13-huawei-region-menu] 5.2.1：华为云 Region 改为常用区域菜单（默认北京） |
+
+### Testing
+
+- [OK] bash scripts/build.sh --check → 0876f72…
+- [OK] bash tests/verify.sh → verification passed: 0876f72…（unit/repair 53/replay 22，shellcheck 0.11.0）
+- [OK] CI run 43426204725 success；线上 sb.sh digest 0876f72… 与本地一致
+- [OK] 49.9刀-VPS 只读检查：sb v5.2.1、服务 active、华为云 account.conf（region cn-north-4）、插件 161 行 marker 1、LE 证书 zrco.cc 有效期至 2027-02-11、key MATCH、cron/runner/hook 正常、无残留恢复点
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 续期链路尚未实际跑过一次：等 cron（15:17 UTC）自动跑，或手动执行 /etc/sb/acme_renew.sh 验证
+- 09-28-script-audit / 09-28-ui-latency 两个旧 in_progress 任务属于其它对话，未动

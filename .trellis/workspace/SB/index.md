@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
+- **Total Sessions**: 16
 - **Last Active**: 2026-11-13
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~458 | Active |
+| `journal-1.md` | ~498 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-11-13 | 5.2.1：华为云 Region 菜单 + 49.9刀 VPS 华为云证书真机验证 | `59fdebe` | `main` |
 | 15 | 2026-11-13 | 5.2.0：证书签发支持华为云 DNS（AK/SK） | `e30c5be`, `4a7d21c` | `main` |
 | 14 | 2026-09-28 | 三轮审计与精简：把行为回放固化成门禁第 8 步 | `806cd06`, `fe760e2`, `0e24949`, `9887c6d`, `c27c37f`, `445cc3d` | `main` |
 | 13 | 2026-09-28 | 5.1.0：彻底移除 SS、菜单收拾、删注释（含本次几个错） | `5f7208a`, `2e8601b`, `a63695f`, `9987e9b`, `8f947eb` | `main` |
