@@ -746,6 +746,28 @@ expect_failure "duplicate managed inbounds are rejected" \
 expect_success "self-signed repair certificate is generated" generate_self_signed_certificate
 expect_success "generated self-signed certificate is valid" self_signed_certificate_is_valid
 
+shared_certificate_repair_is_detected(){
+  (
+    local store="$TEMP_DIR/cert-store-repair" config="$TEMP_DIR/shared-repair.json"
+    export CERT_STORE_VERSION=1
+    export CERT_STORE="$store"
+    rm -rf "$store"
+    cert_store_publish www.bing.com "$SB_DIR/cert.pem" "$SB_DIR/private.key" '' sb letsencrypt || return 1
+    jq --arg cert "$store/www.bing.com/current/fullchain.pem" \
+      --arg key "$store/www.bing.com/current/private.key" '
+      (.inbounds[] | select(.tag == "hy2-sb") | .tls.certificate_path) = $cert |
+      (.inbounds[] | select(.tag == "hy2-sb") | .tls.key_path) = $key
+    ' "$SB_CONFIG" > "$config" || return 1
+    load_repair_config_values "$config" || return 1
+    [[ $REPAIR_CERT_MODE == shared ]] || return 1
+    ensure_repair_certificate || return 1
+    [[ $REPAIR_CERT_ACTION == *共享证书正常* ]]
+  )
+}
+expect_success "repair detects and validates a shared certificate" \
+  shared_certificate_repair_is_detected
+pass "repair treats a valid shared certificate as healthy"
+
 expect_success "last-good configuration is saved" save_last_good_config "$SB_CONFIG"
 [[ -f $SB_LAST_GOOD && ! -L $SB_LAST_GOOD ]] || fail "last-good configuration is not regular"
 pass "last-good configuration is a regular file"

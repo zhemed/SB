@@ -1323,10 +1323,12 @@ cert_store_publish_locked(){
 }
 
 cert_store_set_owner_locked(){
-  local apex=$1 owner=$2 dir meta_tmp now
+  local apex=$1 owner=$2 dir meta_tmp now updated_by
   cert_store_read_meta "$apex" || return 1
   dir=$(cert_store_domain_dir "$apex") || return 1
   now=$(date +%s) || return 1
+  updated_by=$owner
+  [[ $owner == none ]] && updated_by=$CERT_STORE_META_UPDATED_BY
   meta_tmp=$(mktemp "$dir/.meta.XXXXXX") || return 1
   if ! {
     printf 'version=%s\n' "$CERT_STORE_META_VERSION"
@@ -1338,7 +1340,7 @@ cert_store_set_owner_locked(){
     printf 'not_after=%s\n' "$CERT_STORE_META_NOT_AFTER"
     printf 'fingerprint=%s\n' "$CERT_STORE_META_FINGERPRINT"
     printf 'updated_at=%s\n' "$now"
-    printf 'updated_by=%s\n' "$owner"
+    printf 'updated_by=%s\n' "$updated_by"
   } > "$meta_tmp" || ! chmod 600 "$meta_tmp" ||
      ! mv -Tf -- "$meta_tmp" "$dir/meta.env"; then
     rm -f -- "$meta_tmp"
@@ -1357,6 +1359,124 @@ cert_store_take_ownership(){
 cert_store_owner(){
   cert_store_read_meta "${1-}" >/dev/null || return 1
   printf '%s\n' "$CERT_STORE_META_OWNER"
+}
+
+cert_store_list_adoptable(){
+  local root dir apex alt
+  root=$(cert_store_root) || return 1
+  [[ -d $root && ! -L $root ]] || return 1
+  for dir in "$root"/*/; do
+    [[ -d $dir && ! -L $dir ]] || continue
+    dir=${dir%/}
+    apex=${dir##*/}
+    valid_hostname "$apex" || continue
+    cert_store_read_meta "$apex" >/dev/null 2>&1 || continue
+    alt=$CERT_STORE_META_ALT
+    cert_store_certificate_state "$apex" "$alt" >/dev/null 2>&1 || continue
+    printf '%s|%s|%s|%s\n' "$apex" "$alt" "$CERT_STORE_META_OWNER" "$CERT_STORE_META_NOT_AFTER"
+  done
+}
+
+cert_shared(){
+  local apex=$1 wildcard=${2-}
+  if ! cert_store_certificate_state "$apex" "$wildcard"; then
+    red "共享证书库中没有可用证书：$apex"
+    return 1
+  fi
+  certificatec_hy2=$CERT_STORE_CERT
+  certificatep_hy2=$CERT_STORE_KEY
+  use_acme_cert=0
+}
+
+config_uses_shared_certificate(){
+  local root cert key cert_rest key_rest
+  [[ -s $SB_CONFIG ]] || return 1
+  root=$(cert_store_root) || return 1
+  cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.certificate_path | select(type == "string")' "$SB_CONFIG" 2>/dev/null) || return 1
+  key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.key_path | select(type == "string")' "$SB_CONFIG" 2>/dev/null) || return 1
+  [[ $cert == "$root"/*/current/fullchain.pem &&
+     $key == "$root"/*/current/private.key ]] || return 1
+  cert_rest=${cert#"$root"/}
+  key_rest=${key#"$root"/}
+  [[ ${cert_rest%%/*} == "${key_rest%%/*}" ]]
+}
+
+shared_certificate_domain(){
+  local root cert rest apex
+  [[ -s $SB_CONFIG ]] || return 1
+  root=$(cert_store_root) || return 1
+  cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.certificate_path | select(type == "string")' "$SB_CONFIG" 2>/dev/null) || return 1
+  [[ $cert == "$root"/*/current/fullchain.pem ]] || return 1
+  rest=${cert#"$root"/}
+  apex=${rest%%/*}
+  valid_hostname "$apex" || return 1
+  printf '%s\n' "$apex"
+}
+
+shared_certificate_is_valid(){
+  local apex wildcard
+  config_uses_shared_certificate || return 1
+  apex=$(shared_certificate_domain 2>/dev/null) || return 1
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 1
+  wildcard=$CERT_STORE_META_ALT
+  cert_store_certificate_state "$apex" "$wildcard" >/dev/null 2>&1 || return 1
+  [[ $CERT_STORE_CERT == "$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$SB_CONFIG" 2>/dev/null)" ]]
+}
+
+choose_shared_certificate(){
+  local entry apex alt owner not_after choice index=0
+  local -a entries=()
+  mapfile -t entries < <(cert_store_list_adoptable 2>/dev/null)
+  if [[ ${#entries[@]} -eq 0 ]]; then
+    red "共享证书库中没有可用证书"
+    return 1
+  fi
+  green "共享证书库中的可用证书："
+  for entry in "${entries[@]}"; do
+    index=$((index + 1))
+    IFS='|' read -r apex alt owner not_after <<< "$entry"
+    printf '  %s：%s%s（owner: %s，到期: %s）\n' "$index" "$apex" \
+      "${alt:+ + $alt}" "${owner:-未知}" "$(format_epoch_utc "$not_after" 2>/dev/null || echo 未知)"
+  done
+  readp "请选择要使用的证书【1-${#entries[@]}】（回车取消）：" choice || return 3
+  [[ -n $choice ]] || return 3
+  if [[ ! $choice =~ ^[0-9]+$ ]] || ((choice < 1 || choice > ${#entries[@]})); then
+    red "输入无效"
+    return 1
+  fi
+  entry=${entries[$((choice - 1))]}
+  IFS='|' read -r apex alt owner not_after <<< "$entry"
+  cert_shared "$apex" "$alt" || return 1
+  green "已选择共享证书：$apex${alt:+ + $alt}（owner: ${owner:-未知}）"
+}
+
+publish_acme_certificate_to_store(){
+  local identity alt='' wildcard
+  if ! config_uses_acme_certificate; then
+    red "当前未使用 sb 自己签发的 ACME 证书"
+    return 1
+  fi
+  identity=$(read_acme_identity 2>/dev/null) || {
+    red "无法读取 ACME 身份文件"
+    return 1
+  }
+  if ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" || [[ $CERT_META_STATE != valid ]]; then
+    red "当前 ACME 证书无效"
+    return 1
+  fi
+  wildcard="*.$identity"
+  if certificate_dns_names "$ACME_CERT" 2>/dev/null | tr ',' '\n' |
+       sed 's/^[[:space:]]*//' | grep -Fxiq -- "$wildcard"; then
+    alt=$wildcard
+  fi
+  if ! cert_store_publish "$identity" "$ACME_CERT" "$ACME_KEY" "$alt" sb letsencrypt; then
+    red "发布到共享证书库失败"
+    return 1
+  fi
+  green "当前 ACME 证书已发布到共享证书库（owner: sb）"
 }
 
 install_official_acme(){
@@ -2643,7 +2763,8 @@ SELFSIGN
 }
 
 inscertificate(){
-  local menu acme_name
+  local menu acme_name max adoptable_count
+  local -a adoptable_entries=()
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "二、生成并设置相关证书"
   echo
@@ -2655,6 +2776,8 @@ inscertificate(){
   echo
   blue "生成bing自签证书成功"
   echo
+  mapfile -t adoptable_entries < <(cert_store_list_adoptable 2>/dev/null)
+  adoptable_count=${#adoptable_entries[@]}
   if acme_name=$(detect_acme_identity); then
     yellow "检测到可用的 ACME 域名证书：$acme_name"
     green "请选择 Hysteria2 证书模式"
@@ -2662,8 +2785,17 @@ inscertificate(){
     yellow "2：使用已有的 $acme_name 域名证书"
     yellow "3：通过 DNS API 重新申请（Cloudflare / 华为云）"
     yellow "   重新申请会删除本脚本现有的 ACME 证书与续期配置"
+    max=3
+    if ((adoptable_count > 0)); then
+      yellow "4：使用共享证书库中的证书（领养，不再申请）"
+      max=4
+    fi
     while true; do
-      readp "请选择【1-3】：" menu || return 1
+      readp "请选择【1-${max}】：" menu || return 1
+      if [[ $menu =~ ^[0-9]+$ ]] && ((menu > max)); then
+        red "请输入1-${max}"
+        continue
+      fi
       case "$menu" in
         ""|1) cert_self_signed; break ;;
         2)
@@ -2677,15 +2809,27 @@ inscertificate(){
           cert_self_signed
           break
           ;;
-        *) red "请输入1、2或3" ;;
+        4)
+          if choose_shared_certificate; then break; fi
+          ;;
+        *) red "请输入1-${max}" ;;
       esac
     done
   else
     green "请选择 Hysteria2 证书模式"
     yellow "1：使用自签证书 (回车默认)"
     yellow "2：使用官方 acme.sh + DNS API 申请域名证书（Cloudflare / 华为云）"
+    max=2
+    if ((adoptable_count > 0)); then
+      yellow "3：使用共享证书库中的证书（领养，不再申请）"
+      max=3
+    fi
     while true; do
-      readp "请选择【1-2】：" menu || return 1
+      readp "请选择【1-${max}】：" menu || return 1
+      if [[ $menu =~ ^[0-9]+$ ]] && ((menu > max)); then
+        red "请输入1-${max}"
+        continue
+      fi
       case "$menu" in
         ""|1) cert_self_signed; break ;;
         2)
@@ -2694,7 +2838,10 @@ inscertificate(){
           cert_self_signed
           break
           ;;
-        *) red "请输入1或2" ;;
+        3)
+          if choose_shared_certificate; then break; fi
+          ;;
+        *) red "请输入1-${max}" ;;
       esac
     done
   fi
@@ -4754,6 +4901,10 @@ ensure_acme_renew_cron(){
     if crontab_has_acme_entries "$current" || acme_renew_artifacts_exist; then
       remove_acme_renew_cron
     fi
+  elif config_uses_shared_certificate; then
+    if crontab_has_acme_entries "$current" || acme_renew_artifacts_exist; then
+      remove_acme_renew_cron
+    fi
   elif crontab_has_acme_entries "$current"; then
     red "无法确认当前证书模式；为避免中断续期，已保留现有 ACME cron"
     return 1
@@ -4763,6 +4914,8 @@ ensure_acme_renew_cron(){
 current_certificate_mode(){
   if config_uses_acme_certificate; then
     printf '%s\n' acme
+  elif config_uses_shared_certificate; then
+    printf '%s\n' shared
   elif config_uses_self_signed_certificate; then
     printf '%s\n' self_signed
   else
@@ -4880,9 +5033,28 @@ show_acme_certificate_schedule(){
 }
 
 inspect_acme_renewal_health(){
-  local current state now identity reference_epoch provider plugin
+  local current state now identity reference_epoch provider plugin apex owner
   ACME_RENEW_HEALTH=normal
   ACME_RENEW_HEALTH_DETAIL=正常
+  if config_uses_shared_certificate; then
+    if ! shared_certificate_is_valid; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="共享证书库证书无效或路径不匹配"
+    elif ! apex=$(shared_certificate_domain 2>/dev/null) ||
+         ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="共享证书库元数据不可读"
+    else
+      owner=$CERT_STORE_META_OWNER
+      if [[ $owner == none ]]; then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="共享证书没有 owner，续期需先移交签发权"
+      else
+        ACME_RENEW_HEALTH_DETAIL="共享证书（续期负责人: $owner）"
+      fi
+    fi
+    return 0
+  fi
   if [[ ! -x $ACME_BIN || ! -s $ACME_IDENTITY ]]; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="acme.sh 组件不完整"
@@ -5016,6 +5188,30 @@ show_certificate_dashboard(){
         show_acme_renewal_status "$identity"
       else
         red "ACME 身份文件与证书不一致"
+      fi
+      ;;
+    shared)
+      identity=$(shared_certificate_domain 2>/dev/null || true)
+      if [[ -n $identity ]]; then
+        show_certificate_metadata "共享证书库证书" "$current_cert" "$current_key" "$identity" || true
+        printf '共享证书库: %s/%s\n' "$(cert_store_root)" "$identity"
+        if cert_store_read_meta "$identity" >/dev/null 2>&1; then
+          printf '续期负责人(owner): %s\n' "$CERT_STORE_META_OWNER"
+          case $CERT_STORE_META_OWNER in
+            sb) yellow "续期方式: sb 负责续期，续期成功后发布回共享库" ;;
+            acme-nginx) yellow "续期方式: 由 acme-nginx 负责续期；sb 不重复签发" ;;
+            *) red "续期方式: 共享证书没有有效 owner，请先移交签发权" ;;
+          esac
+        else
+          red "共享证书库元数据不可读"
+        fi
+        if shared_certificate_is_valid; then
+          green "共享证书校验: 通过"
+        else
+          red "共享证书校验: 失败（路径/有效期/SAN/指纹）"
+        fi
+      else
+        red "共享证书路径异常或无法解析域名"
       fi
       ;;
     self_signed)
@@ -5246,8 +5442,9 @@ change_cert_mode(){
         green "3：修复自动续期"
         green "4：更换域名、DNS 供应商或凭据"
         green "5：切换为自签 bing 证书"
+        green "6：发布当前证书到共享证书库"
         green "0：返回主菜单"
-        readp "请选择【0-5】：" menu || return 1
+        readp "请选择【0-6】：" menu || return 1
         case $menu in
           1) run_acme_renewal_check; readp "按回车返回证书管理..." ;;
           2) force_acme_reissue; readp "按回车返回证书管理..." ;;
@@ -5261,16 +5458,53 @@ change_cert_mode(){
               with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
             readp "按回车返回证书管理..."
             ;;
+          6) publish_acme_certificate_to_store; readp "按回车返回证书管理..." ;;
           ""|0) return 0 ;;
-          *) red "请输入0、1、2、3、4或5"; sleep 1 ;;
+          *) red "请输入0-6"; sleep 1 ;;
+        esac
+        ;;
+      shared)
+        green "1：检查共享证书库状态"
+        green "2：切换为共享证书库中的其他证书"
+        green "3：切换为自签 bing 证书"
+        green "4：申请并切换为 ACME 证书（Cloudflare / 华为云）"
+        green "0：返回主菜单"
+        readp "请选择【0-4】：" menu || return 1
+        case $menu in
+          1)
+            if shared_certificate_is_valid; then
+              green "共享证书有效"
+            else
+              red "共享证书无效，请检查 $(cert_store_root)"
+            fi
+            readp "按回车返回证书管理..."
+            ;;
+          2)
+            if certificate_action_service_ready && choose_shared_certificate; then
+              activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+            fi
+            readp "按回车返回证书管理..."
+            ;;
+          3)
+            certificate_action_service_ready &&
+              with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+            readp "按回车返回证书管理..."
+            ;;
+          4)
+            with_acme_lock apply_new_acme_certificate
+            readp "按回车返回证书管理..."
+            ;;
+          ""|0) return 0 ;;
+          *) red "请输入0、1、2、3或4"; sleep 1 ;;
         esac
         ;;
       self_signed)
         if acme_name=$(detect_acme_identity 2>/dev/null); then
           green "1：切换为已有 ACME 证书 ($acme_name)"
           green "2：申请新的 ACME 证书（Cloudflare / 华为云）"
+          green "3：使用共享证书库中的证书（领养）"
           green "0：返回主菜单"
-          readp "请选择【0-2】：" menu || return 1
+          readp "请选择【0-3】：" menu || return 1
           case $menu in
             1)
               certificate_action_service_ready && cert_acme &&
@@ -5281,28 +5515,42 @@ change_cert_mode(){
               with_acme_lock apply_new_acme_certificate
               readp "按回车返回证书管理..."
               ;;
+            3)
+              if certificate_action_service_ready && choose_shared_certificate; then
+                activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+              fi
+              readp "按回车返回证书管理..."
+              ;;
             ""|0) return 0 ;;
-            *) red "请输入0、1或2"; sleep 1 ;;
+            *) red "请输入0、1、2或3"; sleep 1 ;;
           esac
         else
           green "1：申请 ACME 证书（Cloudflare / 华为云）"
+          green "2：使用共享证书库中的证书（领养）"
           green "0：返回主菜单"
-          readp "请选择【0-1】：" menu || return 1
+          readp "请选择【0-2】：" menu || return 1
           case $menu in
             1)
               with_acme_lock apply_new_acme_certificate
               readp "按回车返回证书管理..."
               ;;
+            2)
+              if certificate_action_service_ready && choose_shared_certificate; then
+                activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+              fi
+              readp "按回车返回证书管理..."
+              ;;
             ""|0) return 0 ;;
-            *) red "请输入0或1"; sleep 1 ;;
+            *) red "请输入0、1或2"; sleep 1 ;;
           esac
         fi
         ;;
       *)
         green "1：切换为自签 bing 证书"
         green "2：申请并切换为 ACME 证书（Cloudflare / 华为云）"
+        green "3：使用共享证书库中的证书（领养）"
         green "0：返回主菜单"
-        readp "请选择【0-2】：" menu || return 1
+        readp "请选择【0-3】：" menu || return 1
         case $menu in
           1)
             certificate_action_service_ready &&
@@ -5313,8 +5561,14 @@ change_cert_mode(){
             with_acme_lock apply_new_acme_certificate
             readp "按回车返回证书管理..."
             ;;
+          3)
+            if certificate_action_service_ready && choose_shared_certificate; then
+              activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+            fi
+            readp "按回车返回证书管理..."
+            ;;
           ""|0) return 0 ;;
-          *) red "请输入0、1或2"; sleep 1 ;;
+          *) red "请输入0、1、2或3"; sleep 1 ;;
         esac
         ;;
     esac
@@ -6480,6 +6734,9 @@ load_repair_config_values(){
     REPAIR_CERT_MODE=self_signed
   elif [[ $REPAIR_CERT_PATH == "$ACME_CERT" && $REPAIR_KEY_PATH == "$ACME_KEY" ]]; then
     REPAIR_CERT_MODE=acme
+  elif [[ $REPAIR_CERT_PATH == "$(cert_store_root)"/*/current/fullchain.pem &&
+          $REPAIR_KEY_PATH == "$(cert_store_root)"/*/current/private.key ]]; then
+    REPAIR_CERT_MODE=shared
   else
     return 1
   fi
@@ -6566,6 +6823,7 @@ repair_acme_certificate_from_storage(){
 }
 
 ensure_repair_certificate(){
+  local repair_apex
   REPAIR_CERT_FELL_BACK=0
   case $REPAIR_CERT_MODE in
     self_signed)
@@ -6596,6 +6854,26 @@ ensure_repair_certificate(){
         REPAIR_CERT_MODE=self_signed
         REPAIR_CERT_FELL_BACK=1
         REPAIR_CERT_ACTION="ACME未删除；服务已临时切换为自签证书"
+      fi
+      ;;
+    shared)
+      repair_apex=${REPAIR_CERT_PATH#"$(cert_store_root)"/}
+      repair_apex=${repair_apex%%/*}
+      if valid_hostname "$repair_apex" &&
+         cert_store_read_meta "$repair_apex" >/dev/null 2>&1 &&
+         cert_store_certificate_state "$repair_apex" "$CERT_STORE_META_ALT" >/dev/null 2>&1 &&
+         [[ $CERT_STORE_CERT == "$REPAIR_CERT_PATH" && $CERT_STORE_KEY == "$REPAIR_KEY_PATH" ]]; then
+        REPAIR_CERT_ACTION="共享证书正常"
+      else
+        yellow "共享证书库证书暂时不可用，正在切换到有效自签证书以恢复服务"
+        if ! self_signed_certificate_is_valid && ! generate_self_signed_certificate; then
+          return 1
+        fi
+        REPAIR_CERT_PATH="$SB_DIR/cert.pem"
+        REPAIR_KEY_PATH="$SB_DIR/private.key"
+        REPAIR_CERT_MODE=self_signed
+        REPAIR_CERT_FELL_BACK=1
+        REPAIR_CERT_ACTION="共享证书不可用；服务已临时切换为自签证书"
       fi
       ;;
     *) return 1 ;;

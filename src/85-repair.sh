@@ -39,6 +39,9 @@ load_repair_config_values(){
     REPAIR_CERT_MODE=self_signed
   elif [[ $REPAIR_CERT_PATH == "$ACME_CERT" && $REPAIR_KEY_PATH == "$ACME_KEY" ]]; then
     REPAIR_CERT_MODE=acme
+  elif [[ $REPAIR_CERT_PATH == "$(cert_store_root)"/*/current/fullchain.pem &&
+          $REPAIR_KEY_PATH == "$(cert_store_root)"/*/current/private.key ]]; then
+    REPAIR_CERT_MODE=shared
   else
     return 1
   fi
@@ -125,6 +128,7 @@ repair_acme_certificate_from_storage(){
 }
 
 ensure_repair_certificate(){
+  local repair_apex
   REPAIR_CERT_FELL_BACK=0
   case $REPAIR_CERT_MODE in
     self_signed)
@@ -155,6 +159,26 @@ ensure_repair_certificate(){
         REPAIR_CERT_MODE=self_signed
         REPAIR_CERT_FELL_BACK=1
         REPAIR_CERT_ACTION="ACME未删除；服务已临时切换为自签证书"
+      fi
+      ;;
+    shared)
+      repair_apex=${REPAIR_CERT_PATH#"$(cert_store_root)"/}
+      repair_apex=${repair_apex%%/*}
+      if valid_hostname "$repair_apex" &&
+         cert_store_read_meta "$repair_apex" >/dev/null 2>&1 &&
+         cert_store_certificate_state "$repair_apex" "$CERT_STORE_META_ALT" >/dev/null 2>&1 &&
+         [[ $CERT_STORE_CERT == "$REPAIR_CERT_PATH" && $CERT_STORE_KEY == "$REPAIR_KEY_PATH" ]]; then
+        REPAIR_CERT_ACTION="共享证书正常"
+      else
+        yellow "共享证书库证书暂时不可用，正在切换到有效自签证书以恢复服务"
+        if ! self_signed_certificate_is_valid && ! generate_self_signed_certificate; then
+          return 1
+        fi
+        REPAIR_CERT_PATH="$SB_DIR/cert.pem"
+        REPAIR_KEY_PATH="$SB_DIR/private.key"
+        REPAIR_CERT_MODE=self_signed
+        REPAIR_CERT_FELL_BACK=1
+        REPAIR_CERT_ACTION="共享证书不可用；服务已临时切换为自签证书"
       fi
       ;;
     *) return 1 ;;

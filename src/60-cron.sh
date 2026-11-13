@@ -607,6 +607,10 @@ ensure_acme_renew_cron(){
     if crontab_has_acme_entries "$current" || acme_renew_artifacts_exist; then
       remove_acme_renew_cron
     fi
+  elif config_uses_shared_certificate; then
+    if crontab_has_acme_entries "$current" || acme_renew_artifacts_exist; then
+      remove_acme_renew_cron
+    fi
   elif crontab_has_acme_entries "$current"; then
     red "无法确认当前证书模式；为避免中断续期，已保留现有 ACME cron"
     return 1

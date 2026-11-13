@@ -2,6 +2,8 @@
 current_certificate_mode(){
   if config_uses_acme_certificate; then
     printf '%s\n' acme
+  elif config_uses_shared_certificate; then
+    printf '%s\n' shared
   elif config_uses_self_signed_certificate; then
     printf '%s\n' self_signed
   else
@@ -119,9 +121,28 @@ show_acme_certificate_schedule(){
 }
 
 inspect_acme_renewal_health(){
-  local current state now identity reference_epoch provider plugin
+  local current state now identity reference_epoch provider plugin apex owner
   ACME_RENEW_HEALTH=normal
   ACME_RENEW_HEALTH_DETAIL=正常
+  if config_uses_shared_certificate; then
+    if ! shared_certificate_is_valid; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="共享证书库证书无效或路径不匹配"
+    elif ! apex=$(shared_certificate_domain 2>/dev/null) ||
+         ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+      ACME_RENEW_HEALTH=error
+      ACME_RENEW_HEALTH_DETAIL="共享证书库元数据不可读"
+    else
+      owner=$CERT_STORE_META_OWNER
+      if [[ $owner == none ]]; then
+        ACME_RENEW_HEALTH=error
+        ACME_RENEW_HEALTH_DETAIL="共享证书没有 owner，续期需先移交签发权"
+      else
+        ACME_RENEW_HEALTH_DETAIL="共享证书（续期负责人: $owner）"
+      fi
+    fi
+    return 0
+  fi
   if [[ ! -x $ACME_BIN || ! -s $ACME_IDENTITY ]]; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="acme.sh 组件不完整"
@@ -255,6 +276,30 @@ show_certificate_dashboard(){
         show_acme_renewal_status "$identity"
       else
         red "ACME 身份文件与证书不一致"
+      fi
+      ;;
+    shared)
+      identity=$(shared_certificate_domain 2>/dev/null || true)
+      if [[ -n $identity ]]; then
+        show_certificate_metadata "共享证书库证书" "$current_cert" "$current_key" "$identity" || true
+        printf '共享证书库: %s/%s\n' "$(cert_store_root)" "$identity"
+        if cert_store_read_meta "$identity" >/dev/null 2>&1; then
+          printf '续期负责人(owner): %s\n' "$CERT_STORE_META_OWNER"
+          case $CERT_STORE_META_OWNER in
+            sb) yellow "续期方式: sb 负责续期，续期成功后发布回共享库" ;;
+            acme-nginx) yellow "续期方式: 由 acme-nginx 负责续期；sb 不重复签发" ;;
+            *) red "续期方式: 共享证书没有有效 owner，请先移交签发权" ;;
+          esac
+        else
+          red "共享证书库元数据不可读"
+        fi
+        if shared_certificate_is_valid; then
+          green "共享证书校验: 通过"
+        else
+          red "共享证书校验: 失败（路径/有效期/SAN/指纹）"
+        fi
+      else
+        red "共享证书路径异常或无法解析域名"
       fi
       ;;
     self_signed)
@@ -485,8 +530,9 @@ change_cert_mode(){
         green "3：修复自动续期"
         green "4：更换域名、DNS 供应商或凭据"
         green "5：切换为自签 bing 证书"
+        green "6：发布当前证书到共享证书库"
         green "0：返回主菜单"
-        readp "请选择【0-5】：" menu || return 1
+        readp "请选择【0-6】：" menu || return 1
         case $menu in
           1) run_acme_renewal_check; readp "按回车返回证书管理..." ;;
           2) force_acme_reissue; readp "按回车返回证书管理..." ;;
@@ -500,16 +546,53 @@ change_cert_mode(){
               with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
             readp "按回车返回证书管理..."
             ;;
+          6) publish_acme_certificate_to_store; readp "按回车返回证书管理..." ;;
           ""|0) return 0 ;;
-          *) red "请输入0、1、2、3、4或5"; sleep 1 ;;
+          *) red "请输入0-6"; sleep 1 ;;
+        esac
+        ;;
+      shared)
+        green "1：检查共享证书库状态"
+        green "2：切换为共享证书库中的其他证书"
+        green "3：切换为自签 bing 证书"
+        green "4：申请并切换为 ACME 证书（Cloudflare / 华为云）"
+        green "0：返回主菜单"
+        readp "请选择【0-4】：" menu || return 1
+        case $menu in
+          1)
+            if shared_certificate_is_valid; then
+              green "共享证书有效"
+            else
+              red "共享证书无效，请检查 $(cert_store_root)"
+            fi
+            readp "按回车返回证书管理..."
+            ;;
+          2)
+            if certificate_action_service_ready && choose_shared_certificate; then
+              activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+            fi
+            readp "按回车返回证书管理..."
+            ;;
+          3)
+            certificate_action_service_ready &&
+              with_acme_lock activate_managed_certificate "$SB_DIR/cert.pem" "$SB_DIR/private.key"
+            readp "按回车返回证书管理..."
+            ;;
+          4)
+            with_acme_lock apply_new_acme_certificate
+            readp "按回车返回证书管理..."
+            ;;
+          ""|0) return 0 ;;
+          *) red "请输入0、1、2、3或4"; sleep 1 ;;
         esac
         ;;
       self_signed)
         if acme_name=$(detect_acme_identity 2>/dev/null); then
           green "1：切换为已有 ACME 证书 ($acme_name)"
           green "2：申请新的 ACME 证书（Cloudflare / 华为云）"
+          green "3：使用共享证书库中的证书（领养）"
           green "0：返回主菜单"
-          readp "请选择【0-2】：" menu || return 1
+          readp "请选择【0-3】：" menu || return 1
           case $menu in
             1)
               certificate_action_service_ready && cert_acme &&
@@ -520,28 +603,42 @@ change_cert_mode(){
               with_acme_lock apply_new_acme_certificate
               readp "按回车返回证书管理..."
               ;;
+            3)
+              if certificate_action_service_ready && choose_shared_certificate; then
+                activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+              fi
+              readp "按回车返回证书管理..."
+              ;;
             ""|0) return 0 ;;
-            *) red "请输入0、1或2"; sleep 1 ;;
+            *) red "请输入0、1、2或3"; sleep 1 ;;
           esac
         else
           green "1：申请 ACME 证书（Cloudflare / 华为云）"
+          green "2：使用共享证书库中的证书（领养）"
           green "0：返回主菜单"
-          readp "请选择【0-1】：" menu || return 1
+          readp "请选择【0-2】：" menu || return 1
           case $menu in
             1)
               with_acme_lock apply_new_acme_certificate
               readp "按回车返回证书管理..."
               ;;
+            2)
+              if certificate_action_service_ready && choose_shared_certificate; then
+                activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+              fi
+              readp "按回车返回证书管理..."
+              ;;
             ""|0) return 0 ;;
-            *) red "请输入0或1"; sleep 1 ;;
+            *) red "请输入0、1或2"; sleep 1 ;;
           esac
         fi
         ;;
       *)
         green "1：切换为自签 bing 证书"
         green "2：申请并切换为 ACME 证书（Cloudflare / 华为云）"
+        green "3：使用共享证书库中的证书（领养）"
         green "0：返回主菜单"
-        readp "请选择【0-2】：" menu || return 1
+        readp "请选择【0-3】：" menu || return 1
         case $menu in
           1)
             certificate_action_service_ready &&
@@ -552,8 +649,14 @@ change_cert_mode(){
             with_acme_lock apply_new_acme_certificate
             readp "按回车返回证书管理..."
             ;;
+          3)
+            if certificate_action_service_ready && choose_shared_certificate; then
+              activate_managed_certificate "$certificatec_hy2" "$certificatep_hy2"
+            fi
+            readp "按回车返回证书管理..."
+            ;;
           ""|0) return 0 ;;
-          *) red "请输入0、1或2"; sleep 1 ;;
+          *) red "请输入0、1、2或3"; sleep 1 ;;
         esac
         ;;
     esac

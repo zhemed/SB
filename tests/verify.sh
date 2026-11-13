@@ -149,6 +149,27 @@ for store_pattern in \
   grep -Fq -- "$store_pattern" "$ROOT_DIR/sb.sh" ||
     fail "shared certificate store helper is missing: $store_pattern"
 done
+# 共享证书模式（consumer）：菜单/健康检查/修复必须接上 store。
+for shared_mode_pattern in \
+  'cert_shared(){' \
+  'config_uses_shared_certificate(){' \
+  'shared_certificate_domain(){' \
+  'shared_certificate_is_valid(){' \
+  'choose_shared_certificate(){' \
+  'publish_acme_certificate_to_store(){' \
+  'cert_store_list_adoptable(){'; do
+  grep -Fq -- "$shared_mode_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "shared certificate mode helper is missing: $shared_mode_pattern"
+done
+for shared_mode_text in \
+  '使用共享证书库中的证书（领养，不再申请）' \
+  '发布当前证书到共享证书库' \
+  '共享证书库中的可用证书' \
+  '续期负责人(owner)' \
+  '共享证书库证书'; do
+  grep -Fq -- "$shared_mode_text" "$ROOT_DIR/sb.sh" ||
+    fail "shared certificate mode UI text is missing: $shared_mode_text"
+done
 
 for success_message in \
   '证书模式切换成功' \

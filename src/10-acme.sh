@@ -943,10 +943,12 @@ cert_store_publish_locked(){
 }
 
 cert_store_set_owner_locked(){
-  local apex=$1 owner=$2 dir meta_tmp now
+  local apex=$1 owner=$2 dir meta_tmp now updated_by
   cert_store_read_meta "$apex" || return 1
   dir=$(cert_store_domain_dir "$apex") || return 1
   now=$(date +%s) || return 1
+  updated_by=$owner
+  [[ $owner == none ]] && updated_by=$CERT_STORE_META_UPDATED_BY
   meta_tmp=$(mktemp "$dir/.meta.XXXXXX") || return 1
   if ! {
     printf 'version=%s\n' "$CERT_STORE_META_VERSION"
@@ -958,7 +960,7 @@ cert_store_set_owner_locked(){
     printf 'not_after=%s\n' "$CERT_STORE_META_NOT_AFTER"
     printf 'fingerprint=%s\n' "$CERT_STORE_META_FINGERPRINT"
     printf 'updated_at=%s\n' "$now"
-    printf 'updated_by=%s\n' "$owner"
+    printf 'updated_by=%s\n' "$updated_by"
   } > "$meta_tmp" || ! chmod 600 "$meta_tmp" ||
      ! mv -Tf -- "$meta_tmp" "$dir/meta.env"; then
     rm -f -- "$meta_tmp"
@@ -977,6 +979,124 @@ cert_store_take_ownership(){
 cert_store_owner(){
   cert_store_read_meta "${1-}" >/dev/null || return 1
   printf '%s\n' "$CERT_STORE_META_OWNER"
+}
+
+cert_store_list_adoptable(){
+  local root dir apex alt
+  root=$(cert_store_root) || return 1
+  [[ -d $root && ! -L $root ]] || return 1
+  for dir in "$root"/*/; do
+    [[ -d $dir && ! -L $dir ]] || continue
+    dir=${dir%/}
+    apex=${dir##*/}
+    valid_hostname "$apex" || continue
+    cert_store_read_meta "$apex" >/dev/null 2>&1 || continue
+    alt=$CERT_STORE_META_ALT
+    cert_store_certificate_state "$apex" "$alt" >/dev/null 2>&1 || continue
+    printf '%s|%s|%s|%s\n' "$apex" "$alt" "$CERT_STORE_META_OWNER" "$CERT_STORE_META_NOT_AFTER"
+  done
+}
+
+cert_shared(){
+  local apex=$1 wildcard=${2-}
+  if ! cert_store_certificate_state "$apex" "$wildcard"; then
+    red "共享证书库中没有可用证书：$apex"
+    return 1
+  fi
+  certificatec_hy2=$CERT_STORE_CERT
+  certificatep_hy2=$CERT_STORE_KEY
+  use_acme_cert=0
+}
+
+config_uses_shared_certificate(){
+  local root cert key cert_rest key_rest
+  [[ -s $SB_CONFIG ]] || return 1
+  root=$(cert_store_root) || return 1
+  cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.certificate_path | select(type == "string")' "$SB_CONFIG" 2>/dev/null) || return 1
+  key=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.key_path | select(type == "string")' "$SB_CONFIG" 2>/dev/null) || return 1
+  [[ $cert == "$root"/*/current/fullchain.pem &&
+     $key == "$root"/*/current/private.key ]] || return 1
+  cert_rest=${cert#"$root"/}
+  key_rest=${key#"$root"/}
+  [[ ${cert_rest%%/*} == "${key_rest%%/*}" ]]
+}
+
+shared_certificate_domain(){
+  local root cert rest apex
+  [[ -s $SB_CONFIG ]] || return 1
+  root=$(cert_store_root) || return 1
+  cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.certificate_path | select(type == "string")' "$SB_CONFIG" 2>/dev/null) || return 1
+  [[ $cert == "$root"/*/current/fullchain.pem ]] || return 1
+  rest=${cert#"$root"/}
+  apex=${rest%%/*}
+  valid_hostname "$apex" || return 1
+  printf '%s\n' "$apex"
+}
+
+shared_certificate_is_valid(){
+  local apex wildcard
+  config_uses_shared_certificate || return 1
+  apex=$(shared_certificate_domain 2>/dev/null) || return 1
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 1
+  wildcard=$CERT_STORE_META_ALT
+  cert_store_certificate_state "$apex" "$wildcard" >/dev/null 2>&1 || return 1
+  [[ $CERT_STORE_CERT == "$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") | .tls.certificate_path' "$SB_CONFIG" 2>/dev/null)" ]]
+}
+
+choose_shared_certificate(){
+  local entry apex alt owner not_after choice index=0
+  local -a entries=()
+  mapfile -t entries < <(cert_store_list_adoptable 2>/dev/null)
+  if [[ ${#entries[@]} -eq 0 ]]; then
+    red "共享证书库中没有可用证书"
+    return 1
+  fi
+  green "共享证书库中的可用证书："
+  for entry in "${entries[@]}"; do
+    index=$((index + 1))
+    IFS='|' read -r apex alt owner not_after <<< "$entry"
+    printf '  %s：%s%s（owner: %s，到期: %s）\n' "$index" "$apex" \
+      "${alt:+ + $alt}" "${owner:-未知}" "$(format_epoch_utc "$not_after" 2>/dev/null || echo 未知)"
+  done
+  readp "请选择要使用的证书【1-${#entries[@]}】（回车取消）：" choice || return 3
+  [[ -n $choice ]] || return 3
+  if [[ ! $choice =~ ^[0-9]+$ ]] || ((choice < 1 || choice > ${#entries[@]})); then
+    red "输入无效"
+    return 1
+  fi
+  entry=${entries[$((choice - 1))]}
+  IFS='|' read -r apex alt owner not_after <<< "$entry"
+  cert_shared "$apex" "$alt" || return 1
+  green "已选择共享证书：$apex${alt:+ + $alt}（owner: ${owner:-未知}）"
+}
+
+publish_acme_certificate_to_store(){
+  local identity alt='' wildcard
+  if ! config_uses_acme_certificate; then
+    red "当前未使用 sb 自己签发的 ACME 证书"
+    return 1
+  fi
+  identity=$(read_acme_identity 2>/dev/null) || {
+    red "无法读取 ACME 身份文件"
+    return 1
+  }
+  if ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" || [[ $CERT_META_STATE != valid ]]; then
+    red "当前 ACME 证书无效"
+    return 1
+  fi
+  wildcard="*.$identity"
+  if certificate_dns_names "$ACME_CERT" 2>/dev/null | tr ',' '\n' |
+       sed 's/^[[:space:]]*//' | grep -Fxiq -- "$wildcard"; then
+    alt=$wildcard
+  fi
+  if ! cert_store_publish "$identity" "$ACME_CERT" "$ACME_KEY" "$alt" sb letsencrypt; then
+    red "发布到共享证书库失败"
+    return 1
+  fi
+  green "当前 ACME 证书已发布到共享证书库（owner: sb）"
 }
 
 install_official_acme(){
@@ -2263,7 +2383,8 @@ SELFSIGN
 }
 
 inscertificate(){
-  local menu acme_name
+  local menu acme_name max adoptable_count
+  local -a adoptable_entries=()
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "二、生成并设置相关证书"
   echo
@@ -2275,6 +2396,8 @@ inscertificate(){
   echo
   blue "生成bing自签证书成功"
   echo
+  mapfile -t adoptable_entries < <(cert_store_list_adoptable 2>/dev/null)
+  adoptable_count=${#adoptable_entries[@]}
   if acme_name=$(detect_acme_identity); then
     yellow "检测到可用的 ACME 域名证书：$acme_name"
     green "请选择 Hysteria2 证书模式"
@@ -2282,8 +2405,17 @@ inscertificate(){
     yellow "2：使用已有的 $acme_name 域名证书"
     yellow "3：通过 DNS API 重新申请（Cloudflare / 华为云）"
     yellow "   重新申请会删除本脚本现有的 ACME 证书与续期配置"
+    max=3
+    if ((adoptable_count > 0)); then
+      yellow "4：使用共享证书库中的证书（领养，不再申请）"
+      max=4
+    fi
     while true; do
-      readp "请选择【1-3】：" menu || return 1
+      readp "请选择【1-${max}】：" menu || return 1
+      if [[ $menu =~ ^[0-9]+$ ]] && ((menu > max)); then
+        red "请输入1-${max}"
+        continue
+      fi
       case "$menu" in
         ""|1) cert_self_signed; break ;;
         2)
@@ -2297,15 +2429,27 @@ inscertificate(){
           cert_self_signed
           break
           ;;
-        *) red "请输入1、2或3" ;;
+        4)
+          if choose_shared_certificate; then break; fi
+          ;;
+        *) red "请输入1-${max}" ;;
       esac
     done
   else
     green "请选择 Hysteria2 证书模式"
     yellow "1：使用自签证书 (回车默认)"
     yellow "2：使用官方 acme.sh + DNS API 申请域名证书（Cloudflare / 华为云）"
+    max=2
+    if ((adoptable_count > 0)); then
+      yellow "3：使用共享证书库中的证书（领养，不再申请）"
+      max=3
+    fi
     while true; do
-      readp "请选择【1-2】：" menu || return 1
+      readp "请选择【1-${max}】：" menu || return 1
+      if [[ $menu =~ ^[0-9]+$ ]] && ((menu > max)); then
+        red "请输入1-${max}"
+        continue
+      fi
       case "$menu" in
         ""|1) cert_self_signed; break ;;
         2)
@@ -2314,7 +2458,10 @@ inscertificate(){
           cert_self_signed
           break
           ;;
-        *) red "请输入1或2" ;;
+        3)
+          if choose_shared_certificate; then break; fi
+          ;;
+        *) red "请输入1-${max}" ;;
       esac
     done
   fi

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2329  # stubs are invoked indirectly by the sourced product code
+# shellcheck disable=SC2030,SC2031,SC2329  # subshell-owned globals are intentional; stubs are invoked indirectly
 set -Eeuo pipefail
 
 export LC_ALL=C
@@ -1621,6 +1621,111 @@ cert_store_owner_and_lock(){
 expect_success "shared certificate store owner handover and lock work" \
   cert_store_owner_and_lock
 pass "owner handover is explicit and the store lock is private"
+
+# 共享证书模式（consumer）：配置指向 store current 路径，不建立 sb 自己的 ACME 续期。
+write_shared_cert_config(){
+  local store=$1 apex=$2
+  jq -n --arg cert "$store/$apex/current/fullchain.pem" \
+    --arg key "$store/$apex/current/private.key" '
+    {inbounds:[{type:"hysteria2",tag:"hy2-sb",listen:"::",listen_port:8443,
+      tls:{certificate_path:$cert,key_path:$key}}],
+     outbounds:[{type:"direct",tag:"direct"}],route:{final:"direct",rules:[]}}' > "$SB_CONFIG"
+}
+
+shared_certificate_mode_is_detected(){
+  (
+    local store="$TEMP_DIR/cert-store-mode"
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    rm -rf "$store"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    export SB_CONFIG="$TEMP_DIR/shared-mode.json"
+    write_shared_cert_config "$store" example.com || return 1
+    config_uses_shared_certificate || return 1
+    [[ $(shared_certificate_domain) == example.com ]] || return 1
+    shared_certificate_is_valid || return 1
+    [[ $(current_certificate_mode) == shared ]] || return 1
+    cert_shared example.com '*.example.com' || return 1
+    [[ $certificatec_hy2 == "$store/example.com/current/fullchain.pem" &&
+       $certificatep_hy2 == "$store/example.com/current/private.key" &&
+       ${use_acme_cert:-0} -eq 0 ]] || return 1
+    inspect_acme_renewal_health || return 1
+    [[ $ACME_RENEW_HEALTH == normal && $ACME_RENEW_HEALTH_DETAIL == *共享证书* ]]
+  )
+}
+expect_success "shared certificate mode is detected and validated" \
+  shared_certificate_mode_is_detected
+pass "shared certificate mode uses store paths and reports healthy renewal"
+
+shared_certificate_mode_reports_missing_owner(){
+  (
+    local store="$TEMP_DIR/cert-store-ownerless"
+    rm -rf "$store"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    cert_store_with_lock cert_store_set_owner_locked example.com none || return 1
+    export SB_CONFIG="$TEMP_DIR/shared-ownerless.json"
+    write_shared_cert_config "$store" example.com || return 1
+    inspect_acme_renewal_health || return 1
+    [[ $ACME_RENEW_HEALTH == error && $ACME_RENEW_HEALTH_DETAIL == *owner* ]]
+  )
+}
+expect_success "shared certificate without an owner is reported unhealthy" \
+  shared_certificate_mode_reports_missing_owner
+pass "shared certificate mode reports a missing renewal owner"
+
+shared_certificate_store_listing_and_choice(){
+  (
+    local store="$TEMP_DIR/cert-store-choose" answer=1
+    local -a lines=()
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    rm -rf "$store"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    mapfile -t lines < <(cert_store_list_adoptable)
+    [[ ${#lines[@]} -eq 1 ]] || return 1
+    [[ ${lines[0]} == example.com* && ${lines[0]} == *'|sb|'* ]] || return 1
+    # shellcheck disable=SC2317
+    readp(){ printf -v "$2" '%s' "$answer"; }
+    choose_shared_certificate >/dev/null || return 1
+    [[ $certificatec_hy2 == "$store/example.com/current/fullchain.pem" ]]
+  )
+}
+expect_success "shared certificate listing offers an adoptable certificate" \
+  shared_certificate_store_listing_and_choice
+pass "adoptable shared certificates can be chosen non-interactively"
+
+publish_to_store_requires_own_acme_certificate(){
+  (
+    local store="$TEMP_DIR/cert-store-publish"
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    rm -rf "$store"
+    export CERT_STORE="$store"
+    export SB_CONFIG="$TEMP_DIR/shared-not-acme.json"
+    write_shared_cert_config "$store" example.com || return 1
+    ! publish_acme_certificate_to_store
+  )
+}
+expect_success "publishing to the shared store requires an sb ACME certificate" \
+  publish_to_store_requires_own_acme_certificate
+pass "publishing is refused outside ACME certificate mode"
+
 
 if ln -s "$CERT_FIXTURE_DIR/valid.pem" "$CERT_FIXTURE_DIR/cert-link.pem" 2>/dev/null &&
    [[ -L $CERT_FIXTURE_DIR/cert-link.pem ]]; then
