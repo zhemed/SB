@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.7.2"
+sb_version="v5.7.3"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1453,36 +1453,91 @@ shared_certificate_domain(){
   printf '%s\n' "$apex"
 }
 
-# 检测到本机 nginx 时，自动创建续期后的 reload 钩子（不覆盖已有自定义钩子）。
+# 检测到本机 nginx 时，自动创建续期后的 reload 钩子（不覆盖自定义钩子；自动创建的钩子会随内容升级重写）。
 ensure_nginx_shared_cert_reload_hook(){
   local hook="$SB_DIR/acme_post_reload.sh" tmp
-  [[ -e $hook || -L $hook ]] && return 0
   command -v nginx >/dev/null 2>&1 || return 0
   command -v systemctl >/dev/null 2>&1 || return 0
   [[ -d /run/systemd/system ]] || return 0
   systemctl is-active --quiet nginx 2>/dev/null || return 0
   config_uses_acme_certificate || config_uses_shared_certificate || return 0
   tmp=$(mktemp "$SB_DIR/.acme_post_reload.XXXXXX") || return 1
-  if ! printf '%s\n' '#!/bin/bash' '# sb-managed nginx reload hook (auto-created)' \
-       'nginx -t >/dev/null 2>&1 && systemctl reload nginx' > "$tmp" ||
-     ! chmod 700 "$tmp" || ! mv -fT -- "$tmp" "$hook"; then
+  if ! cat > "$tmp" <<'HOOK'
+#!/bin/bash
+# shared-cert-store peer hook v2 (auto-created): reload nginx when it uses the shared cert
+nginx -T 2>/dev/null | grep -qE '(/etc/cert-store/|/etc/sb/acme-cert\.pem)' || exit 0
+nginx -t >/dev/null 2>&1 && systemctl reload nginx
+HOOK
+  then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! chmod 700 "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -e $hook || -L $hook ]]; then
+    if [[ ! -f $hook || -L $hook ]]; then
+      rm -f "$tmp"
+      return 0
+    fi
+    if grep -Fq -- 'shared-cert-store peer hook' "$hook" 2>/dev/null; then
+      if cmp -s -- "$tmp" "$hook"; then
+        rm -f "$tmp"
+        return 0
+      fi
+    else
+      rm -f "$tmp"
+      return 0
+    fi
+  fi
+  if ! mv -fT -- "$tmp" "$hook"; then
     rm -f "$tmp"
     return 1
   fi
 }
 
-# acme-nginx 已安装时，自动创建"证书部署后重启 sb"的对端钩子（不覆盖自定义钩子）。
+# acme-nginx 已安装时，自动创建"证书部署后重启 sb"的对端钩子（不覆盖自定义钩子；自动创建的钩子会随内容升级重写）。
 ensure_acme_nginx_sb_restart_hook(){
   local hook="/etc/acme-nginx/post_reload.sh" tmp
   [[ -d /etc/acme-nginx && ! -L /etc/acme-nginx ]] || return 0
-  [[ -e $hook || -L $hook ]] && return 0
   command -v systemctl >/dev/null 2>&1 || return 0
   [[ -d /run/systemd/system ]] || return 0
   systemctl cat sb >/dev/null 2>&1 || return 0
   tmp=$(mktemp "/etc/acme-nginx/.post_reload.XXXXXX") || return 1
-  if ! printf '%s\n' '#!/bin/bash' '# acme-nginx-managed sb restart hook (auto-created)' \
-       'systemctl restart sb' > "$tmp" ||
-     ! chmod 700 "$tmp" || ! mv -fT -- "$tmp" "$hook"; then
+  if ! cat > "$tmp" <<'HOOK'
+#!/bin/bash
+# shared-cert-store peer hook v2 (auto-created): restart sb when it uses the shared cert
+cfg=/etc/sb/sb.json
+command -v jq >/dev/null 2>&1 || exit 0
+[[ -r $cfg ]] || exit 0
+cert=$(jq -r '[.inbounds[] | select(.type=="hysteria2") | .tls.certificate_path] | first // empty' "$cfg" 2>/dev/null) || exit 0
+case $cert in /etc/cert-store/*) systemctl restart sb ;; esac
+HOOK
+  then
+    rm -f "$tmp"
+    return 1
+  fi
+  if ! chmod 700 "$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  if [[ -e $hook || -L $hook ]]; then
+    if [[ ! -f $hook || -L $hook ]]; then
+      rm -f "$tmp"
+      return 0
+    fi
+    if grep -Fq -- 'shared-cert-store peer hook' "$hook" 2>/dev/null; then
+      if cmp -s -- "$tmp" "$hook"; then
+        rm -f "$tmp"
+        return 0
+      fi
+    else
+      rm -f "$tmp"
+      return 0
+    fi
+  fi
+  if ! mv -fT -- "$tmp" "$hook"; then
     rm -f "$tmp"
     return 1
   fi
@@ -4623,7 +4678,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v3}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v4}"
 }
 
 # shellcheck disable=SC2034
@@ -4815,6 +4870,7 @@ acme_renew_runner_is_current(){
   expected_cron_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --cron --home \"\$acme_home\" --config-home \"\$acme_home\""
   expected_force_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --home \"\$acme_home\" --config-home \"\$acme_home\" --renew -d \"\$acme_identity\" --ecc --force"
   printf -v expected_sb_dir 'sb_dir=%q' "$SB_DIR"
+  printf -v expected_config_file 'config_file=%q' "${SB_CONFIG:-$SB_DIR/sb.json}"
   printf -v expected_acme_bin 'acme_bin=%q' "$ACME_BIN"
   printf -v expected_acme_home 'acme_home=%q' "$ACME_HOME"
   printf -v expected_cert_file 'cert_file=%q' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
@@ -4832,6 +4888,7 @@ acme_renew_runner_is_current(){
   # shellcheck disable=SC2016
   [[ $(grep -Fxc -- "$identity" "$runner" 2>/dev/null || true) -eq 1 ]] &&
     grep -Fqx -- "$expected_sb_dir" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_config_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_acme_bin" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_acme_home" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_cert_file" "$runner" 2>/dev/null &&
@@ -4847,6 +4904,7 @@ acme_renew_runner_is_current(){
     grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if ! flock -w 10 8; then' "$runner" 2>/dev/null &&
     grep -Fqx -- 'acme_identity=$(read_runner_acme_identity) || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'runner_config_uses_shared_certificate(){' "$runner" 2>/dev/null &&
     grep -Fqx -- '  store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
@@ -4871,6 +4929,7 @@ write_acme_renew_runner(){
   if ! {
     printf '%s\n' '#!/bin/bash' "$identity" 'set -u' 'umask 077'
     printf 'sb_dir=%q\n' "$SB_DIR"
+    printf 'config_file=%q\n' "${SB_CONFIG:-$SB_DIR/sb.json}"
     printf 'acme_bin=%q\n' "$ACME_BIN"
     printf 'acme_home=%q\n' "$ACME_HOME"
     printf 'cert_file=%q\n' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
@@ -4909,6 +4968,16 @@ read_runner_acme_identity(){
   identity=${identity_lines[0]}
   valid_acme_identity "$identity" || return 1
   printf '%s\n' "$identity"
+}
+
+# 只有本机配置确实引用共享证书时，才把续期让给库 owner。
+runner_config_uses_shared_certificate(){
+  local cert
+  [[ -s $config_file ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.certificate_path | select(type == "string")' "$config_file" 2>/dev/null) || return 1
+  [[ $cert == "$store_root"/*/current/fullchain.pem ]]
 }
 
 force=0
@@ -4968,23 +5037,27 @@ if [[ -d $store_root && ! -L $store_root &&
       -f $store_meta && ! -L $store_meta ]]; then
   store_owner=$(sed -n 's/^owner=//p' "$store_meta" 2>/dev/null | head -n 1)
   if [[ -n $store_owner && $store_owner != sb ]]; then
-    current_fingerprint=$(certificate_fingerprint || true)
-    check_epoch=$(date +%s) || exit 1
-    state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
-    trap 'rm -f -- "$state_tmp"' EXIT
-    trap 'exit 1' HUP INT TERM
-    if ! printf '%s\n' \
-      "last_check_epoch=$check_epoch" \
-      "last_result=skipped" \
-      "last_exit_code=0" \
-      "last_renewal_epoch=$last_renewal_epoch" \
-      "cert_fingerprint=$current_fingerprint" > "$state_tmp" ||
-       ! chmod 600 "$state_tmp" ||
-       ! mv -fT -- "$state_tmp" "$state_file"; then
-      exit 1
+    if ! runner_config_uses_shared_certificate; then
+      echo "sb: 共享证书库 owner 为 $store_owner，但本机配置未使用共享证书；继续续期本机证书" >&2
+    else
+      current_fingerprint=$(certificate_fingerprint || true)
+      check_epoch=$(date +%s) || exit 1
+      state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
+      trap 'rm -f -- "$state_tmp"' EXIT
+      trap 'exit 1' HUP INT TERM
+      if ! printf '%s\n' \
+        "last_check_epoch=$check_epoch" \
+        "last_result=skipped" \
+        "last_exit_code=0" \
+        "last_renewal_epoch=$last_renewal_epoch" \
+        "cert_fingerprint=$current_fingerprint" > "$state_tmp" ||
+         ! chmod 600 "$state_tmp" ||
+         ! mv -fT -- "$state_tmp" "$state_file"; then
+        exit 1
+      fi
+      trap - EXIT HUP INT TERM
+      exit 0
     fi
-    trap - EXIT HUP INT TERM
-    exit 0
   fi
 fi
 before_fingerprint=$(certificate_fingerprint || true)
@@ -7878,7 +7951,6 @@ install_singbox(){
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   ensure_shared_cert_store_published || true
-  ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
   if config_uses_shared_certificate; then
@@ -8045,7 +8117,6 @@ prepare_runtime_state || exit 1
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
-  ensure_shared_cert_store_published || true
   ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true

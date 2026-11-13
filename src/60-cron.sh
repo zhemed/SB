@@ -104,7 +104,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v3}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v4}"
 }
 
 # shellcheck disable=SC2034
@@ -296,6 +296,7 @@ acme_renew_runner_is_current(){
   expected_cron_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --cron --home \"\$acme_home\" --config-home \"\$acme_home\""
   expected_force_command="  HOME=\"\$sb_dir\" \"\$acme_bin\" --home \"\$acme_home\" --config-home \"\$acme_home\" --renew -d \"\$acme_identity\" --ecc --force"
   printf -v expected_sb_dir 'sb_dir=%q' "$SB_DIR"
+  printf -v expected_config_file 'config_file=%q' "${SB_CONFIG:-$SB_DIR/sb.json}"
   printf -v expected_acme_bin 'acme_bin=%q' "$ACME_BIN"
   printf -v expected_acme_home 'acme_home=%q' "$ACME_HOME"
   printf -v expected_cert_file 'cert_file=%q' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
@@ -313,6 +314,7 @@ acme_renew_runner_is_current(){
   # shellcheck disable=SC2016
   [[ $(grep -Fxc -- "$identity" "$runner" 2>/dev/null || true) -eq 1 ]] &&
     grep -Fqx -- "$expected_sb_dir" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_config_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_acme_bin" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_acme_home" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_cert_file" "$runner" 2>/dev/null &&
@@ -328,6 +330,7 @@ acme_renew_runner_is_current(){
     grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if ! flock -w 10 8; then' "$runner" 2>/dev/null &&
     grep -Fqx -- 'acme_identity=$(read_runner_acme_identity) || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'runner_config_uses_shared_certificate(){' "$runner" 2>/dev/null &&
     grep -Fqx -- '  store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
@@ -352,6 +355,7 @@ write_acme_renew_runner(){
   if ! {
     printf '%s\n' '#!/bin/bash' "$identity" 'set -u' 'umask 077'
     printf 'sb_dir=%q\n' "$SB_DIR"
+    printf 'config_file=%q\n' "${SB_CONFIG:-$SB_DIR/sb.json}"
     printf 'acme_bin=%q\n' "$ACME_BIN"
     printf 'acme_home=%q\n' "$ACME_HOME"
     printf 'cert_file=%q\n' "${ACME_CERT:-$SB_DIR/acme-cert.pem}"
@@ -390,6 +394,16 @@ read_runner_acme_identity(){
   identity=${identity_lines[0]}
   valid_acme_identity "$identity" || return 1
   printf '%s\n' "$identity"
+}
+
+# 只有本机配置确实引用共享证书时，才把续期让给库 owner。
+runner_config_uses_shared_certificate(){
+  local cert
+  [[ -s $config_file ]] || return 1
+  command -v jq >/dev/null 2>&1 || return 1
+  cert=$(jq -er '.inbounds[] | select(.type == "hysteria2" and .tag == "hy2-sb") |
+    .tls.certificate_path | select(type == "string")' "$config_file" 2>/dev/null) || return 1
+  [[ $cert == "$store_root"/*/current/fullchain.pem ]]
 }
 
 force=0
@@ -449,23 +463,27 @@ if [[ -d $store_root && ! -L $store_root &&
       -f $store_meta && ! -L $store_meta ]]; then
   store_owner=$(sed -n 's/^owner=//p' "$store_meta" 2>/dev/null | head -n 1)
   if [[ -n $store_owner && $store_owner != sb ]]; then
-    current_fingerprint=$(certificate_fingerprint || true)
-    check_epoch=$(date +%s) || exit 1
-    state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
-    trap 'rm -f -- "$state_tmp"' EXIT
-    trap 'exit 1' HUP INT TERM
-    if ! printf '%s\n' \
-      "last_check_epoch=$check_epoch" \
-      "last_result=skipped" \
-      "last_exit_code=0" \
-      "last_renewal_epoch=$last_renewal_epoch" \
-      "cert_fingerprint=$current_fingerprint" > "$state_tmp" ||
-       ! chmod 600 "$state_tmp" ||
-       ! mv -fT -- "$state_tmp" "$state_file"; then
-      exit 1
+    if ! runner_config_uses_shared_certificate; then
+      echo "sb: 共享证书库 owner 为 $store_owner，但本机配置未使用共享证书；继续续期本机证书" >&2
+    else
+      current_fingerprint=$(certificate_fingerprint || true)
+      check_epoch=$(date +%s) || exit 1
+      state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
+      trap 'rm -f -- "$state_tmp"' EXIT
+      trap 'exit 1' HUP INT TERM
+      if ! printf '%s\n' \
+        "last_check_epoch=$check_epoch" \
+        "last_result=skipped" \
+        "last_exit_code=0" \
+        "last_renewal_epoch=$last_renewal_epoch" \
+        "cert_fingerprint=$current_fingerprint" > "$state_tmp" ||
+         ! chmod 600 "$state_tmp" ||
+         ! mv -fT -- "$state_tmp" "$state_file"; then
+        exit 1
+      fi
+      trap - EXIT HUP INT TERM
+      exit 0
     fi
-    trap - EXIT HUP INT TERM
-    exit 0
   fi
 fi
 before_fingerprint=$(certificate_fingerprint || true)

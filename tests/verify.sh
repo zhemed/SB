@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.7.2"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.7.2"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.2' ]] ||
-  fail "VERSION file is not 5.7.2"
-grep -Fq -- "当前项目版本：\`5.7.2\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.7.2"
+[[ $(grep -Fxc 'sb_version="v5.7.3"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.7.3"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.3' ]] ||
+  fail "VERSION file is not 5.7.3"
+grep -Fq -- "当前项目版本：\`5.7.3\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.7.3"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -543,6 +543,27 @@ grep -Fq -- 'with_acme_lock resolve_orphaned_acme_state_backup || return 1' "$RO
 inscertificate_function=$(awk '/^inscertificate\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
 [[ $(printf '%s\n' "$inscertificate_function" | grep -Fc -- 'issue_acme_certificate 1' || true) -eq 2 ]] ||
   fail "only initial installation may mark ACME install hooks as initial"
+
+# --- 共享证书库：主脚本与 reload hook 两处发布实现的契约一致性 ---
+store_main_body=$(awk '/^cert_store_publish\(\)\{/{inside=1} inside{print} inside&&/^}/{exit}' "$ROOT_DIR/sb.sh")
+store_main_body+=$'\n'$(awk '/^cert_store_publish_locked\(\)\{/{inside=1} inside{print} inside&&/^}/{exit}' "$ROOT_DIR/sb.sh")
+store_hook_body=$(awk '/^store_publish\(\)\{/{inside=1} inside{print} inside&&/^}/{exit}' "$ROOT_DIR/sb.sh")
+[[ -n $store_main_body && -n $store_hook_body ]] ||
+  fail "shared store publish implementations are missing"
+store_main_fields=$(printf '%s\n' "$store_main_body" | grep -oE "printf '[a-z_]+=" | sed "s/printf '//; s/=$//" | sort -u)
+store_hook_fields=$(printf '%s\n' "$store_hook_body" | grep -oE '"[a-z_]+=[^"]*"' | sed 's/^"//; s/=.*//' | sort -u)
+[[ -n $store_main_fields && "$store_main_fields" == "$store_hook_fields" ]] ||
+  fail "shared store meta field sets diverged between main and reload hook"
+for marker in 'mv -Tf' 'chmod 600' 'rm -rf'; do
+  printf '%s\n' "$store_main_body" | grep -Fq -- "$marker" ||
+    fail "main store publish lost: $marker"
+  printf '%s\n' "$store_hook_body" | grep -Fq -- "$marker" ||
+    fail "reload hook store publish lost: $marker"
+done
+printf '%s\n' "$store_main_body" | grep -Fq -- 'cert_store_with_lock' ||
+  fail "main store publish lost its lock"
+printf '%s\n' "$store_hook_body" | grep -Fq -- 'flock -w 30' ||
+  fail "reload hook store publish lost its lock"
 
 if command -v shellcheck >/dev/null 2>&1; then
   printf 'verify: shellcheck %s\n' "$(shellcheck --version | awk '/^version:/{print $2}')"

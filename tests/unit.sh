@@ -2138,12 +2138,15 @@ expect_success "ACME runner replaces a future inherited renewal time" "$renew_ru
 runner_skips_when_store_owner_is_other(){
   (
     local store="$TEMP_DIR/cert-store-runner" marker="$TEMP_DIR/runner-called"
-    export CERT_STORE="$store"
+    local cfg="$TEMP_DIR/runner-sb-shared.json"
+    export CERT_STORE="$store" SB_CONFIG="$cfg"
     rm -rf "$store"
     mkdir -p "$store/example.com"
     chmod 700 "$store" "$store/example.com"
     printf 'owner=acme-nginx\n' > "$store/example.com/meta.env"
     chmod 600 "$store/example.com/meta.env"
+    printf '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","tls":{"certificate_path":"%s","key_path":"%s"}}]}\n' \
+      "$store/example.com/current/fullchain.pem" "$store/example.com/current/private.key" > "$cfg"
     rm -f "$marker"
     printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
     chmod 700 "$ACME_BIN"
@@ -2152,13 +2155,37 @@ runner_skips_when_store_owner_is_other(){
     [[ ! -e $marker ]] || return 1
     load_acme_renew_state || return 1
     [[ $ACME_RENEW_LAST_RESULT == skipped && $ACME_RENEW_LAST_EXIT_CODE -eq 0 ]] || return 1
-    unset CERT_STORE
-    write_acme_renew_runner
   )
 }
-expect_success "ACME runner skips renewal when the shared store owner is another tool" \
+expect_success "ACME runner skips renewal only when the config consumes the shared certificate" \
   runner_skips_when_store_owner_is_other
 pass "non-owner renewal runner records a skipped check instead of issuing"
+
+runner_renews_own_cert_when_store_owner_is_other(){
+  (
+    local store="$TEMP_DIR/cert-store-runner-owncfg" marker="$TEMP_DIR/runner-called-owncfg"
+    local cfg="$TEMP_DIR/runner-sb-own.json"
+    export CERT_STORE="$store" SB_CONFIG="$cfg"
+    rm -rf "$store"
+    mkdir -p "$store/example.com"
+    chmod 700 "$store" "$store/example.com"
+    printf 'owner=acme-nginx\n' > "$store/example.com/meta.env"
+    chmod 600 "$store/example.com/meta.env"
+    printf '{"inbounds":[{"type":"hysteria2","tag":"hy2-sb","tls":{"certificate_path":"/etc/sb/acme-cert.pem","key_path":"/etc/sb/acme-private.key"}}]}\n' > "$cfg"
+    rm -f "$marker"
+    printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
+    chmod 700 "$ACME_BIN"
+    write_acme_renew_runner || return 1
+    "$renew_runner" || return 1
+    [[ -e $marker ]] || return 1
+    load_acme_renew_state || return 1
+    [[ $ACME_RENEW_LAST_RESULT != skipped ]] || return 1
+  )
+}
+expect_success "ACME runner renews its own certificate when the store owner is another tool but the config is own" \
+  runner_renews_own_cert_when_store_owner_is_other
+pass "own-mode renewal is not skipped because another tool owns the shared store"
+write_acme_renew_runner || fail "failed to restore the canonical renewal runner"
 
 runner_renews_when_store_owner_is_sb(){
   (
