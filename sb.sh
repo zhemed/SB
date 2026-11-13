@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.6.1"
+sb_version="v5.7.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1377,6 +1377,42 @@ cert_store_list_adoptable(){
   done
 }
 
+cert_store_owner_present(){
+  case ${1-} in
+    sb) return 0 ;;
+    acme-nginx) [[ -d /etc/acme-nginx || -x /usr/local/bin/acme-nginx ]] ;;
+    *) return 1 ;;
+  esac
+}
+
+# 卸载/重装时交还续期权，避免留下"名义 owner"。
+cert_store_release_ownership(){
+  local owner=$1 root dir apex
+  cert_store_valid_owner "$owner" || return 1
+  [[ $owner != none ]] || return 1
+  root=$(cert_store_root) || return 1
+  [[ -d $root && ! -L $root ]] || return 0
+  for dir in "$root"/*/; do
+    [[ -d $dir && ! -L $dir ]] || continue
+    dir=${dir%/}
+    apex=${dir##*/}
+    valid_hostname "$apex" || continue
+    cert_store_read_meta "$apex" >/dev/null 2>&1 || continue
+    [[ $CERT_STORE_META_OWNER == "$owner" ]] || continue
+    cert_store_with_lock cert_store_set_owner_locked "$apex" none >/dev/null 2>&1 || true
+  done
+}
+
+# 领养时对账：owner 指向 sb 但本机没有签发状态（重装）→ 交还为 none。
+cert_store_reconcile_ownership(){
+  local apex=$1
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 0
+  [[ $CERT_STORE_META_OWNER == sb ]] || return 0
+  [[ -s $ACME_IDENTITY ]] && return 0
+  cert_store_with_lock cert_store_set_owner_locked "$apex" none >/dev/null 2>&1 || true
+  yellow "共享证书库的续期负责人已失效，已标记为无 owner；请重新签发以接管续期"
+}
+
 cert_shared(){
   local apex=$1 wildcard=${2-}
   if ! cert_store_certificate_state "$apex" "$wildcard"; then
@@ -1386,6 +1422,7 @@ cert_shared(){
   certificatec_hy2=$CERT_STORE_CERT
   certificatep_hy2=$CERT_STORE_KEY
   use_acme_cert=0
+  cert_store_reconcile_ownership "$apex" || true
 }
 
 config_uses_shared_certificate(){
@@ -5240,9 +5277,9 @@ inspect_acme_renewal_health(){
       ACME_RENEW_HEALTH_DETAIL="共享证书库元数据不可读"
     else
       owner=$CERT_STORE_META_OWNER
-      if [[ $owner == none ]]; then
+      if [[ $owner == none ]] || ! cert_store_owner_present "$owner"; then
         ACME_RENEW_HEALTH=error
-        ACME_RENEW_HEALTH_DETAIL="共享证书没有 owner，续期需先移交签发权"
+        ACME_RENEW_HEALTH_DETAIL="共享证书无有效续期负责人（owner: $owner），请重新签发接管"
       else
         ACME_RENEW_HEALTH_DETAIL="共享证书（续期负责人: $owner）"
       fi
@@ -6615,6 +6652,7 @@ uninstall_locked(){
     red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
     return 1
   fi
+  cert_store_release_ownership sb >/dev/null 2>&1 || true
   if ! rm -rf "$SB_DIR"; then
     red "删除sb文件失败，请检查文件系统权限"
     return 1

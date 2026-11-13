@@ -134,9 +134,9 @@ inspect_acme_renewal_health(){
       ACME_RENEW_HEALTH_DETAIL="共享证书库元数据不可读"
     else
       owner=$CERT_STORE_META_OWNER
-      if [[ $owner == none ]]; then
+      if [[ $owner == none ]] || ! cert_store_owner_present "$owner"; then
         ACME_RENEW_HEALTH=error
-        ACME_RENEW_HEALTH_DETAIL="共享证书没有 owner，续期需先移交签发权"
+        ACME_RENEW_HEALTH_DETAIL="共享证书无有效续期负责人（owner: $owner），请重新签发接管"
       else
         ACME_RENEW_HEALTH_DETAIL="共享证书（续期负责人: $owner）"
       fi

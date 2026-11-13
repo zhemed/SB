@@ -111,6 +111,7 @@ uninstall_locked(){
     red "服务已停止，但清理sb定时任务失败；配置文件仍保留，可通过菜单[2]修复"
     return 1
   fi
+  cert_store_release_ownership sb >/dev/null 2>&1 || true
   if ! rm -rf "$SB_DIR"; then
     red "删除sb文件失败，请检查文件系统权限"
     return 1
