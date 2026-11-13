@@ -496,3 +496,42 @@
 
 - 续期链路尚未实际跑过一次：等 cron（15:17 UTC）自动跑，或手动执行 /etc/sb/acme_renew.sh 验证
 - 09-28-script-audit / 09-28-ui-latency 两个旧 in_progress 任务属于其它对话，未动
+
+
+## Session 17: 5.3.0：证书部署后置钩子（与 nginx 等第二个服务共用证书）
+<!-- trellis-session: v=2 fp=7777f7320e3952bf -->
+
+**Date**: 2026-11-13
+**Task**: 5.3.0：证书部署后置钩子（与 nginx 等第二个服务共用证书）
+**Branch**: `main`
+
+### Summary
+
+sb 的 ACME reload hook 增加可选后置钩子 /etc/sb/acme_post_reload.sh：证书成功切换后执行（5 条成功路径），失败只告警（stderr+syslog）不回滚；hook identity 升 v3；README 给出 nginx 直接引用 /etc/sb 证书路径 + reload 示例；版本 5.3.0。未申请证书。
+
+### Main Changes
+
+- src/10-acme.sh：reload hook 增加 post_reload 与 run_post_reload_hook（信任校验：常规文件/非符号链接/可执行/root 所有/组他人不可写）
+- src/00-bootstrap.sh：ACME_RELOAD_IDENTITY → # sb-acme-reload-v3；锚点与 verify.sh 同步
+- tests/unit.sh：5 组后置钩子用例；tests/verify.sh：8 行 missing-config 锚点 + 后置钩子 pin + README pin
+- README：与 nginx 共用证书章节；.trellis/spec/runtime/certificates.md：后置钩子契约
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `87c8097` | [task:11-13-cert-post-reload-hook] 5.3.0：证书部署后置钩子，支持第二个服务共用同一张证书 |
+
+### Testing
+
+- [OK] bash scripts/build.sh --check → 6d31d0e8…
+- [OK] bash tests/verify.sh → verification passed: 6d31d0e8…（unit 345 / repair 53 / replay 22，shellcheck 0.11.0）
+- [OK] bash scripts/check-version-bump.sh origin/main → 5.2.1 -> 5.3.0
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 共享证书库（/etc/cert-store）：sb 与 acme-nginx 证书互通，分阶段实施
