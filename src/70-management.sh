@@ -367,10 +367,11 @@ restore_previous_active_acme(){
 }
 
 apply_new_acme_certificate(){
-  local activation_status backup_path default_domain=${1-}
+  local activation_status backup_path default_domain=${1-} skip_claim=${2:-0}
   certificate_action_service_ready || return 1
+  [[ $skip_claim == 0 || $skip_claim == 1 ]] || return 1
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  issue_acme_certificate 0 1 0 "$default_domain"
+  issue_acme_certificate 0 1 0 "$default_domain" "$skip_claim"
   case $? in
     0) ;;
     3)
@@ -421,7 +422,8 @@ takeover_shared_renewal(){
   }
   yellow "接管续期：将为 $apex 重新签发 sb 自己的 ACME 证书，并把共享证书库 owner 改为 sb"
   # 复用 ACME 申请+切换流程：签发成功后 sb 用回自己的证书并恢复自动续期。
-  apply_new_acme_certificate "$apex" || return 1
+  # 显式接管允许跳过 B6 claim 的“存活对方”拒绝（用户已确认接管意图）。
+  apply_new_acme_certificate "$apex" 1 || return 1
   # 用户取消（issue 取消码 3 被 apply 映射为 return 0）或切换失败时配置仍是共享模式，
   # 此时绝不能继续发布/改 owner，否则会把旧证书写进库并错误地接管续期。
   if ! config_uses_acme_certificate; then

@@ -2010,19 +2010,41 @@ pass "renewed state records the fingerprint change"
 acme_renew_runner_fails_closed_when_store_lock_unavailable(){
   (
     local store="$TEMP_DIR/runner-lock-fail-store" marker="$TEMP_DIR/runner-lock-fail-called"
-    local output runner
+    local fakebin="$TEMP_DIR/fake-logger-bin" logger_log="$TEMP_DIR/fake-logger.log"
+    local output runner fingerprint state state_bak="$TEMP_DIR/runner-state.bak"
     runner=$(acme_renew_runner_path) || return 1
+    state=$(acme_renew_state_path) || return 1
+    cp -p "$state" "$state_bak" 2>/dev/null || :
     printf '%s\n' 'example.com' > "$ACME_IDENTITY"
-    rm -rf "$store" "$marker"
-    mkdir -p "$store" && chmod 700 "$store" || return 1
+    printf '%s\n' 'cert-body-for-fingerprint' > "$ACME_CERT"
+    rm -rf "$store" "$marker" "$fakebin" "$logger_log"
+    mkdir -p "$store" "$fakebin" && chmod 700 "$store" "$fakebin" || return 1
     # 用目录占住锁文件位置，模拟锁获取失败（无法确认 owner 时必须跳过本次）。
     mkdir "$store/.lock" || return 1
+    printf '%s\n' '#!/bin/bash' "printf '%s\n' \"\$*\" >> '$logger_log'" 'exit 0' > "$fakebin/logger"
+    chmod 700 "$fakebin/logger"
     printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
     chmod 700 "$ACME_BIN"
+    printf '%s\n' \
+      'last_check_epoch=1700000000' \
+      'last_result=unchanged' \
+      'last_exit_code=0' \
+      'last_renewal_epoch=0' \
+      "cert_fingerprint=$(printf 'a%.0s' {1..64})" > "$state"
+    chmod 600 "$state"
     STORE_DIR="$store" CERT_STORE="$store" write_acme_renew_runner || return 1
-    output=$(STORE_DIR="$store" CERT_STORE="$store" "$runner" 2>&1) || return 1
+    output=$(PATH="$fakebin:$PATH" STORE_DIR="$store" CERT_STORE="$store" "$runner" 2>&1) || return 1
     [[ ! -e $marker ]] || return 1
-    [[ $output == *'共享证书库锁获取失败'* ]]
+    [[ $output == *'共享证书库锁获取失败'* ]] || return 1
+    grep -Fq '共享证书库锁获取失败' "$logger_log" || return 1
+    load_acme_renew_state || return 1
+    fingerprint=$(sha256sum "$ACME_CERT" | awk '{print $1}')
+    [[ $ACME_RENEW_LAST_RESULT == skipped &&
+       $ACME_RENEW_LAST_EXIT_CODE -eq 0 &&
+       $ACME_RENEW_LAST_RENEWAL_EPOCH -eq 0 &&
+       $ACME_RENEW_FINGERPRINT == "$fingerprint" ]] || return 1
+    # 恢复测试前的 state，避免影响后续 runner 状态用例
+    if [[ -f $state_bak ]]; then cp -p "$state_bak" "$state"; fi
   )
 }
 expect_success "ACME runner fails closed when the shared store lock is unavailable" \
@@ -3209,6 +3231,58 @@ if ! grep -Fxq 'service:1' "$MOCK_LOCK_OBSERVATION_FILE" ||
 fi
 pass "confirmed uninstall holds the ACME lock through service and cron cleanup"
 
+issue_acme_certificate_claims_before_issuing(){
+  (
+    local store="$TEMP_DIR/issue-claim-store" marker="$TEMP_DIR/issue-claim-deploy-called"
+    export CERT_STORE="$store"
+    ACME_PRIMARY_DOMAIN=
+    ACME_WILDCARD_DOMAIN=
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    blue(){ :; }
+    # shellcheck disable=SC2317
+    readp(){
+      case $1 in
+        请输入域名*) printf -v "$2" '%s' 'example.com' ;;
+        *) printf -v "$2" '%s' '' ;;
+      esac
+    }
+    # shellcheck disable=SC2317
+    prompt_cloudflare_acme_credentials(){
+      cf_token=fixture_token
+      account_id=0123456789abcdef0123456789abcdef
+      return 0
+    }
+    rm -rf "$store" "$marker"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    # 存活的其他工具 owner：必须在调用签发部署阶段之前拒绝
+    cert_store_owner_present(){ [[ ${1-} == acme-nginx ]]; }
+    issue_acme_certificate_deploy(){ : > "$marker"; return 0; }
+    ! issue_acme_certificate 0 0 0 || return 1
+    [[ ! -e $marker ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 显式接管（skip_claim=1）允许跳过存活检查
+    issue_acme_certificate 0 0 0 '' 1 || return 1
+    [[ -e $marker ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 失联的其他工具 owner：签发失败时回滚 owner
+    cert_store_owner_present(){ return 1; }
+    issue_acme_certificate_deploy(){ return 1; }
+    ! issue_acme_certificate 0 0 0 || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]]
+  )
+}
+expect_success "issue certificate claims before issuing and releases on failure" \
+  issue_acme_certificate_claims_before_issuing
+pass "live other owner blocks issuance, takeover bypasses it, failure restores the previous owner"
+
 MANAGEMENT_TRANSACTION_DIR="$TEMP_DIR/management-transaction"
 MANAGEMENT_ROLLBACK_CALLS=0
 ACME_CERT="$MANAGEMENT_TRANSACTION_DIR/acme-cert.pem"
@@ -3438,5 +3512,68 @@ CERTCONFIG
 expect_success "reload hook store_publish refuses to replace a newer certificate" \
   hook_store_publish_skips_older_certificate
 pass "hook-side anti-downgrade keeps the current generation and warns"
+
+
+# --- v5.8.0：主发布闸 meta 损坏时拒绝覆盖 ---
+cert_store_publish_rejects_corrupt_meta(){
+  (
+    local store="$TEMP_DIR/cert-store-corrupt-meta" messages="$TEMP_DIR/corrupt-meta-messages"
+    local current_before
+    # shellcheck disable=SC2317
+    yellow(){ printf '%s\n' "$1" >> "$messages"; }
+    rm -rf "$store" "$messages"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    current_before=$(readlink "$store/example.com/current") || return 1
+    printf '%s\n' 'unknown=1' >> "$store/example.com/meta.env"
+    chmod 600 "$store/example.com/meta.env"
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    [[ $(readlink "$store/example.com/current") == "$current_before" ]] || return 1
+    grep -Fq 'meta.env 损坏，拒绝覆盖' "$messages"
+  )
+}
+expect_success "store publish refuses to overwrite a corrupt meta entry" \
+  cert_store_publish_rejects_corrupt_meta
+pass "corrupt meta is rejected instead of skipping the owner check"
+
+# --- v5.8.0：B6 签发前 claim（owner double-check + 失败回滚）---
+cert_store_claim_checks_live_owner_and_rolls_back(){
+  (
+    local store="$TEMP_DIR/cert-store-claim" apex=example.com
+    export CERT_STORE="$store"
+    ACME_PRIMARY_DOMAIN=$apex
+    rm -rf "$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    # 存活的对方：拒绝且不改 meta
+    cert_store_owner_present(){ [[ ${1-} == acme-nginx ]]; }
+    ! cert_store_claim_issuance sb || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 失联的对方：占位成功并记录 previous，失败回滚恢复
+    cert_store_owner_present(){ return 1; }
+    cert_store_claim_issuance sb || return 1
+    [[ $(cert_store_owner example.com) == sb ]] || return 1
+    [[ $CERT_STORE_CLAIM_PREVIOUS == acme-nginx ]] || return 1
+    cert_store_release_claim sb "$CERT_STORE_CLAIM_PREVIOUS" || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # owner=none：占位成功，回滚回 none
+    cert_store_with_lock cert_store_set_owner_locked example.com none || return 1
+    cert_store_claim_issuance sb || return 1
+    [[ $CERT_STORE_CLAIM_PREVIOUS == none ]] || return 1
+    cert_store_release_claim sb none || return 1
+    [[ $(cert_store_owner example.com) == none ]] || return 1
+    # meta 缺失：claim 为 no-op 成功
+    rm -rf "$store/example.com"
+    cert_store_claim_issuance sb || return 1
+    [[ -z $CERT_STORE_CLAIM_PREVIOUS ]]
+  )
+}
+expect_success "store claim rejects a live other owner and rolls back on failure" \
+  cert_store_claim_checks_live_owner_and_rolls_back
+pass "claim placeholder and rollback keep the store owner consistent"
+
 
 printf '1..%d\n' "$passed"

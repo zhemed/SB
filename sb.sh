@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.7.6"
+sb_version="v5.8.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1247,6 +1247,12 @@ cert_store_publish_locked(){
     mkdir "$dir" || return 1
     chmod 700 "$dir" || return 1
   fi
+  # meta 损坏（常规文件但解析失败）时拒绝发布：不能跳过 owner 校验继续覆盖。
+  if [[ -f $dir/meta.env && ! -L $dir/meta.env ]] &&
+     ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    yellow "共享证书库的 meta.env 损坏，拒绝覆盖（请先修复或清理该域名的 meta）"
+    return 1
+  fi
   # 主发布闸：库里 owner 是其他工具时，只有显式接管（takeover=1）才能覆盖。
   if [[ $takeover -eq 0 ]] && cert_store_read_meta "$apex" >/dev/null 2>&1; then
     case $CERT_STORE_META_OWNER in
@@ -1409,6 +1415,69 @@ cert_store_owner_present(){
     acme-nginx) [[ -d /etc/acme-nginx || -x /usr/local/bin/acme-nginx ]] ;;
     *) return 1 ;;
   esac
+}
+
+# B6 签发前 double-check：store 锁内确认 owner。owner 是其他"存活"工具且非接管时返回 2；
+# 否则把 owner 置为 sb 作为签发占位，原 owner 记录到 CERT_STORE_CLAIM_PREVIOUS 供失败回滚。
+cert_store_claim_issuance(){
+  local self=${1:-sb} force=${2:-0} apex=${3:-${ACME_PRIMARY_DOMAIN:-}} root dir
+  [[ $force == 0 || $force == 1 ]] || return 1
+  cert_store_valid_owner "$self" || return 1
+  [[ $self != none ]] || return 1
+  [[ -n $apex ]] || return 1
+  valid_hostname "$apex" || return 1
+  root=$(cert_store_root) || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  CERT_STORE_CLAIM_PREVIOUS=
+  [[ -d $root && ! -L $root ]] || return 0
+  [[ -d $dir && ! -L $dir ]] || return 0
+  [[ -f $dir/meta.env && ! -L $dir/meta.env ]] || return 0
+  cert_store_with_lock cert_store_claim_issuance_locked "$self" "$force" "$apex"
+}
+
+cert_store_claim_issuance_locked(){
+  local self=$1 force=$2 apex=$3 dir owner
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  if ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    return 2
+  fi
+  owner=$CERT_STORE_META_OWNER
+  case $owner in
+    "$self")
+      CERT_STORE_CLAIM_PREVIOUS=$owner
+      return 0
+      ;;
+    none|'') ;;
+    *)
+      if [[ $force -ne 1 ]] && cert_store_owner_present "$owner"; then
+        return 2
+      fi
+      ;;
+  esac
+  cert_store_set_owner_locked "$apex" "$self" || return 1
+  CERT_STORE_CLAIM_PREVIOUS=$owner
+}
+
+# 签发失败/取消时回滚占位：只有 owner 仍是本工具时才恢复原 owner。
+cert_store_release_claim(){
+  local self=${1:-sb} previous_owner=${2-} apex=${3:-${ACME_PRIMARY_DOMAIN:-}} root dir
+  [[ -n $apex ]] || return 1
+  root=$(cert_store_root) || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  [[ -d $root && ! -L $root ]] || return 0
+  [[ -f $dir/meta.env && ! -L $dir/meta.env ]] || return 0
+  cert_store_with_lock cert_store_release_claim_locked "$self" "$previous_owner" "$apex"
+}
+
+cert_store_release_claim_locked(){
+  local self=$1 previous_owner=$2 apex=$3 restore
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 0
+  [[ $CERT_STORE_META_OWNER == "$self" ]] || return 0
+  case $previous_owner in
+    ''|none) restore=none ;;
+    *) restore=$previous_owner ;;
+  esac
+  cert_store_set_owner_locked "$apex" "$restore"
 }
 
 # 卸载/重装时交还续期权，避免留下"名义 owner"。
@@ -2874,13 +2943,15 @@ prompt_huaweicloud_acme_credentials(){
 
 issue_acme_certificate(){
   local domain_input provider choice label plugin account_id cf_token
-  local hw_access_key hw_secret_key hw_region backup_path
+  # shellcheck disable=SC2034  # consumed by issue_acme_certificate_deploy via dynamic scope
+  local hw_access_key hw_secret_key hw_region
   local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
-  local default_domain=${4-}
-  local -a issue_args
+  local default_domain=${4-} skip_claim=${5:-0}
+  local claim_rc=0 claim_previous=''
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
+  [[ $skip_claim == 0 || $skip_claim == 1 ]] || return 1
   while true; do
     readp "请输入域名（example.com 默认同时申请 example.com + *.example.com；泛域名请写成 *.example.com）：" domain_input || return 3
     if [[ -z $domain_input && -n $default_domain ]]; then
@@ -2917,6 +2988,34 @@ issue_acme_certificate(){
   else
     prompt_cloudflare_acme_credentials || return $?
   fi
+  # B6：真正签发前先在 store 锁内确认 owner；存活的对方工具会拒绝，避免重复签发。
+  if [[ $skip_claim -ne 1 ]]; then
+    cert_store_claim_issuance sb || claim_rc=$?
+    case $claim_rc in
+      0) claim_previous=${CERT_STORE_CLAIM_PREVIOUS:-} ;;
+      2)
+        red "共享证书库由其他工具负责续期，拒绝重复签发（如需接管请使用「接管续期」）"
+        return 1
+        ;;
+      *)
+        red "共享证书库锁获取失败，无法在签发前确认续期负责人"
+        return 1
+        ;;
+    esac
+  fi
+  if issue_acme_certificate_deploy; then
+    return 0
+  fi
+  if [[ $skip_claim -ne 1 ]] && ! cert_store_release_claim sb "$claim_previous"; then
+    yellow "签发失败，且共享证书库 owner 回滚失败，请检查 $(cert_store_root)"
+  fi
+  return 1
+}
+
+# 签发执行阶段（claim 之后的全部流程）；变量通过动态作用域从 issue_acme_certificate 读取。
+issue_acme_certificate_deploy(){
+  local backup_path
+  local -a issue_args
   if [[ $reuse_backup == 1 ]]; then
     if [[ -z ${ACME_STATE_BACKUP:-} ]]; then
       red "原 ACME 状态备份不存在，已取消申请"
@@ -4739,7 +4838,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v6}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v7}"
 }
 
 # shellcheck disable=SC2034
@@ -4971,6 +5070,10 @@ acme_renew_runner_is_current(){
     grep -Fqx -- '  store_lock_ok=0' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ $store_lock_ok -ne 1 ]]; then' "$runner" 2>/dev/null &&
     grep -Fq -- '共享证书库锁获取失败，跳过本次续期' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'log_renewal_warning(){' "$runner" 2>/dev/null &&
+    grep -Fqx -- 'write_skipped_state(){' "$runner" 2>/dev/null &&
+    grep -Fq -- 'command -v logger' "$runner" 2>/dev/null &&
+    grep -Fqx -- '    write_skipped_state "$current_fingerprint"' "$runner" 2>/dev/null &&
     grep -Fqx -- 'runner_config_uses_shared_certificate(){' "$runner" 2>/dev/null &&
     grep -Fqx -- '        store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
@@ -5035,6 +5138,34 @@ read_runner_acme_identity(){
   identity=${identity_lines[0]}
   valid_acme_identity "$identity" || return 1
   printf '%s\n' "$identity"
+}
+
+# 有 logger 时同时写系统日志，便于排查锁失败/跳过原因。
+log_renewal_warning(){
+  echo "sb: $1" >&2
+  if command -v logger >/dev/null 2>&1; then
+    logger -t sb "$1" 2>/dev/null || true
+  fi
+}
+
+# 跳过本次续期时写 canonical skipped 状态（保持 last_renewal_epoch 不变）。
+write_skipped_state(){
+  local fingerprint=$1 check_epoch state_tmp
+  check_epoch=$(date +%s) || return 1
+  state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || return 1
+  trap 'rm -f -- "$state_tmp"' EXIT
+  trap 'exit 1' HUP INT TERM
+  if ! printf '%s\n' \
+    "last_check_epoch=$check_epoch" \
+    "last_result=skipped" \
+    "last_exit_code=0" \
+    "last_renewal_epoch=$last_renewal_epoch" \
+    "cert_fingerprint=$fingerprint" > "$state_tmp" ||
+     ! chmod 600 "$state_tmp" ||
+     ! mv -fT -- "$state_tmp" "$state_file"; then
+    exit 1
+  fi
+  trap - EXIT HUP INT TERM
 }
 
 # 只有本机配置确实引用共享证书时，才把续期让给库 owner。
@@ -5116,7 +5247,9 @@ if [[ -d $store_root && ! -L $store_root ]]; then
   fi
   # 锁失败时无法确认 owner：跳过本次续期（fail-closed），避免与 owner 并发签发。
   if [[ $store_lock_ok -ne 1 ]]; then
-    echo "sb: 共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）" >&2
+    log_renewal_warning "共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）"
+    current_fingerprint=$(certificate_fingerprint || true)
+    write_skipped_state "$current_fingerprint"
     exit 0
   fi
 fi
@@ -5688,10 +5821,11 @@ restore_previous_active_acme(){
 }
 
 apply_new_acme_certificate(){
-  local activation_status backup_path default_domain=${1-}
+  local activation_status backup_path default_domain=${1-} skip_claim=${2:-0}
   certificate_action_service_ready || return 1
+  [[ $skip_claim == 0 || $skip_claim == 1 ]] || return 1
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  issue_acme_certificate 0 1 0 "$default_domain"
+  issue_acme_certificate 0 1 0 "$default_domain" "$skip_claim"
   case $? in
     0) ;;
     3)
@@ -5742,7 +5876,8 @@ takeover_shared_renewal(){
   }
   yellow "接管续期：将为 $apex 重新签发 sb 自己的 ACME 证书，并把共享证书库 owner 改为 sb"
   # 复用 ACME 申请+切换流程：签发成功后 sb 用回自己的证书并恢复自动续期。
-  apply_new_acme_certificate "$apex" || return 1
+  # 显式接管允许跳过 B6 claim 的“存活对方”拒绝（用户已确认接管意图）。
+  apply_new_acme_certificate "$apex" 1 || return 1
   # 用户取消（issue 取消码 3 被 apply 映射为 return 0）或切换失败时配置仍是共享模式，
   # 此时绝不能继续发布/改 owner，否则会把旧证书写进库并错误地接管续期。
   if ! config_uses_acme_certificate; then

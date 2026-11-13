@@ -867,6 +867,12 @@ cert_store_publish_locked(){
     mkdir "$dir" || return 1
     chmod 700 "$dir" || return 1
   fi
+  # meta 损坏（常规文件但解析失败）时拒绝发布：不能跳过 owner 校验继续覆盖。
+  if [[ -f $dir/meta.env && ! -L $dir/meta.env ]] &&
+     ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    yellow "共享证书库的 meta.env 损坏，拒绝覆盖（请先修复或清理该域名的 meta）"
+    return 1
+  fi
   # 主发布闸：库里 owner 是其他工具时，只有显式接管（takeover=1）才能覆盖。
   if [[ $takeover -eq 0 ]] && cert_store_read_meta "$apex" >/dev/null 2>&1; then
     case $CERT_STORE_META_OWNER in
@@ -1029,6 +1035,69 @@ cert_store_owner_present(){
     acme-nginx) [[ -d /etc/acme-nginx || -x /usr/local/bin/acme-nginx ]] ;;
     *) return 1 ;;
   esac
+}
+
+# B6 签发前 double-check：store 锁内确认 owner。owner 是其他"存活"工具且非接管时返回 2；
+# 否则把 owner 置为 sb 作为签发占位，原 owner 记录到 CERT_STORE_CLAIM_PREVIOUS 供失败回滚。
+cert_store_claim_issuance(){
+  local self=${1:-sb} force=${2:-0} apex=${3:-${ACME_PRIMARY_DOMAIN:-}} root dir
+  [[ $force == 0 || $force == 1 ]] || return 1
+  cert_store_valid_owner "$self" || return 1
+  [[ $self != none ]] || return 1
+  [[ -n $apex ]] || return 1
+  valid_hostname "$apex" || return 1
+  root=$(cert_store_root) || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  CERT_STORE_CLAIM_PREVIOUS=
+  [[ -d $root && ! -L $root ]] || return 0
+  [[ -d $dir && ! -L $dir ]] || return 0
+  [[ -f $dir/meta.env && ! -L $dir/meta.env ]] || return 0
+  cert_store_with_lock cert_store_claim_issuance_locked "$self" "$force" "$apex"
+}
+
+cert_store_claim_issuance_locked(){
+  local self=$1 force=$2 apex=$3 dir owner
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  if ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    return 2
+  fi
+  owner=$CERT_STORE_META_OWNER
+  case $owner in
+    "$self")
+      CERT_STORE_CLAIM_PREVIOUS=$owner
+      return 0
+      ;;
+    none|'') ;;
+    *)
+      if [[ $force -ne 1 ]] && cert_store_owner_present "$owner"; then
+        return 2
+      fi
+      ;;
+  esac
+  cert_store_set_owner_locked "$apex" "$self" || return 1
+  CERT_STORE_CLAIM_PREVIOUS=$owner
+}
+
+# 签发失败/取消时回滚占位：只有 owner 仍是本工具时才恢复原 owner。
+cert_store_release_claim(){
+  local self=${1:-sb} previous_owner=${2-} apex=${3:-${ACME_PRIMARY_DOMAIN:-}} root dir
+  [[ -n $apex ]] || return 1
+  root=$(cert_store_root) || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  [[ -d $root && ! -L $root ]] || return 0
+  [[ -f $dir/meta.env && ! -L $dir/meta.env ]] || return 0
+  cert_store_with_lock cert_store_release_claim_locked "$self" "$previous_owner" "$apex"
+}
+
+cert_store_release_claim_locked(){
+  local self=$1 previous_owner=$2 apex=$3 restore
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 0
+  [[ $CERT_STORE_META_OWNER == "$self" ]] || return 0
+  case $previous_owner in
+    ''|none) restore=none ;;
+    *) restore=$previous_owner ;;
+  esac
+  cert_store_set_owner_locked "$apex" "$restore"
 }
 
 # 卸载/重装时交还续期权，避免留下"名义 owner"。
@@ -2494,13 +2563,15 @@ prompt_huaweicloud_acme_credentials(){
 
 issue_acme_certificate(){
   local domain_input provider choice label plugin account_id cf_token
-  local hw_access_key hw_secret_key hw_region backup_path
+  # shellcheck disable=SC2034  # consumed by issue_acme_certificate_deploy via dynamic scope
+  local hw_access_key hw_secret_key hw_region
   local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
-  local default_domain=${4-}
-  local -a issue_args
+  local default_domain=${4-} skip_claim=${5:-0}
+  local claim_rc=0 claim_previous=''
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
+  [[ $skip_claim == 0 || $skip_claim == 1 ]] || return 1
   while true; do
     readp "请输入域名（example.com 默认同时申请 example.com + *.example.com；泛域名请写成 *.example.com）：" domain_input || return 3
     if [[ -z $domain_input && -n $default_domain ]]; then
@@ -2537,6 +2608,34 @@ issue_acme_certificate(){
   else
     prompt_cloudflare_acme_credentials || return $?
   fi
+  # B6：真正签发前先在 store 锁内确认 owner；存活的对方工具会拒绝，避免重复签发。
+  if [[ $skip_claim -ne 1 ]]; then
+    cert_store_claim_issuance sb || claim_rc=$?
+    case $claim_rc in
+      0) claim_previous=${CERT_STORE_CLAIM_PREVIOUS:-} ;;
+      2)
+        red "共享证书库由其他工具负责续期，拒绝重复签发（如需接管请使用「接管续期」）"
+        return 1
+        ;;
+      *)
+        red "共享证书库锁获取失败，无法在签发前确认续期负责人"
+        return 1
+        ;;
+    esac
+  fi
+  if issue_acme_certificate_deploy; then
+    return 0
+  fi
+  if [[ $skip_claim -ne 1 ]] && ! cert_store_release_claim sb "$claim_previous"; then
+    yellow "签发失败，且共享证书库 owner 回滚失败，请检查 $(cert_store_root)"
+  fi
+  return 1
+}
+
+# 签发执行阶段（claim 之后的全部流程）；变量通过动态作用域从 issue_acme_certificate 读取。
+issue_acme_certificate_deploy(){
+  local backup_path
+  local -a issue_args
   if [[ $reuse_backup == 1 ]]; then
     if [[ -z ${ACME_STATE_BACKUP:-} ]]; then
       red "原 ACME 状态备份不存在，已取消申请"
