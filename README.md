@@ -68,7 +68,7 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`5.4.0`。
+- 当前项目版本：`5.5.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
@@ -81,8 +81,8 @@ bash scripts/check-version-bump.sh
   凭据由 acme.sh 保存在仅 root 可读的 `/etc/sb/acme/account.conf`，任何状态页都不会回显。
 - 证书管理页会显示当前与备用证书的 SAN、签发机构、生效/到期时间、剩余天数、
   SHA-256 指纹和证书/私钥匹配状态；任何状态页都不会回显 API Token。
-- 单域名与 `*.example.com` 泛域名输入会自动选择对应申请参数；申请时可选 Cloudflare 或华为云，
-  回车默认 Cloudflare。
+- 输入 `example.com` 或 `*.example.com` 都默认申请 `example.com + *.example.com`（单张证书两个 SAN）；
+  申请时可输入 `n` 显式只申请单域名。申请时可选 Cloudflare 或华为云，回车默认 Cloudflare。
 - ACME 续期由 root crontab 定时执行，并记录最近检查、结果和实际换证时间。证书管理支持
   计划续期检查、强制重签、续期组件修复以及直接更换域名、DNS 供应商或凭据。
 - ACME 只写入受管暂存目录；证书与私钥校验通过后，通过 generation 指针一次切换同时生效，

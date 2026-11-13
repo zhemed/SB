@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.4.0"
+sb_version="v5.5.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -2668,12 +2668,23 @@ issue_acme_certificate(){
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
-    readp "请输入域名；泛域名请写成 *.example.com：" domain_input || return 3
+    readp "请输入域名（example.com 默认同时申请 example.com + *.example.com；泛域名请写成 *.example.com）：" domain_input || return 3
     if normalize_acme_domain "$domain_input"; then
       break
     fi
     red "域名格式错误，请输入 example.com、sub.example.com 或 *.example.com"
   done
+  # 默认双域名：输入主域名时也同时申请泛域名，可用 n 显式只申请单域名。
+  if [[ -n ${ACME_PRIMARY_DOMAIN:-} && -z ${ACME_WILDCARD_DOMAIN:-} ]]; then
+    while true; do
+      readp "是否同时申请泛域名 *.${ACME_PRIMARY_DOMAIN}（回车默认是，输入 n 仅单域名）：" choice || return 3
+      case $choice in
+        ""|y|Y|yes|是) ACME_WILDCARD_DOMAIN="*.${ACME_PRIMARY_DOMAIN}"; break ;;
+        n|N|no|否) break ;;
+        *) red "请输入回车或 n" ;;
+      esac
+    done
+  fi
   while true; do
     readp "请选择 DNS 供应商（1：Cloudflare 2：华为云，回车默认 Cloudflare）：" choice || return 3
     case $choice in

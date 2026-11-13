@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.4.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.4.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.4.0' ]] ||
-  fail "VERSION file is not 5.4.0"
-grep -Fq -- "当前项目版本：\`5.4.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.4.0"
+[[ $(grep -Fxc 'sb_version="v5.5.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.5.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.5.0' ]] ||
+  fail "VERSION file is not 5.5.0"
+grep -Fq -- "当前项目版本：\`5.5.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.5.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -173,6 +173,9 @@ for shared_mode_text in \
   grep -Fq -- "$shared_mode_text" "$ROOT_DIR/sb.sh" ||
     fail "shared certificate mode UI text is missing: $shared_mode_text"
 done
+
+grep -Fq -- 'example.com 默认同时申请 example.com + *.example.com' "$ROOT_DIR/sb.sh" ||
+  fail "domain prompt does not default to apex + wildcard"
 
 for success_message in \
   '证书模式切换成功' \
