@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.5.1"
+sb_version="v5.6.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1414,6 +1414,24 @@ shared_certificate_domain(){
   apex=${rest%%/*}
   valid_hostname "$apex" || return 1
   printf '%s\n' "$apex"
+}
+
+# 检测到本机 nginx 时，自动创建续期后的 reload 钩子（不覆盖已有自定义钩子）。
+ensure_nginx_shared_cert_reload_hook(){
+  local hook="$SB_DIR/acme_post_reload.sh" tmp
+  [[ -e $hook || -L $hook ]] && return 0
+  command -v nginx >/dev/null 2>&1 || return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [[ -d /run/systemd/system ]] || return 0
+  systemctl is-active --quiet nginx 2>/dev/null || return 0
+  config_uses_acme_certificate || config_uses_shared_certificate || return 0
+  tmp=$(mktemp "$SB_DIR/.acme_post_reload.XXXXXX") || return 1
+  if ! printf '%s\n' '#!/bin/bash' '# sb-managed nginx reload hook (auto-created)' \
+       'nginx -t >/dev/null 2>&1 && systemctl reload nginx' > "$tmp" ||
+     ! chmod 700 "$tmp" || ! mv -fT -- "$tmp" "$hook"; then
+    rm -f "$tmp"
+    return 1
+  fi
 }
 
 shared_certificate_is_valid(){
@@ -2886,6 +2904,7 @@ SELFSIGN
 
 inscertificate(){
   local menu acme_name max adoptable_count
+  local auto_apex auto_alt auto_owner
   local -a adoptable_entries=()
   red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
   green "二、生成并设置相关证书"
@@ -2900,6 +2919,14 @@ inscertificate(){
   echo
   mapfile -t adoptable_entries < <(cert_store_list_adoptable 2>/dev/null)
   adoptable_count=${#adoptable_entries[@]}
+  # 共享证书库只有一张可用证书时直接领养（零手工步骤），多张时进入下方菜单选择。
+  if ((adoptable_count == 1)); then
+    IFS="|" read -r auto_apex auto_alt auto_owner <<< "${adoptable_entries[0]}"
+    if cert_shared "$auto_apex" "$auto_alt"; then
+      green "检测到共享证书库证书，已自动领养：$auto_apex${auto_alt:+ + $auto_alt}（owner: ${auto_owner:-未知}）"
+      return 0
+    fi
+  fi
   if acme_name=$(detect_acme_identity); then
     yellow "检测到可用的 ACME 域名证书：$acme_name"
     green "请选择 Hysteria2 证书模式"
@@ -7773,6 +7800,7 @@ install_singbox(){
     return 1
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
+  ensure_nginx_shared_cert_reload_hook || true
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
@@ -7933,6 +7961,7 @@ prepare_runtime_state || exit 1
 if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
+  ensure_nginx_shared_cert_reload_hook || true
 fi
 
 menu
