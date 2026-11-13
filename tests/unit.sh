@@ -77,7 +77,7 @@ export SHORTCUT=/usr/bin/sb
 export ACME_HOME="$SB_DIR/acme"
 export ACME_BIN="$ACME_HOME/acme.sh"
 export ACME_RELOAD="$SB_DIR/acme_reload.sh"
-export ACME_RELOAD_IDENTITY="# sb-acme-reload-v3"
+export ACME_RELOAD_IDENTITY="# sb-acme-reload-v4"
 export ACME_CRON_MARKER="# sb-managed-acme"
 export RESTART_CRON_MARKER="# sb-managed-restart"
 export CERT_STORE_VERSION=1
@@ -1740,6 +1740,41 @@ expect_success "shared certificate listing offers an adoptable certificate" \
   shared_certificate_store_listing_and_choice
 pass "adoptable shared certificates can be chosen non-interactively"
 
+# P2-2：takeover 在用户取消（issue 取消码被 apply 映射为成功、配置未切到 ACME）时
+# 不得继续发布/改 owner，否则会把旧证书写进共享库并错误接管续期。
+takeover_shared_renewal_aborts_when_not_switched(){
+  (
+    local store="$TEMP_DIR/cert-store-takeover-cancel"
+    local messages="$TEMP_DIR/takeover-cancel-messages" publish_calls=0
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    yellow(){ printf '%s\n' "$1" >> "$messages"; }
+    rm -rf "$store" "$messages"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    export SB_CONFIG="$TEMP_DIR/takeover-cancel.json"
+    write_shared_cert_config "$store" example.com || return 1
+    # 模拟 apply_new_acme_certificate 的“取消但返回 0”路径：配置仍是 shared。
+    # shellcheck disable=SC2317
+    certificate_action_service_ready(){ return 0; }
+    # shellcheck disable=SC2317
+    apply_new_acme_certificate(){ return 0; }
+    # shellcheck disable=SC2317
+    cert_store_publish(){ publish_calls=$((publish_calls + 1)); return 0; }
+    takeover_shared_renewal || return 1
+    [[ $publish_calls -eq 0 ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    grep -Fq '未接管共享证书库 owner' "$messages"
+  )
+}
+expect_success "shared takeover aborts without publishing when the mode was not switched" \
+  takeover_shared_renewal_aborts_when_not_switched
+pass "cancel path keeps the store owner untouched and skips publish"
+
 publish_to_store_requires_own_acme_certificate(){
   (
     local store="$TEMP_DIR/cert-store-publish"
@@ -1971,6 +2006,29 @@ expect_success "renewed state is readable" load_acme_renew_state
    $ACME_RENEW_LAST_RENEWAL_EPOCH -eq $ACME_RENEW_LAST_CHECK_EPOCH ]] ||
   fail "renewed state did not record the fingerprint change"
 pass "renewed state records the fingerprint change"
+
+acme_renew_runner_fails_closed_when_store_lock_unavailable(){
+  (
+    local store="$TEMP_DIR/runner-lock-fail-store" marker="$TEMP_DIR/runner-lock-fail-called"
+    local output runner
+    runner=$(acme_renew_runner_path) || return 1
+    printf '%s\n' 'example.com' > "$ACME_IDENTITY"
+    rm -rf "$store" "$marker"
+    mkdir -p "$store" && chmod 700 "$store" || return 1
+    # 用目录占住锁文件位置，模拟锁获取失败（无法确认 owner 时必须跳过本次）。
+    mkdir "$store/.lock" || return 1
+    printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
+    chmod 700 "$ACME_BIN"
+    STORE_DIR="$store" CERT_STORE="$store" write_acme_renew_runner || return 1
+    output=$(STORE_DIR="$store" CERT_STORE="$store" "$runner" 2>&1) || return 1
+    [[ ! -e $marker ]] || return 1
+    [[ $output == *'共享证书库锁获取失败'* ]]
+  )
+}
+expect_success "ACME runner fails closed when the shared store lock is unavailable" \
+  acme_renew_runner_fails_closed_when_store_lock_unavailable
+pass "store lock failure skips the run and warns instead of renewing blindly"
+write_acme_renew_runner || fail "failed to restore the canonical renewal runner"
 recorded_renewal_epoch=$ACME_RENEW_LAST_RENEWAL_EPOCH
 
 printf '%s\n' '#!/bin/bash' 'exit 7' > "$ACME_BIN"
@@ -3267,5 +3325,118 @@ CERTCONFIG
 }
 expect_success "store publish refuses to overwrite a newer certificate with an older one" \
   cert_store_rejects_older_certificate_downgrade
+
+
+# --- v5.7.6：主发布闸 owner 校验（其他工具 owner 只有显式接管才能覆盖）---
+cert_store_publish_respects_other_owner_unless_takeover(){
+  (
+    local store="$TEMP_DIR/cert-store-owner-gate"
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    rm -rf "$store"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 非接管意图：拒绝覆盖其他工具的 owner
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # takeover 参数只接受 0/1
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt 2 || return 1
+    # 显式接管：允许覆盖并把 owner 写回 sb
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt 1 || return 1
+    [[ $(cert_store_owner example.com) == sb ]]
+  )
+}
+expect_success "store publish refuses another tool's ownership unless takeover" \
+  cert_store_publish_respects_other_owner_unless_takeover
+pass "explicit takeover is the only path allowed to overwrite another tool's owner"
+
+# --- v5.7.6：owner 交还失败时给出黄色告警（不静默）---
+cert_shared_warns_when_release_fails(){
+  (
+    local store="$TEMP_DIR/cert-store-release-fail" messages="$TEMP_DIR/release-fail-messages"
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    yellow(){ printf '%s\n' "$1" >> "$messages"; }
+    rm -rf "$store" "$messages"
+    export CERT_STORE="$store"
+    ACME_IDENTITY="$TEMP_DIR/release-fail-identity"
+    SB_CONFIG="$TEMP_DIR/shared-release-fail.json"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    printf '%s\n' 'example.com' > "$ACME_IDENTITY" || return 1
+    cert_store_release_ownership(){ return 1; }
+    cert_shared example.com '*.example.com' || return 1
+    grep -Fq '交还续期责任失败' "$messages"
+  )
+}
+expect_success "cert_shared warns when releasing sb ownership fails" \
+  cert_shared_warns_when_release_fails
+pass "failed ownership handover is surfaced instead of silently ignored"
+
+
+# --- v5.7.6：reload hook 内的 store_publish 也防旧覆盖新（B）---
+hook_store_publish_skips_older_certificate(){
+  (
+    local hook="$TEMP_DIR/hook-publish-reload.sh"
+    local store="$TEMP_DIR/hook-publish-store" fn="$TEMP_DIR/hook-publish-fn.sh"
+    local messages="$TEMP_DIR/hook-publish-messages" dir="$store/example.com"
+    local newer_dir="$TEMP_DIR/hook-publish-newer" older_dir="$TEMP_DIR/hook-publish-older"
+    local current_before
+    ACME_RELOAD="$hook"
+    SB_DIR="$TEMP_DIR/hook-publish-sb"
+    mkdir -p "$SB_DIR" "$newer_dir" "$older_dir" || return 1
+    mkdir -p "$store" && chmod 700 "$store" || return 1
+    write_acme_reload_hook || return 1
+    # 从生成的 reload hook 中抽出 store_publish 单独验证（hook 内硬编码的 store_root 用变量覆盖）。
+    awk '/^store_publish\(\)\{/{inside=1} inside{print} inside && /^}$/{exit}' "$hook" > "$fn" || return 1
+    [[ -s $fn ]] || return 1
+    # shellcheck source=/dev/null
+    source "$fn"
+    # shellcheck disable=SC2034  # read by the sourced hook function
+    store_root="$store"
+    warn_post_reload(){ printf '%s\n' "$1" >> "$messages"; }
+    cat > "$TEMP_DIR/hook-publish.cnf" <<'CERTCONFIG'
+[req]
+distinguished_name = subject
+x509_extensions = extensions
+prompt = no
+
+[subject]
+CN = example.com
+
+[extensions]
+subjectAltName = DNS:example.com,DNS:*.example.com
+CERTCONFIG
+    openssl ecparam -genkey -name prime256v1 -out "$newer_dir/key.pem" >/dev/null 2>&1 || return 1
+    openssl req -new -x509 -days 30 -key "$newer_dir/key.pem" \
+      -out "$newer_dir/cert.pem" -config "$TEMP_DIR/hook-publish.cnf" >/dev/null 2>&1 || return 1
+    openssl ecparam -genkey -name prime256v1 -out "$older_dir/key.pem" >/dev/null 2>&1 || return 1
+    openssl req -new -x509 -days 1 -key "$older_dir/key.pem" \
+      -out "$older_dir/cert.pem" -config "$TEMP_DIR/hook-publish.cnf" >/dev/null 2>&1 || return 1
+    cert="$newer_dir/cert.pem"
+    key="$newer_dir/key.pem"
+    # shellcheck disable=SC2034  # read by the sourced hook function
+    identity=example.com
+    store_publish example.com || return 1
+    [[ $(sed -n 's/^owner=//p' "$dir/meta.env" | head -n 1) == sb ]] || return 1
+    current_before=$(readlink "$dir/current") || return 1
+    cert="$older_dir/cert.pem"
+    key="$older_dir/key.pem"
+    store_publish example.com || return 1
+    [[ $(readlink "$dir/current") == "$current_before" ]] || return 1
+    grep -Fq 'skip publishing older one' "$messages"
+  )
+}
+expect_success "reload hook store_publish refuses to replace a newer certificate" \
+  hook_store_publish_skips_older_certificate
+pass "hook-side anti-downgrade keeps the current generation and warns"
 
 printf '1..%d\n' "$passed"

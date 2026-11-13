@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.7.5"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.7.5"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.5' ]] ||
-  fail "VERSION file is not 5.7.5"
-grep -Fq -- "当前项目版本：\`5.7.5\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.7.5"
+[[ $(grep -Fxc 'sb_version="v5.7.6"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.7.6"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.6' ]] ||
+  fail "VERSION file is not 5.7.6"
+grep -Fq -- "当前项目版本：\`5.7.6\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.7.6"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -201,6 +201,33 @@ grep -Fq -- '共享证书库已有到期更晚的证书，拒绝用更旧的证�
 # shellcheck disable=SC2016  # the literal generated line is being counted
 [[ $(grep -Fc -- 'cert_store_reconcile_ownership "$shared_apex"' "$ROOT_DIR/sb.sh" || true) -eq 2 ]] ||
   fail "startup shared-store ownership reconciliation is missing"
+# v5.7.6：hook 侧防旧覆盖新、发布/owner 判定在 store 锁内、runner 短暂持锁读 owner、
+# R6 接管续期入口与主发布 owner 主闸。
+# shellcheck disable=SC2016
+for locking_pattern in \
+  '# sb-acme-reload-v4' \
+  '# sb-acme-renew-v6' \
+  'shared certificate store already has a newer certificate; skip publishing older one' \
+  '共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）' \
+  '    flock -w 30 7 || exit 1' \
+  '    if chmod 600 "$store_root/.lock" && flock -w 5 7; then' \
+  'flock -u 7 >/dev/null 2>&1 || true'; do
+  grep -Fq -- "$locking_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "v5.7.6 store locking support is missing: $locking_pattern"
+done
+# shellcheck disable=SC2016
+for takeover_pattern in \
+  'takeover_shared_renewal(){' \
+  '接管续期（重新签发当前域名）' \
+  'cert_store_publish "$identity" "$cert_path" "$key_path" "$alt" sb letsencrypt 1' \
+  '已接管共享证书续期：owner=sb，自动续期已恢复' \
+  '拒绝覆盖（如需接管请使用接管续期）' \
+  '交还续期责任失败；请检查共享证书库锁与权限'; do
+  grep -Fq -- "$takeover_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "v5.7.6 takeover support is missing: $takeover_pattern"
+done
+grep -Fq -- '签发前**的 owner double-check 尚未实现' "$ROOT_DIR/README.md" ||
+  fail "README does not document the remaining pre-issue double-check gap"
 # 钩子升级判定不能再用 -F 与 -E 冲突的 grep 组合（GNU 报错、BusyBox 永不匹配）。
 if grep -Fq -- 'grep -FqE' "$ROOT_DIR/sb.sh"; then
   fail "hook upgrade detection uses the invalid grep -FqE combination"

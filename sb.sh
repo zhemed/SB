@@ -41,7 +41,7 @@ ACME_STAGE_KEY="$ACME_STAGE/private.key"
 ACME_LIVE="$SB_DIR/acme-live"
 ACME_GENERATIONS="$ACME_LIVE/generations"
 ACME_CURRENT="$ACME_LIVE/current"
-ACME_RELOAD_IDENTITY="# sb-acme-reload-v3"
+ACME_RELOAD_IDENTITY="# sb-acme-reload-v4"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 CERT_STORE="/etc/cert-store"
@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.7.5"
+sb_version="v5.7.6"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1205,7 +1205,8 @@ cert_store_with_lock(){
 
 cert_store_publish(){
   local apex=$1 cert=$2 key=$3 alt=${4-} owner=${5:-${CERT_STORE_SELF:-sb}}
-  local issuer=${6:-letsencrypt} fingerprint
+  local issuer=${6:-letsencrypt} takeover=${7:-0} fingerprint
+  [[ $takeover == 0 || $takeover == 1 ]] || return 1
   [[ $apex == "${apex,,}" ]] || return 1
   valid_hostname "$apex" || return 1
   cert_store_valid_alt "$alt" "$apex" || return 1
@@ -1223,13 +1224,15 @@ cert_store_publish(){
   fingerprint=$(sha256sum "$cert" 2>/dev/null | awk '{print $1}') || return 1
   [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
   cert_store_with_lock cert_store_publish_locked \
-    "$apex" "$cert" "$key" "$alt" "$owner" "$issuer" "$fingerprint"
+    "$apex" "$cert" "$key" "$alt" "$owner" "$issuer" "$fingerprint" "$takeover"
 }
 
 cert_store_publish_locked(){
   local apex=$1 cert=$2 key=$3 alt=$4 owner=$5 issuer=$6 fingerprint=$7
+  local takeover=${8:-0}
   local root dir generations gen current now meta_tmp generation current_target old_current
   local new_not_after existing_alt
+  [[ $takeover == 0 || $takeover == 1 ]] || return 1
   root=$(cert_store_root) || return 1
   dir=$(cert_store_domain_dir "$apex") || return 1
   if [[ -e $root || -L $root ]]; then
@@ -1243,6 +1246,16 @@ cert_store_publish_locked(){
   else
     mkdir "$dir" || return 1
     chmod 700 "$dir" || return 1
+  fi
+  # 主发布闸：库里 owner 是其他工具时，只有显式接管（takeover=1）才能覆盖。
+  if [[ $takeover -eq 0 ]] && cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    case $CERT_STORE_META_OWNER in
+      sb|none) ;;
+      *)
+        yellow "共享证书库的续期负责人是 $CERT_STORE_META_OWNER，拒绝覆盖（如需接管请使用接管续期）"
+        return 1
+        ;;
+    esac
   fi
   generations="$dir/generations"
   if [[ -e $generations || -L $generations ]]; then
@@ -1441,6 +1454,8 @@ cert_shared(){
   if cert_store_read_meta "$apex" >/dev/null 2>&1 && [[ $CERT_STORE_META_OWNER == sb ]]; then
     if cert_store_release_ownership sb; then
       yellow "已交还续期责任，需另一方或重新签发接管"
+    else
+      yellow "已切换为共享证书消费模式，但交还续期责任失败；请检查共享证书库锁与权限"
     fi
   fi
 }
@@ -1733,7 +1748,7 @@ write_acme_reload_hook(){
 #!/bin/bash
 # Signal handlers and EXIT cleanup functions are invoked indirectly by Bash.
 # shellcheck disable=SC2317,SC2329
-# sb-acme-reload-v3
+# sb-acme-reload-v4
 export LANG=en_US.UTF-8
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 base="/etc/sb"
@@ -1790,23 +1805,24 @@ run_post_reload_hook(){
 # 仅当库已存在且该域名的 owner 为 sb/none/空时发布；失败只告警，不影响部署结果。
 store_publish(){
   local identity=$1 store_dir generations gen current meta_tmp fingerprint not_after owner
-  local now alt old_current generation current_target enddate not_after_epoch
+  local now alt old_current generation current_target enddate not_after_epoch existing_not_after
   [[ -d $store_root && ! -L $store_root ]] || return 0
   [[ $identity =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] || return 0
   store_dir="$store_root/$identity"
-  if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
-    owner=$(sed -n 's/^owner=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
-    case $owner in
-      sb|none|'') ;;
-      *) return 0 ;;
-    esac
-  fi
   (
     set -u
     umask 077
     exec 7> "$store_root/.lock" || exit 1
     chmod 600 "$store_root/.lock" || exit 1
     flock -w 30 7 || exit 1
+    # owner 判定必须在锁内：与接管方改写 meta 的窗口期错开，避免把别人的证书覆盖掉。
+    if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
+      owner=$(sed -n 's/^owner=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
+      case $owner in
+        sb|none|'') ;;
+        *) exit 0 ;;
+      esac
+    fi
     if [[ -e $store_dir || -L $store_dir ]]; then
       [[ -d $store_dir && ! -L $store_dir ]] || exit 1
     else
@@ -1837,6 +1853,15 @@ store_publish(){
     if openssl x509 -in "$gen/fullchain.pem" -noout -text 2>/dev/null |
          grep -qE "DNS:\*\.$identity([,[:space:]]|$)"; then
       alt="*.$identity"
+    fi
+    # 防旧覆盖新（hook 侧，主脚本之外的最后一道闸）：库里已有到期更晚的证书时跳过发布。
+    if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
+      existing_not_after=$(sed -n 's/^not_after=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
+      if [[ $existing_not_after =~ ^[0-9]{1,12}$ ]] && ((not_after < existing_not_after)); then
+        warn_post_reload "shared certificate store already has a newer certificate; skip publishing older one: $identity"
+        rm -rf -- "$gen"
+        exit 0
+      fi
     fi
     old_current=$(readlink "$store_dir/current" 2>/dev/null || true)
     current=$(mktemp "$store_dir/.current.XXXXXX") || exit 1
@@ -2295,6 +2320,9 @@ acme_reload_hook_is_current(){
     grep -Fqx 'store_root="/etc/cert-store"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'run_post_reload_hook(){' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'store_publish(){' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '    flock -w 30 7 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '      existing_not_after=$(sed -n '\''s/^not_after=//p'\'' "$store_dir/meta.env" 2>/dev/null | head -n 1)' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '        warn_post_reload "shared certificate store already has a newer certificate; skip publishing older one: $identity"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'finalize_deployment(){' "$ACME_RELOAD" 2>/dev/null &&
     [[ $(grep -Fxc '  finalize_deployment' "$ACME_RELOAD" 2>/dev/null || true) -eq 4 ]] &&
     grep -Fqx '    finalize_deployment' "$ACME_RELOAD" 2>/dev/null &&
@@ -2848,12 +2876,16 @@ issue_acme_certificate(){
   local domain_input provider choice label plugin account_id cf_token
   local hw_access_key hw_secret_key hw_region backup_path
   local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
+  local default_domain=${4-}
   local -a issue_args
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
     readp "请输入域名（example.com 默认同时申请 example.com + *.example.com；泛域名请写成 *.example.com）：" domain_input || return 3
+    if [[ -z $domain_input && -n $default_domain ]]; then
+      domain_input=$default_domain
+    fi
     if normalize_acme_domain "$domain_input"; then
       break
     fi
@@ -4707,7 +4739,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v4}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v6}"
 }
 
 # shellcheck disable=SC2034
@@ -4933,8 +4965,14 @@ acme_renew_runner_is_current(){
     grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if ! flock -w 10 8; then' "$runner" 2>/dev/null &&
     grep -Fqx -- 'acme_identity=$(read_runner_acme_identity) || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if exec 7> "$store_root/.lock"; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '    if chmod 600 "$store_root/.lock" && flock -w 5 7; then' "$runner" 2>/dev/null &&
+    grep -Fqx -- '      flock -u 7 >/dev/null 2>&1 || true' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  store_lock_ok=0' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  if [[ $store_lock_ok -ne 1 ]]; then' "$runner" 2>/dev/null &&
+    grep -Fq -- '共享证书库锁获取失败，跳过本次续期' "$runner" 2>/dev/null &&
     grep -Fqx -- 'runner_config_uses_shared_certificate(){' "$runner" 2>/dev/null &&
-    grep -Fqx -- '  store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
+    grep -Fqx -- '        store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_cron_command" "$runner" 2>/dev/null &&
@@ -5061,11 +5099,28 @@ if [[ -f $state_file && ! -L $state_file ]]; then
 fi
 
 # 共享证书库有 owner 且不是 sb 时，本机不续期（避免与另一个工具重复签发）。
+# owner 读取在 store 锁内短暂完成（flock -w 5，读完即放），锁顺序固定为 ACME 锁 → store 锁。
 store_meta="$store_root/$acme_identity/meta.env"
-if [[ -d $store_root && ! -L $store_root &&
-      -f $store_meta && ! -L $store_meta ]]; then
-  store_owner=$(sed -n 's/^owner=//p' "$store_meta" 2>/dev/null | head -n 1)
-  if [[ -n $store_owner && $store_owner != sb ]]; then
+store_owner=
+if [[ -d $store_root && ! -L $store_root ]]; then
+  store_lock_ok=0
+  if exec 7> "$store_root/.lock"; then
+    if chmod 600 "$store_root/.lock" && flock -w 5 7; then
+      store_lock_ok=1
+      if [[ -f $store_meta && ! -L $store_meta ]]; then
+        store_owner=$(sed -n 's/^owner=//p' "$store_meta" 2>/dev/null | head -n 1)
+      fi
+      flock -u 7 >/dev/null 2>&1 || true
+    fi
+    exec 7>&-
+  fi
+  # 锁失败时无法确认 owner：跳过本次续期（fail-closed），避免与 owner 并发签发。
+  if [[ $store_lock_ok -ne 1 ]]; then
+    echo "sb: 共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）" >&2
+    exit 0
+  fi
+fi
+if [[ -n $store_owner && $store_owner != sb ]]; then
     if ! runner_config_uses_shared_certificate; then
       echo "sb: 共享证书库 owner 为 $store_owner，但本机配置未使用共享证书；继续续期本机证书" >&2
     else
@@ -5087,7 +5142,6 @@ if [[ -d $store_root && ! -L $store_root &&
       trap - EXIT HUP INT TERM
       exit 0
     fi
-  fi
 fi
 before_fingerprint=$(certificate_fingerprint || true)
 if ((force)); then
@@ -5634,10 +5688,10 @@ restore_previous_active_acme(){
 }
 
 apply_new_acme_certificate(){
-  local activation_status backup_path
+  local activation_status backup_path default_domain=${1-}
   certificate_action_service_ready || return 1
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  issue_acme_certificate 0 1
+  issue_acme_certificate 0 1 0 "$default_domain"
   case $? in
     0) ;;
     3)
@@ -5676,6 +5730,55 @@ apply_new_acme_certificate(){
   red "新证书已签发，但服务切换失败，正在恢复申请前的 ACME 状态"
   rollback_new_acme_state || true
   return 1
+}
+
+# R6：共享证书消费模式下接管续期——重新签发当前域名，并用显式接管参数把 owner 写回 sb。
+takeover_shared_renewal(){
+  local apex identity alt='' wildcard cert_path key_path
+  certificate_action_service_ready || return 1
+  apex=$(shared_certificate_domain 2>/dev/null) || {
+    red "无法读取当前共享证书域名，未执行接管"
+    return 1
+  }
+  yellow "接管续期：将为 $apex 重新签发 sb 自己的 ACME 证书，并把共享证书库 owner 改为 sb"
+  # 复用 ACME 申请+切换流程：签发成功后 sb 用回自己的证书并恢复自动续期。
+  apply_new_acme_certificate "$apex" || return 1
+  # 用户取消（issue 取消码 3 被 apply 映射为 return 0）或切换失败时配置仍是共享模式，
+  # 此时绝不能继续发布/改 owner，否则会把旧证书写进库并错误地接管续期。
+  if ! config_uses_acme_certificate; then
+    yellow "已取消或未切换为 ACME 证书，未接管共享证书库 owner"
+    return 0
+  fi
+  identity=$(read_acme_identity 2>/dev/null) || {
+    red "证书已签发，但无法读取 ACME 身份文件，未接管共享证书库 owner"
+    return 1
+  }
+  if [[ $identity != "$apex" ]]; then
+    red "签发的域名（$identity）与当前共享证书域名（$apex）不一致，未接管共享证书库 owner"
+    return 1
+  fi
+  if ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" || [[ $CERT_META_STATE != valid ]]; then
+    red "证书已签发，但当前 ACME 证书无效，未接管共享证书库 owner"
+    return 1
+  fi
+  wildcard="*.$identity"
+  if certificate_dns_names "$ACME_CERT" 2>/dev/null | tr ',' '\n' |
+       sed 's/^[[:space:]]*//' | grep -Fxiq -- "$wildcard"; then
+    alt=$wildcard
+  fi
+  cert_path=$ACME_CERT
+  key_path=$ACME_KEY
+  if [[ -L $cert_path ]]; then
+    cert_path=$(readlink -f -- "$cert_path") || return 1
+  fi
+  if [[ -L $key_path ]]; then
+    key_path=$(readlink -f -- "$key_path") || return 1
+  fi
+  if ! cert_store_publish "$identity" "$cert_path" "$key_path" "$alt" sb letsencrypt 1; then
+    yellow "证书已签发并恢复自动续期，但共享证书库发布失败（owner 未接管）"
+    return 1
+  fi
+  green "已接管共享证书续期：owner=sb，自动续期已恢复"
 }
 
 replace_active_acme_certificate(){
@@ -5824,8 +5927,9 @@ change_cert_mode(){
         green "2：切换为共享证书库中的其他证书"
         green "3：切换为自签 bing 证书"
         green "4：申请并切换为 ACME 证书（Cloudflare / 华为云）"
+        green "5：接管续期（重新签发当前域名）"
         green "0：返回主菜单"
-        readp "请选择【0-4】：" menu || return 1
+        readp "请选择【0-5】：" menu || return 1
         case $menu in
           1)
             if shared_certificate_is_valid; then
@@ -5850,8 +5954,12 @@ change_cert_mode(){
             with_acme_lock apply_new_acme_certificate
             readp "按回车返回证书管理..."
             ;;
+          5)
+            with_acme_lock takeover_shared_renewal
+            readp "按回车返回证书管理..."
+            ;;
           ""|0) return 0 ;;
-          *) red "请输入0、1、2、3或4"; sleep 1 ;;
+          *) red "请输入0-5"; sleep 1 ;;
         esac
         ;;
       self_signed)

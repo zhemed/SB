@@ -825,7 +825,8 @@ cert_store_with_lock(){
 
 cert_store_publish(){
   local apex=$1 cert=$2 key=$3 alt=${4-} owner=${5:-${CERT_STORE_SELF:-sb}}
-  local issuer=${6:-letsencrypt} fingerprint
+  local issuer=${6:-letsencrypt} takeover=${7:-0} fingerprint
+  [[ $takeover == 0 || $takeover == 1 ]] || return 1
   [[ $apex == "${apex,,}" ]] || return 1
   valid_hostname "$apex" || return 1
   cert_store_valid_alt "$alt" "$apex" || return 1
@@ -843,13 +844,15 @@ cert_store_publish(){
   fingerprint=$(sha256sum "$cert" 2>/dev/null | awk '{print $1}') || return 1
   [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
   cert_store_with_lock cert_store_publish_locked \
-    "$apex" "$cert" "$key" "$alt" "$owner" "$issuer" "$fingerprint"
+    "$apex" "$cert" "$key" "$alt" "$owner" "$issuer" "$fingerprint" "$takeover"
 }
 
 cert_store_publish_locked(){
   local apex=$1 cert=$2 key=$3 alt=$4 owner=$5 issuer=$6 fingerprint=$7
+  local takeover=${8:-0}
   local root dir generations gen current now meta_tmp generation current_target old_current
   local new_not_after existing_alt
+  [[ $takeover == 0 || $takeover == 1 ]] || return 1
   root=$(cert_store_root) || return 1
   dir=$(cert_store_domain_dir "$apex") || return 1
   if [[ -e $root || -L $root ]]; then
@@ -863,6 +866,16 @@ cert_store_publish_locked(){
   else
     mkdir "$dir" || return 1
     chmod 700 "$dir" || return 1
+  fi
+  # 主发布闸：库里 owner 是其他工具时，只有显式接管（takeover=1）才能覆盖。
+  if [[ $takeover -eq 0 ]] && cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    case $CERT_STORE_META_OWNER in
+      sb|none) ;;
+      *)
+        yellow "共享证书库的续期负责人是 $CERT_STORE_META_OWNER，拒绝覆盖（如需接管请使用接管续期）"
+        return 1
+        ;;
+    esac
   fi
   generations="$dir/generations"
   if [[ -e $generations || -L $generations ]]; then
@@ -1061,6 +1074,8 @@ cert_shared(){
   if cert_store_read_meta "$apex" >/dev/null 2>&1 && [[ $CERT_STORE_META_OWNER == sb ]]; then
     if cert_store_release_ownership sb; then
       yellow "已交还续期责任，需另一方或重新签发接管"
+    else
+      yellow "已切换为共享证书消费模式，但交还续期责任失败；请检查共享证书库锁与权限"
     fi
   fi
 }
@@ -1353,7 +1368,7 @@ write_acme_reload_hook(){
 #!/bin/bash
 # Signal handlers and EXIT cleanup functions are invoked indirectly by Bash.
 # shellcheck disable=SC2317,SC2329
-# sb-acme-reload-v3
+# sb-acme-reload-v4
 export LANG=en_US.UTF-8
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 base="/etc/sb"
@@ -1410,23 +1425,24 @@ run_post_reload_hook(){
 # 仅当库已存在且该域名的 owner 为 sb/none/空时发布；失败只告警，不影响部署结果。
 store_publish(){
   local identity=$1 store_dir generations gen current meta_tmp fingerprint not_after owner
-  local now alt old_current generation current_target enddate not_after_epoch
+  local now alt old_current generation current_target enddate not_after_epoch existing_not_after
   [[ -d $store_root && ! -L $store_root ]] || return 0
   [[ $identity =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] || return 0
   store_dir="$store_root/$identity"
-  if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
-    owner=$(sed -n 's/^owner=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
-    case $owner in
-      sb|none|'') ;;
-      *) return 0 ;;
-    esac
-  fi
   (
     set -u
     umask 077
     exec 7> "$store_root/.lock" || exit 1
     chmod 600 "$store_root/.lock" || exit 1
     flock -w 30 7 || exit 1
+    # owner 判定必须在锁内：与接管方改写 meta 的窗口期错开，避免把别人的证书覆盖掉。
+    if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
+      owner=$(sed -n 's/^owner=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
+      case $owner in
+        sb|none|'') ;;
+        *) exit 0 ;;
+      esac
+    fi
     if [[ -e $store_dir || -L $store_dir ]]; then
       [[ -d $store_dir && ! -L $store_dir ]] || exit 1
     else
@@ -1457,6 +1473,15 @@ store_publish(){
     if openssl x509 -in "$gen/fullchain.pem" -noout -text 2>/dev/null |
          grep -qE "DNS:\*\.$identity([,[:space:]]|$)"; then
       alt="*.$identity"
+    fi
+    # 防旧覆盖新（hook 侧，主脚本之外的最后一道闸）：库里已有到期更晚的证书时跳过发布。
+    if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
+      existing_not_after=$(sed -n 's/^not_after=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
+      if [[ $existing_not_after =~ ^[0-9]{1,12}$ ]] && ((not_after < existing_not_after)); then
+        warn_post_reload "shared certificate store already has a newer certificate; skip publishing older one: $identity"
+        rm -rf -- "$gen"
+        exit 0
+      fi
     fi
     old_current=$(readlink "$store_dir/current" 2>/dev/null || true)
     current=$(mktemp "$store_dir/.current.XXXXXX") || exit 1
@@ -1915,6 +1940,9 @@ acme_reload_hook_is_current(){
     grep -Fqx 'store_root="/etc/cert-store"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'run_post_reload_hook(){' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'store_publish(){' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '    flock -w 30 7 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '      existing_not_after=$(sed -n '\''s/^not_after=//p'\'' "$store_dir/meta.env" 2>/dev/null | head -n 1)' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '        warn_post_reload "shared certificate store already has a newer certificate; skip publishing older one: $identity"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'finalize_deployment(){' "$ACME_RELOAD" 2>/dev/null &&
     [[ $(grep -Fxc '  finalize_deployment' "$ACME_RELOAD" 2>/dev/null || true) -eq 4 ]] &&
     grep -Fqx '    finalize_deployment' "$ACME_RELOAD" 2>/dev/null &&
@@ -2468,12 +2496,16 @@ issue_acme_certificate(){
   local domain_input provider choice label plugin account_id cf_token
   local hw_access_key hw_secret_key hw_region backup_path
   local initial_install=${1:-0} retain_backup=${2:-0} reuse_backup=${3:-0}
+  local default_domain=${4-}
   local -a issue_args
   [[ $initial_install == 0 || $initial_install == 1 ]] || return 1
   [[ $retain_backup == 0 || $retain_backup == 1 ]] || return 1
   [[ $reuse_backup == 0 || $reuse_backup == 1 ]] || return 1
   while true; do
     readp "请输入域名（example.com 默认同时申请 example.com + *.example.com；泛域名请写成 *.example.com）：" domain_input || return 3
+    if [[ -z $domain_input && -n $default_domain ]]; then
+      domain_input=$default_domain
+    fi
     if normalize_acme_domain "$domain_input"; then
       break
     fi
