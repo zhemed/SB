@@ -575,6 +575,410 @@ ensure_acme_dns_plugin(){
   [[ -f $ACME_HOME/dnsapi/$plugin && ! -L $ACME_HOME/dnsapi/$plugin ]]
 }
 
+# ---- 共享证书库（/etc/cert-store）----------------------------------------
+# 契约见 .trellis/tasks/11-13-shared-cert-store/design.md。
+# owner 是唯一允许签发/续期的工具；consumer 只领养（配置指向 current 路径），绝不签发。
+cert_store_root(){
+  printf '%s\n' "${CERT_STORE:-/etc/cert-store}"
+}
+
+cert_store_modes_enforced(){
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
+cert_store_private_dir(){
+  local path=$1 owner expected_owner mode
+  [[ -d $path && ! -L $path ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$path" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" ]] || return 1
+  cert_store_modes_enforced || return 0
+  mode=$(stat -c '%a' "$path" 2>/dev/null) || return 1
+  [[ $mode == 700 ]]
+}
+
+cert_store_private_file(){
+  local path=$1 owner expected_owner mode
+  [[ -f $path && ! -L $path ]] || return 1
+  expected_owner=$(id -u 2>/dev/null) || return 1
+  owner=$(stat -c '%u' "$path" 2>/dev/null) || return 1
+  [[ $owner == "$expected_owner" ]] || return 1
+  cert_store_modes_enforced || return 0
+  mode=$(stat -c '%a' "$path" 2>/dev/null) || return 1
+  [[ $mode == 600 ]]
+}
+
+cert_store_domain_dir(){
+  local apex=$1
+  [[ $apex == "${apex,,}" ]] || return 1
+  valid_hostname "$apex" || return 1
+  printf '%s/%s\n' "$(cert_store_root)" "$apex"
+}
+
+cert_store_meta_path(){
+  local dir
+  dir=$(cert_store_domain_dir "$1") || return 1
+  printf '%s/meta.env\n' "$dir"
+}
+
+cert_store_current_cert_path(){
+  local dir
+  dir=$(cert_store_domain_dir "$1") || return 1
+  printf '%s/current/fullchain.pem\n' "$dir"
+}
+
+cert_store_current_key_path(){
+  local dir
+  dir=$(cert_store_domain_dir "$1") || return 1
+  printf '%s/current/private.key\n' "$dir"
+}
+
+cert_store_lock_path(){
+  printf '%s/.lock\n' "$(cert_store_root)"
+}
+
+cert_store_valid_owner(){
+  [[ ${1-} == sb || ${1-} == acme-nginx || ${1-} == none ]]
+}
+
+cert_store_valid_alt(){
+  local alt=${1-} apex=${2-}
+  [[ -z $alt ]] && return 0
+  [[ $alt == "*.$apex" ]] || return 1
+  valid_hostname "${alt#\*.}"
+}
+
+cert_store_read_meta(){
+  local apex=$1 meta line key value
+  local version='' domain='' alt='' owner='' issuer='' issued_at='' not_after=''
+  local fingerprint='' updated_at='' updated_by=''
+  local version_count=0 domain_count=0 alt_count=0 owner_count=0 issuer_count=0
+  local issued_at_count=0 not_after_count=0 fingerprint_count=0 updated_at_count=0
+  local updated_by_count=0
+  # 元数据供 owner/领养/健康检查读取，显式导出而非仅赋值。
+  export CERT_STORE_META_VERSION CERT_STORE_META_DOMAIN CERT_STORE_META_ALT \
+    CERT_STORE_META_OWNER CERT_STORE_META_ISSUER CERT_STORE_META_ISSUED_AT \
+    CERT_STORE_META_NOT_AFTER CERT_STORE_META_FINGERPRINT \
+    CERT_STORE_META_UPDATED_AT CERT_STORE_META_UPDATED_BY
+  CERT_STORE_META_VERSION=
+  CERT_STORE_META_DOMAIN=
+  CERT_STORE_META_ALT=
+  CERT_STORE_META_OWNER=
+  CERT_STORE_META_ISSUER=
+  CERT_STORE_META_ISSUED_AT=
+  CERT_STORE_META_NOT_AFTER=
+  CERT_STORE_META_FINGERPRINT=
+  CERT_STORE_META_UPDATED_AT=
+  CERT_STORE_META_UPDATED_BY=
+  meta=$(cert_store_meta_path "$apex") || return 1
+  cert_store_private_file "$meta" || return 1
+  while IFS= read -r line || [[ -n $line ]]; do
+    [[ -n $line && $line == *=* ]] || return 1
+    key=${line%%=*}
+    value=${line#*=}
+    case $key in
+      version) version=$value; version_count=$((version_count + 1)) ;;
+      domain) domain=$value; domain_count=$((domain_count + 1)) ;;
+      alt) alt=$value; alt_count=$((alt_count + 1)) ;;
+      owner) owner=$value; owner_count=$((owner_count + 1)) ;;
+      issuer) issuer=$value; issuer_count=$((issuer_count + 1)) ;;
+      issued_at) issued_at=$value; issued_at_count=$((issued_at_count + 1)) ;;
+      not_after) not_after=$value; not_after_count=$((not_after_count + 1)) ;;
+      fingerprint) fingerprint=$value; fingerprint_count=$((fingerprint_count + 1)) ;;
+      updated_at) updated_at=$value; updated_at_count=$((updated_at_count + 1)) ;;
+      updated_by) updated_by=$value; updated_by_count=$((updated_by_count + 1)) ;;
+      *) return 1 ;;
+    esac
+  done < "$meta"
+  ((version_count == 1 && domain_count == 1 && alt_count == 1 && owner_count == 1 &&
+    issuer_count == 1 && issued_at_count == 1 && not_after_count == 1 &&
+    fingerprint_count == 1 && updated_at_count == 1 && updated_by_count == 1)) || return 1
+  [[ $version == "$CERT_STORE_VERSION" ]] || return 1
+  [[ $domain == "$apex" ]] || return 1
+  cert_store_valid_alt "$alt" "$apex" || return 1
+  cert_store_valid_owner "$owner" || return 1
+  [[ $issuer =~ ^[A-Za-z0-9._-]{1,32}$ ]] || return 1
+  [[ $issued_at =~ ^[0-9]{1,12}$ && $not_after =~ ^[0-9]{1,12}$ &&
+     $updated_at =~ ^[0-9]{1,12}$ ]] || return 1
+  [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
+  [[ $updated_by == sb || $updated_by == acme-nginx ]] || return 1
+  CERT_STORE_META_VERSION=$version
+  CERT_STORE_META_DOMAIN=$domain
+  CERT_STORE_META_ALT=$alt
+  CERT_STORE_META_OWNER=$owner
+  CERT_STORE_META_ISSUER=$issuer
+  CERT_STORE_META_ISSUED_AT=$issued_at
+  CERT_STORE_META_NOT_AFTER=$not_after
+  CERT_STORE_META_FINGERPRINT=$fingerprint
+  CERT_STORE_META_UPDATED_AT=$updated_at
+  CERT_STORE_META_UPDATED_BY=$updated_by
+}
+
+cert_store_root_is_valid(){
+  cert_store_private_dir "$(cert_store_root)"
+}
+
+cert_store_domain_dir_is_valid(){
+  local apex=$1 dir current generation
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  cert_store_private_dir "$dir" || return 1
+  [[ -L $dir/current ]] || return 1
+  current=$(readlink "$dir/current" 2>/dev/null) || return 1
+  [[ $current =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 1
+  generation="$dir/$current"
+  cert_store_private_dir "$generation" || return 1
+  cert_store_private_file "$generation/fullchain.pem" || return 1
+  cert_store_private_file "$generation/private.key" || return 1
+  cert_store_private_file "$dir/meta.env"
+}
+
+cert_store_certificate_state(){
+  local apex=$1 wildcard=${2-} dir current cert key fingerprint
+  # 这两个路径供领养方（shared 模式/测试）读取，因此显式导出而非仅赋值。
+  export CERT_STORE_CERT CERT_STORE_KEY
+  CERT_STORE_CERT=
+  CERT_STORE_KEY=
+  cert_store_read_meta "$apex" || return 1
+  cert_store_root_is_valid || return 1
+  cert_store_domain_dir_is_valid "$apex" || return 1
+  [[ ${CERT_STORE_META_DOMAIN,,} == "$apex" ]] || return 1
+  [[ ${CERT_STORE_META_ALT,,} == "${wildcard,,}" ]] || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  current=$(readlink "$dir/current" 2>/dev/null) || return 1
+  cert="$dir/$current/fullchain.pem"
+  key="$dir/$current/private.key"
+  load_certificate_metadata "$cert" "$key" || return 1
+  [[ $CERT_META_STATE == valid ]] || return 1
+  certificate_identity_matches "$cert" "$apex" || return 1
+  if [[ -n $wildcard ]]; then
+    certificate_dns_names "$cert" 2>/dev/null | tr ',' '\n' |
+      sed 's/^[[:space:]]*//' | grep -Fxiq -- "$wildcard" || return 1
+  fi
+  fingerprint=$(sha256sum "$cert" 2>/dev/null | awk '{print $1}') || return 1
+  [[ $fingerprint == "${CERT_STORE_META_FINGERPRINT,,}" ]] || return 1
+  CERT_STORE_CERT="$dir/current/fullchain.pem"
+  CERT_STORE_KEY="$dir/current/private.key"
+}
+
+cert_store_can_adopt(){
+  cert_store_certificate_state "${1-}" "${2-}" >/dev/null 2>&1
+}
+
+cert_store_acquire_lock(){
+  local root lock fd
+  [[ ${CERT_STORE_LOCK_HELD:-0} -eq 1 ]] && return 0
+  root=$(cert_store_root) || return 1
+  if [[ -e $root || -L $root ]]; then
+    cert_store_private_dir "$root" || return 1
+  else
+    mkdir "$root" || return 1
+    chmod 700 "$root" || return 1
+  fi
+  lock="$root/.lock"
+  if [[ -e $lock || -L $lock ]]; then
+    cert_store_private_file "$lock" || return 1
+  fi
+  exec {fd}> "$lock" || return 1
+  if ! chmod 600 "$lock" || ! flock -w 30 "$fd"; then
+    exec {fd}>&-
+    return 1
+  fi
+  CERT_STORE_LOCK_FD=$fd
+  CERT_STORE_LOCK_HELD=1
+}
+
+cert_store_release_lock(){
+  local fd=${CERT_STORE_LOCK_FD:-}
+  if [[ -z $fd ]]; then
+    CERT_STORE_LOCK_HELD=0
+    return 0
+  fi
+  if ! flock -u "$fd"; then
+    exec {fd}>&-
+    CERT_STORE_LOCK_FD=
+    CERT_STORE_LOCK_HELD=0
+    return 1
+  fi
+  exec {fd}>&-
+  CERT_STORE_LOCK_FD=
+  CERT_STORE_LOCK_HELD=0
+}
+
+cert_store_with_lock(){
+  local owned=0 status
+  if [[ ${CERT_STORE_LOCK_HELD:-0} -ne 1 ]]; then
+    cert_store_acquire_lock || {
+      echo "sb: 共享证书库锁获取失败" >&2
+      return 1
+    }
+    owned=1
+  fi
+  if "$@"; then status=0; else status=$?; fi
+  if [[ $owned -eq 1 ]] && ! cert_store_release_lock; then
+    [[ $status -ne 0 ]] || status=1
+  fi
+  return "$status"
+}
+
+cert_store_publish(){
+  local apex=$1 cert=$2 key=$3 alt=${4-} owner=${5:-${CERT_STORE_SELF:-sb}}
+  local issuer=${6:-letsencrypt} fingerprint
+  [[ $apex == "${apex,,}" ]] || return 1
+  valid_hostname "$apex" || return 1
+  cert_store_valid_alt "$alt" "$apex" || return 1
+  cert_store_valid_owner "$owner" || return 1
+  [[ $owner != none ]] || return 1
+  [[ $issuer =~ ^[A-Za-z0-9._-]{1,32}$ ]] || return 1
+  [[ -f $cert && ! -L $cert && -f $key && ! -L $key ]] || return 1
+  load_certificate_metadata "$cert" "$key" || return 1
+  [[ $CERT_META_STATE == valid ]] || return 1
+  certificate_identity_matches "$cert" "$apex" || return 1
+  if [[ -n $alt ]]; then
+    certificate_dns_names "$cert" 2>/dev/null | tr ',' '\n' |
+      sed 's/^[[:space:]]*//' | grep -Fxiq -- "$alt" || return 1
+  fi
+  fingerprint=$(sha256sum "$cert" 2>/dev/null | awk '{print $1}') || return 1
+  [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
+  cert_store_with_lock cert_store_publish_locked \
+    "$apex" "$cert" "$key" "$alt" "$owner" "$issuer" "$fingerprint"
+}
+
+cert_store_publish_locked(){
+  local apex=$1 cert=$2 key=$3 alt=$4 owner=$5 issuer=$6 fingerprint=$7
+  local root dir generations gen current now meta_tmp generation current_target old_current
+  root=$(cert_store_root) || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  if [[ -e $root || -L $root ]]; then
+    cert_store_private_dir "$root" || return 1
+  else
+    mkdir "$root" || return 1
+    chmod 700 "$root" || return 1
+  fi
+  if [[ -e $dir || -L $dir ]]; then
+    cert_store_private_dir "$dir" || return 1
+  else
+    mkdir "$dir" || return 1
+    chmod 700 "$dir" || return 1
+  fi
+  generations="$dir/generations"
+  if [[ -e $generations || -L $generations ]]; then
+    cert_store_private_dir "$generations" || return 1
+  else
+    mkdir "$generations" || return 1
+    chmod 700 "$generations" || return 1
+  fi
+  gen=$(mktemp -d "$generations/gen.XXXXXX") || return 1
+  chmod 700 "$gen" || return 1
+  if ! cp -- "$cert" "$gen/fullchain.pem" || ! cp -- "$key" "$gen/private.key" ||
+     ! chmod 600 "$gen/fullchain.pem" "$gen/private.key"; then
+    rm -rf -- "$gen"
+    return 1
+  fi
+  if ! load_certificate_metadata "$gen/fullchain.pem" "$gen/private.key" ||
+     [[ $CERT_META_STATE != valid ]] ||
+     ! certificate_identity_matches "$gen/fullchain.pem" "$apex" ||
+     [[ $(sha256sum "$gen/fullchain.pem" | awk '{print $1}') != "$fingerprint" ]]; then
+    rm -rf -- "$gen"
+    return 1
+  fi
+  old_current=$(readlink "$dir/current" 2>/dev/null || true)
+  current=$(mktemp "$dir/.current.XXXXXX") || {
+    rm -rf -- "$gen"
+    return 1
+  }
+  rm -f -- "$current" || {
+    rm -rf -- "$gen"
+    return 1
+  }
+  if ! ln -s -- "generations/${gen##*/}" "$current" ||
+     ! mv -Tf -- "$current" "$dir/current"; then
+    rm -f -- "$current"
+    rm -rf -- "$gen"
+    return 1
+  fi
+  now=$(date +%s) || {
+    rm -rf -- "$gen"
+    return 1
+  }
+  meta_tmp=$(mktemp "$dir/.meta.XXXXXX") || {
+    rm -rf -- "$gen"
+    return 1
+  }
+  if ! {
+    printf 'version=%s\n' "$CERT_STORE_VERSION"
+    printf 'domain=%s\n' "$apex"
+    printf 'alt=%s\n' "$alt"
+    printf 'owner=%s\n' "$owner"
+    printf 'issuer=%s\n' "$issuer"
+    printf 'issued_at=%s\n' "$now"
+    printf 'not_after=%s\n' "${CERT_META_NOT_AFTER_EPOCH:-0}"
+    printf 'fingerprint=%s\n' "$fingerprint"
+    printf 'updated_at=%s\n' "$now"
+    printf 'updated_by=%s\n' "$owner"
+  } > "$meta_tmp" || ! chmod 600 "$meta_tmp" ||
+     ! mv -Tf -- "$meta_tmp" "$dir/meta.env"; then
+    rm -f -- "$meta_tmp"
+    if [[ -n $old_current ]]; then
+      current=$(mktemp "$dir/.current.XXXXXX") || true
+      if [[ -n ${current:-} ]]; then
+        rm -f -- "$current"
+        ln -s -- "$old_current" "$current" && mv -Tf -- "$current" "$dir/current"
+      fi
+    else
+      rm -f -- "$dir/current"
+    fi
+    rm -rf -- "$gen"
+    return 1
+  fi
+  current_target=$(readlink "$dir/current" 2>/dev/null || true)
+  for generation in "$generations"/gen.*; do
+    [[ -e $generation || -L $generation ]] || continue
+    [[ $generation == "$dir/$current_target" ]] && continue
+    rm -rf -- "$generation" || true
+  done
+  cert_store_certificate_state "$apex" "$alt"
+}
+
+cert_store_set_owner_locked(){
+  local apex=$1 owner=$2 dir meta_tmp now
+  cert_store_read_meta "$apex" || return 1
+  dir=$(cert_store_domain_dir "$apex") || return 1
+  now=$(date +%s) || return 1
+  meta_tmp=$(mktemp "$dir/.meta.XXXXXX") || return 1
+  if ! {
+    printf 'version=%s\n' "$CERT_STORE_META_VERSION"
+    printf 'domain=%s\n' "$CERT_STORE_META_DOMAIN"
+    printf 'alt=%s\n' "$CERT_STORE_META_ALT"
+    printf 'owner=%s\n' "$owner"
+    printf 'issuer=%s\n' "$CERT_STORE_META_ISSUER"
+    printf 'issued_at=%s\n' "$CERT_STORE_META_ISSUED_AT"
+    printf 'not_after=%s\n' "$CERT_STORE_META_NOT_AFTER"
+    printf 'fingerprint=%s\n' "$CERT_STORE_META_FINGERPRINT"
+    printf 'updated_at=%s\n' "$now"
+    printf 'updated_by=%s\n' "$owner"
+  } > "$meta_tmp" || ! chmod 600 "$meta_tmp" ||
+     ! mv -Tf -- "$meta_tmp" "$dir/meta.env"; then
+    rm -f -- "$meta_tmp"
+    return 1
+  fi
+  cert_store_read_meta "$apex" >/dev/null
+}
+
+cert_store_take_ownership(){
+  local apex=$1 owner=$2
+  cert_store_valid_owner "$owner" || return 1
+  [[ $owner != none ]] || return 1
+  cert_store_with_lock cert_store_set_owner_locked "$apex" "$owner"
+}
+
+cert_store_owner(){
+  cert_store_read_meta "${1-}" >/dev/null || return 1
+  printf '%s\n' "$CERT_STORE_META_OWNER"
+}
+
 install_official_acme(){
   local temp_dir archive source_dir actual_sha256 installed_version provider plugin
   provider=${1:-cloudflare}

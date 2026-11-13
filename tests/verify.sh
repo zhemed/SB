@@ -133,6 +133,23 @@ for huawei_env in \
     fail "Huawei Cloud credentials are not passed through the environment: $huawei_env"
 done
 
+# 共享证书库契约（/etc/cert-store）：常量与核心原语必须存在于发布物中。
+[[ $(grep -Fxc 'CERT_STORE="/etc/cert-store"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "shared certificate store root is not pinned"
+[[ $(grep -Fxc 'CERT_STORE_VERSION=1' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "shared certificate store contract version is not pinned"
+for store_pattern in \
+  'cert_store_publish(){' \
+  'cert_store_publish_locked(){' \
+  'cert_store_can_adopt(){' \
+  'cert_store_certificate_state(){' \
+  'cert_store_with_lock(){' \
+  'cert_store_take_ownership(){' \
+  'cert_store_owner(){'; do
+  grep -Fq -- "$store_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "shared certificate store helper is missing: $store_pattern"
+done
+
 for success_message in \
   '证书模式切换成功' \
   'Hysteria2主端口修改成功' \

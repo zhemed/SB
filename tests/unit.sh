@@ -80,6 +80,8 @@ export ACME_RELOAD="$SB_DIR/acme_reload.sh"
 export ACME_RELOAD_IDENTITY="# sb-acme-reload-v3"
 export ACME_CRON_MARKER="# sb-managed-acme"
 export RESTART_CRON_MARKER="# sb-managed-restart"
+export CERT_STORE_VERSION=1
+export CERT_STORE_SELF=sb
 
 generated_socks_password_is_valid(){
   local password
@@ -1424,6 +1426,201 @@ expect_success "expired X.509 metadata is readable" load_certificate_metadata \
 [[ $CERT_META_STATE == expired && $CERT_META_KEY_MATCH -eq 1 &&
    $CERT_META_REMAINING_DAYS -lt 0 ]] || fail "expired X.509 certificate was not reported"
 pass "X.509 metadata reports an expired certificate"
+
+# 共享证书库契约（/etc/cert-store）：发布/领养/owner/锁/校验矩阵。
+write_raw_cert_store_entry(){
+  local store=$1 domain=$2 cert=$3 key=$4 alt=${5-}
+  local dir="$store/$domain" fp now
+  mkdir -p "$dir/generations/gen.FIXTURE1" || return 1
+  chmod 700 "$store" "$dir" "$dir/generations" "$dir/generations/gen.FIXTURE1" || return 1
+  cp -- "$cert" "$dir/generations/gen.FIXTURE1/fullchain.pem" || return 1
+  cp -- "$key" "$dir/generations/gen.FIXTURE1/private.key" || return 1
+  chmod 600 "$dir/generations/gen.FIXTURE1/fullchain.pem" \
+    "$dir/generations/gen.FIXTURE1/private.key" || return 1
+  ln -s generations/gen.FIXTURE1 "$dir/current" || return 1
+  fp=$(sha256sum "$cert" | awk '{print $1}') || return 1
+  now=$(date +%s) || return 1
+  printf 'version=1\ndomain=%s\nalt=%s\nowner=sb\nissuer=letsencrypt\nissued_at=%s\nnot_after=%s\nfingerprint=%s\nupdated_at=%s\nupdated_by=sb\n' \
+    "$domain" "$alt" "$now" "$now" "$fp" "$now" > "$dir/meta.env" || return 1
+  chmod 600 "$dir/meta.env"
+}
+
+cert_store_publish_and_adopt(){
+  (
+    local store="$TEMP_DIR/cert-store-basic" meta generation
+    rm -rf "$store"
+    # shellcheck disable=SC2030,SC2031  # the subshell owns the store root
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    cert_store_can_adopt example.com '*.example.com' || return 1
+    cert_store_certificate_state example.com '*.example.com' || return 1
+    [[ $CERT_STORE_CERT == "$store/example.com/current/fullchain.pem" ]] || return 1
+    [[ $CERT_STORE_KEY == "$store/example.com/current/private.key" ]] || return 1
+    [[ $(cert_store_owner example.com) == sb ]] || return 1
+    meta="$store/example.com/meta.env"
+    generation=$(readlink "$store/example.com/current") || return 1
+    [[ $generation =~ ^generations/gen\.[A-Za-z0-9]+$ ]] || return 1
+    [[ $(stat -c '%a' "$meta") == 600 && $(stat -c '%a' "$store") == 700 &&
+       $(stat -c '%a' "$store/example.com") == 700 ]] || return 1
+    [[ $(grep -c '^owner=sb$' "$meta") -eq 1 ]] || return 1
+    [[ $(grep -c '^alt=\*\.example\.com$' "$meta") -eq 1 ]] || return 1
+    [[ $(grep '^fingerprint=' "$meta" | cut -d= -f2) == \
+       "$(sha256sum "$CERT_STORE_CERT" | awk '{print $1}')" ]]
+  )
+}
+expect_success "shared certificate store publishes and adopts a valid pair" \
+  cert_store_publish_and_adopt
+pass "shared certificate store publishes an atomic private layout"
+
+cert_store_rejects_bad_publish_inputs(){
+  (
+    local store="$TEMP_DIR/cert-store-bad" invalid_owner=bad-owner
+    rm -rf "$store"
+    # shellcheck disable=SC2030,SC2031  # the subshell owns the store root
+    export CERT_STORE="$store"
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/corrupt.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/other.key" '' sb letsencrypt || return 1
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.other.com' sb letsencrypt || return 1
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' "$invalid_owner" letsencrypt || return 1
+    ! cert_store_publish Example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    [[ ! -e $store/example.com/current ]]
+  )
+}
+expect_success "shared certificate store rejects invalid publish inputs" \
+  cert_store_rejects_bad_publish_inputs
+pass "invalid publish inputs leave the store untouched"
+
+cert_store_rejects_tampered_metadata(){
+  (
+    local store="$TEMP_DIR/cert-store-meta" meta backup
+    rm -rf "$store"
+    # shellcheck disable=SC2030,SC2031  # the subshell owns the store root
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    meta="$store/example.com/meta.env"
+    backup=$(<"$meta")
+    printf '%s\nunknown=1\n' "$backup" > "$meta"
+    chmod 600 "$meta"
+    ! cert_store_read_meta example.com || return 1
+    printf '%s\nowner=sb\n' "$backup" > "$meta"
+    chmod 600 "$meta"
+    ! cert_store_read_meta example.com || return 1
+    printf '%s\n' "$backup" | sed 's/^fingerprint=.*/fingerprint=zzzz/' > "$meta"
+    chmod 600 "$meta"
+    ! cert_store_read_meta example.com || return 1
+    printf '%s\n' "$backup" |
+      sed 's/^fingerprint=.*/fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' \
+      > "$meta"
+    chmod 600 "$meta"
+    ! cert_store_can_adopt example.com '*.example.com' || return 1
+    printf '%s\n' "$backup" > "$meta"
+    chmod 600 "$meta"
+    cert_store_can_adopt example.com '*.example.com' || return 1
+    mv "$meta" "$store/example.com/meta.real"
+    ln -s meta.real "$meta"
+    ! cert_store_read_meta example.com || return 1
+    rm -f "$meta"
+    mv "$store/example.com/meta.real" "$meta"
+    chmod 644 "$meta"
+    ! cert_store_read_meta example.com
+  )
+}
+expect_success "shared certificate store rejects tampered metadata" \
+  cert_store_rejects_tampered_metadata
+pass "tampered metadata is refused"
+
+cert_store_adoption_matrix(){
+  (
+    local store="$TEMP_DIR/cert-store-adopt" dir
+    rm -rf "$store"
+    # shellcheck disable=SC2030,SC2031  # the subshell owns the store root
+    export CERT_STORE="$store"
+    mkdir -p "$store"
+    chmod 700 "$store"
+    write_raw_cert_store_entry "$store" expired.example.com \
+      "$EXPIRED_CERT_DIR/expired.pem" "$EXPIRED_CERT_DIR/expired.key" '' || return 1
+    ! cert_store_can_adopt expired.example.com '' || return 1
+    write_raw_cert_store_entry "$store" example.com \
+      "$CERT_FIXTURE_DIR/valid.pem" "$CERT_FIXTURE_DIR/other.key" '*.example.com' || return 1
+    ! cert_store_can_adopt example.com '*.example.com' || return 1
+    rm -rf "$store/example.com"
+    write_raw_cert_store_entry "$store" example.com \
+      "$CERT_FIXTURE_DIR/valid.pem" "$CERT_FIXTURE_DIR/valid.key" '' || return 1
+    ! cert_store_can_adopt example.com '*.example.com' || return 1
+    cert_store_can_adopt example.com '' || return 1
+    dir="$store/example.com"
+    chmod 755 "$dir"
+    ! cert_store_can_adopt example.com '' || return 1
+    chmod 700 "$dir"
+    cp -p "$dir/meta.env" "$dir/meta.backup"
+    sed 's/^fingerprint=.*/fingerprint=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/' \
+      "$dir/meta.backup" > "$dir/meta.env"
+    chmod 600 "$dir/meta.env"
+    ! cert_store_can_adopt example.com '' || return 1
+    cp -p "$dir/meta.backup" "$dir/meta.env"
+    chmod 600 "$dir/meta.env"
+    cert_store_can_adopt example.com ''
+  )
+}
+expect_success "shared certificate store adoption matrix rejects unsafe states" \
+  cert_store_adoption_matrix
+pass "adoption requires valid, covering, matching certificate material"
+
+cert_store_republish_keeps_one_generation(){
+  (
+    local store="$TEMP_DIR/cert-store-republish" first second generations
+    rm -rf "$store"
+    # shellcheck disable=SC2030,SC2031  # the subshell owns the store root
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    first=$(readlink "$store/example.com/current") || return 1
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    second=$(readlink "$store/example.com/current") || return 1
+    [[ $first != "$second" ]] || return 1
+    generations=$(find "$store/example.com/generations" -mindepth 1 -maxdepth 1 -type d | wc -l)
+    [[ $generations -eq 1 ]] || return 1
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/corrupt.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    [[ $(readlink "$store/example.com/current") == "$second" ]]
+  )
+}
+expect_success "shared certificate store republish is atomic and prunes old generations" \
+  cert_store_republish_keeps_one_generation
+pass "failed republish keeps the current generation"
+
+cert_store_owner_and_lock(){
+  (
+    local store="$TEMP_DIR/cert-store-owner"
+    rm -rf "$store"
+    # shellcheck disable=SC2030,SC2031  # the subshell owns the store root
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    [[ $(cert_store_owner example.com) == sb ]] || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    grep -q '^updated_by=acme-nginx$' "$store/example.com/meta.env" || return 1
+    ! cert_store_take_ownership example.com none || return 1
+    ! cert_store_take_ownership example.com bad-owner || return 1
+    cert_store_acquire_lock || return 1
+    [[ $(stat -c '%a' "$store/.lock") == 600 ]] || return 1
+    cert_store_acquire_lock || return 1
+    cert_store_release_lock || return 1
+    cert_store_release_lock
+  )
+}
+expect_success "shared certificate store owner handover and lock work" \
+  cert_store_owner_and_lock
+pass "owner handover is explicit and the store lock is private"
 
 if ln -s "$CERT_FIXTURE_DIR/valid.pem" "$CERT_FIXTURE_DIR/cert-link.pem" 2>/dev/null &&
    [[ -L $CERT_FIXTURE_DIR/cert-link.pem ]]; then
