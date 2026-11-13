@@ -1101,7 +1101,7 @@ HOOK
       rm -f "$tmp"
       return 0
     fi
-    if grep -Fq -- 'shared-cert-store peer hook' "$hook" 2>/dev/null; then
+    if grep -FqE 'shared-cert-store peer hook|sb-managed nginx reload hook|acme-nginx-managed sb restart hook' "$hook" 2>/dev/null; then
       if cmp -s -- "$tmp" "$hook"; then
         rm -f "$tmp"
         return 0
@@ -1147,7 +1147,7 @@ HOOK
       rm -f "$tmp"
       return 0
     fi
-    if grep -Fq -- 'shared-cert-store peer hook' "$hook" 2>/dev/null; then
+    if grep -FqE 'shared-cert-store peer hook|sb-managed nginx reload hook|acme-nginx-managed sb restart hook' "$hook" 2>/dev/null; then
       if cmp -s -- "$tmp" "$hook"; then
         rm -f "$tmp"
         return 0

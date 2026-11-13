@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.7.3"
+sb_version="v5.7.4"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1481,7 +1481,7 @@ HOOK
       rm -f "$tmp"
       return 0
     fi
-    if grep -Fq -- 'shared-cert-store peer hook' "$hook" 2>/dev/null; then
+    if grep -FqE 'shared-cert-store peer hook|sb-managed nginx reload hook|acme-nginx-managed sb restart hook' "$hook" 2>/dev/null; then
       if cmp -s -- "$tmp" "$hook"; then
         rm -f "$tmp"
         return 0
@@ -1527,7 +1527,7 @@ HOOK
       rm -f "$tmp"
       return 0
     fi
-    if grep -Fq -- 'shared-cert-store peer hook' "$hook" 2>/dev/null; then
+    if grep -FqE 'shared-cert-store peer hook|sb-managed nginx reload hook|acme-nginx-managed sb restart hook' "$hook" 2>/dev/null; then
       if cmp -s -- "$tmp" "$hook"; then
         rm -f "$tmp"
         return 0
