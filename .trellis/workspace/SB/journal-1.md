@@ -414,3 +414,45 @@
 ### Next Steps
 
 - 推送后 CI 验证；后续任何改动先过 tests/replay.sh 再报完成
+
+
+## Session 15: 5.2.0：证书签发支持华为云 DNS（AK/SK）
+<!-- trellis-session: v=2 fp=939b917be79994bb -->
+
+**Date**: 2026-11-13
+**Task**: 5.2.0：证书签发支持华为云 DNS（AK/SK）
+**Branch**: `main`
+
+### Summary
+
+把 acme-nginx v0.3.0 的华为云 DNS-01（AK/SK）支持融合进 sb：新增 provider 抽象，签发/续期/健康检查/修复/门禁全链路支持 Cloudflare 与华为云，版本升 5.2.0。
+
+### Main Changes
+
+- src/10-acme.sh：provider 抽象 + 华为云凭据校验/推断 + dns_huaweicloud_aksk.sh 原子写入与自愈 + issue_acme_certificate（原 issue_cloudflare_certificate）
+- src/60-cron.sh、70-management.sh、85-repair.sh：续期自检/健康检查/修复组件信任改为 provider 感知；菜单去 Cloudflare 硬编码
+- src/80-lifecycle.sh：core_dependencies_ready 加入 od（插件 HMAC hex 编码）
+- tests：unit 334 / repair 53 / replay 22；verify 新增华为云门禁（可见输入、marker 精确 1 行、无 HUAWEICLOUD_PASSWORD、--dns 与 HUAWEICLOUD_* 环境变量 pin）
+- README/VERSION/00-bootstrap：版本 5.1.3 → 5.2.0；.trellis/spec/runtime/certificates.md 增补 §7.5 DNS providers
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `e30c5be` | [task:11-13-huawei-dns] 5.2.0：证书签发支持华为云 DNS（AK/SK） |
+| `4a7d21c` | chore(task): archive 11-13-huawei-dns |
+
+### Testing
+
+- [OK] bash scripts/build.sh --check → 888b15f2…
+- [OK] bash tests/verify.sh → verification passed: 888b15f2…
+- [OK] bash scripts/check-version-bump.sh origin/main → 5.1.3 -> 5.2.0
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 用真实华为云 AK/SK + 托管域名在一台 VPS 上实测签发/续期（本机无网络凭据，未实测 API）
+- CI 的 ShellCheck 版本若高于本地 0.8.0，需观察是否出现新增告警
