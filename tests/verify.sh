@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.3.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.3.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.3.0' ]] ||
-  fail "VERSION file is not 5.3.0"
-grep -Fq -- "当前项目版本：\`5.3.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.3.0"
+[[ $(grep -Fxc 'sb_version="v5.4.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.4.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.4.0' ]] ||
+  fail "VERSION file is not 5.4.0"
+grep -Fq -- "当前项目版本：\`5.4.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.4.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -116,7 +116,10 @@ for shared_cert_pattern in \
   '/etc/sb/acme-cert.pem' \
   '/etc/sb/acme-private.key' \
   'acme_post_reload.sh' \
-  'systemctl reload nginx'; do
+  'systemctl reload nginx' \
+  '/etc/cert-store' \
+  '使用共享证书库中的证书' \
+  '发布当前证书到共享证书库'; do
   grep -Fq -- "$shared_cert_pattern" "$ROOT_DIR/README.md" ||
     fail "README does not document sharing the certificate with a second consumer: $shared_cert_pattern"
 done
@@ -457,7 +460,7 @@ awk '
     getline block_end
     valid = initial_if == "  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then" &&
       initial_commit == "    commit_deployment" &&
-      initial_post == "    run_post_reload_hook" && initial_exit == "    exit 0" &&
+      initial_post == "    finalize_deployment" && initial_exit == "    exit 0" &&
       initial_end == "  fi" && rollback == "  rollback_deployment || true" &&
       normal_exit == "  exit 1" && block_end == "fi"
     exit
@@ -480,10 +483,18 @@ grep -Fqx 'post_reload="/etc/sb/acme_post_reload.sh"' "$hook_candidate" ||
   fail "ACME post-reload hook path is missing"
 grep -Fqx 'run_post_reload_hook(){' "$hook_candidate" ||
   fail "ACME post-reload hook runner is missing"
-[[ $(grep -Fxc '  run_post_reload_hook' "$hook_candidate" || true) -eq 4 ]] ||
-  fail "ACME post-reload hook is not called on every success path"
-grep -Fqx '    run_post_reload_hook' "$hook_candidate" ||
-  fail "ACME initial-install path does not run the post-reload hook"
+grep -Fqx '    finalize_deployment' "$hook_candidate" ||
+  fail "ACME initial-install path does not finalize the deployment"
+grep -Fqx 'store_root="/etc/cert-store"' "$hook_candidate" ||
+  fail "ACME reload hook does not know the shared certificate store"
+grep -Fqx 'store_publish(){' "$hook_candidate" ||
+  fail "ACME reload hook does not publish to the shared certificate store"
+grep -Fqx 'finalize_deployment(){' "$hook_candidate" ||
+  fail "ACME reload hook finalization wrapper is missing"
+[[ $(grep -Fxc '  finalize_deployment' "$hook_candidate" || true) -eq 4 ]] ||
+  fail "ACME reload hook does not finalize every renewal success path"
+[[ $(grep -Fxc '  run_post_reload_hook' "$hook_candidate" || true) -eq 1 ]] ||
+  fail "ACME reload hook post-reload wrapper is not called exactly once"
 grep -Fqx 'warn_post_reload(){' "$hook_candidate" ||
   fail "ACME post-reload failure reporting is missing"
 # shellcheck disable=SC2016  # the pattern is literal generated-hook text

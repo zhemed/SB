@@ -152,6 +152,28 @@ it with the rest of the managed directory.
 
 ---
 
+## 3.5 共享证书库（/etc/cert-store，5.4.0 起）
+
+sb 与 acme-nginx 共用同一份证书的契约（完整设计见任务
+`.trellis/tasks/11-13-shared-cert-store/design.md`）：
+
+- 布局：`/etc/cert-store/<apex>/{current,generations/gen.*,meta.env}`，目录 700、文件 600、
+  root 所有、`current` 只指向 `generations/gen.<alnum>`、cert/key 为常规文件且非符号链接。
+- `meta.env`：`version/domain/alt/owner/issuer/issued_at/not_after/fingerprint/updated_at/updated_by`，
+  逐键白名单 + 恰好一次；`owner ∈ sb|acme-nginx|none`；`fingerprint` 为 fullchain 的 sha256。
+- 领养：meta 校验 + 证书可解析未过期 + SAN 覆盖请求域名 + 公私钥匹配 + 指纹与 meta 一致；
+  通过后消费者把服务配置指向 `current/` 路径，不调用 acme.sh。
+- 发布：签发方部署自校验成功后原子发布（mktemp→写→切 current→写 meta→清理旧代），
+  `owner=自己`；reload hook 的 `store_publish` 在每次成功部署后自动发布，owner 非 sb 时跳过，
+  发布失败只告警、不影响部署结果。
+- 续期：只有 owner 续期；sb 的续期 runner 在锁内检查 store owner，非 sb 时写
+  `last_result=skipped` 并退出 0；`load_acme_renew_state` 接受 `skipped`。
+- 配置模式：`config_uses_shared_certificate` 从 `sb.json` 证书路径识别 shared 模式，
+  不建立 ACME cron；健康检查、修复、证书管理菜单均按 shared 分支处理。
+- 改动 hook/runner 语义时同步 identity（reload `v3`、renew `v3`）与 `tests/verify.sh` 的 pin。
+
+---
+
 ## 4. Deployment: validate, then switch
 
 The hook validates the staged material **before any mutation** — parseable, not expired, already

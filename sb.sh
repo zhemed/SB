@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.3.0"
+sb_version="v5.4.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1566,6 +1566,7 @@ deployment_started=0
 created_layout=0
 restore_managed_links=0
 post_reload="/etc/sb/acme_post_reload.sh"
+store_root="/etc/cert-store"
 
 cleanup_deploy_files(){
   [[ -z $stage_cert ]] || rm -f -- "$stage_cert"
@@ -1598,6 +1599,105 @@ run_post_reload_hook(){
     warn_post_reload "post-reload hook failed: $post_reload"
   fi
   return 0
+}
+
+# 证书成功切换后把当前证书发布到共享证书库（/etc/cert-store）。
+# 仅当库已存在且该域名的 owner 为 sb/none/空时发布；失败只告警，不影响部署结果。
+store_publish(){
+  local identity=$1 store_dir generations gen current meta_tmp fingerprint not_after owner
+  local now alt old_current generation current_target enddate not_after_epoch
+  [[ -d $store_root && ! -L $store_root ]] || return 0
+  [[ $identity =~ ^[A-Za-z0-9][A-Za-z0-9.-]*[A-Za-z0-9]$ ]] || return 0
+  store_dir="$store_root/$identity"
+  if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
+    owner=$(sed -n 's/^owner=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
+    case $owner in
+      sb|none|'') ;;
+      *) return 0 ;;
+    esac
+  fi
+  (
+    set -u
+    umask 077
+    exec 7> "$store_root/.lock" || exit 1
+    chmod 600 "$store_root/.lock" || exit 1
+    flock -w 30 7 || exit 1
+    if [[ -e $store_dir || -L $store_dir ]]; then
+      [[ -d $store_dir && ! -L $store_dir ]] || exit 1
+    else
+      mkdir "$store_dir" || exit 1
+      chmod 700 "$store_dir" || exit 1
+    fi
+    generations="$store_dir/generations"
+    if [[ -e $generations || -L $generations ]]; then
+      [[ -d $generations && ! -L $generations ]] || exit 1
+    else
+      mkdir "$generations" || exit 1
+      chmod 700 "$generations" || exit 1
+    fi
+    gen=$(mktemp -d "$generations/gen.XXXXXX") || exit 1
+    chmod 700 "$gen" || exit 1
+    cp -- "$cert" "$gen/fullchain.pem" || exit 1
+    cp -- "$key" "$gen/private.key" || exit 1
+    chmod 600 "$gen/fullchain.pem" "$gen/private.key" || exit 1
+    openssl x509 -in "$gen/fullchain.pem" -noout >/dev/null 2>&1 || exit 1
+    openssl pkey -in "$gen/private.key" -pubout >/dev/null 2>&1 || exit 1
+    fingerprint=$(sha256sum "$gen/fullchain.pem" | awk '{print $1}') || exit 1
+    [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || exit 1
+    not_after=0
+    if enddate=$(openssl x509 -in "$gen/fullchain.pem" -noout -enddate 2>/dev/null); then
+      not_after_epoch=$(date -d "${enddate#notAfter=}" +%s 2>/dev/null) && not_after=$not_after_epoch
+    fi
+    alt=
+    if openssl x509 -in "$gen/fullchain.pem" -noout -text 2>/dev/null |
+         grep -qE "DNS:\*\.$identity([,[:space:]]|$)"; then
+      alt="*.$identity"
+    fi
+    old_current=$(readlink "$store_dir/current" 2>/dev/null || true)
+    current=$(mktemp "$store_dir/.current.XXXXXX") || exit 1
+    rm -f -- "$current" || exit 1
+    ln -s -- "generations/${gen##*/}" "$current" || exit 1
+    mv -Tf -- "$current" "$store_dir/current" || exit 1
+    now=$(date +%s) || exit 1
+    meta_tmp=$(mktemp "$store_dir/.meta.XXXXXX") || exit 1
+    if ! printf '%s\n' \
+      "version=1" \
+      "domain=$identity" \
+      "alt=$alt" \
+      "owner=sb" \
+      "issuer=letsencrypt" \
+      "issued_at=$now" \
+      "not_after=$not_after" \
+      "fingerprint=$fingerprint" \
+      "updated_at=$now" \
+      "updated_by=sb" > "$meta_tmp" ||
+       ! chmod 600 "$meta_tmp" ||
+       ! mv -Tf -- "$meta_tmp" "$store_dir/meta.env"; then
+      rm -f -- "$meta_tmp"
+      if [[ -n $old_current ]]; then
+        current=$(mktemp "$store_dir/.current.XXXXXX") || exit 1
+        rm -f -- "$current"
+        ln -s -- "$old_current" "$current" && mv -Tf -- "$current" "$store_dir/current"
+      else
+        rm -f -- "$store_dir/current"
+      fi
+      rm -rf -- "$gen"
+      exit 1
+    fi
+    current_target=$(readlink "$store_dir/current" 2>/dev/null || true)
+    for generation in "$generations"/gen.*; do
+      [[ -e $generation || -L $generation ]] || continue
+      [[ $generation == "$store_dir/$current_target" ]] && continue
+      rm -rf -- "$generation" || true
+    done
+    exit 0
+  ) || warn_post_reload "shared certificate store publish failed: $identity"
+  return 0
+}
+
+finalize_deployment(){
+  store_publish "$identity" || true
+  run_post_reload_hook
 }
 
 switch_current(){
@@ -1879,7 +1979,7 @@ fi
 if [[ ! -s $config ]]; then
   if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then
     commit_deployment
-    run_post_reload_hook
+    finalize_deployment
     exit 0
   fi
   rollback_deployment || true
@@ -1895,7 +1995,7 @@ certificate_paths=$(jq -er '
 IFS=$'\t' read -r current_cert current_key <<< "$certificate_paths"
 if [[ $current_cert != "$cert" || $current_key != "$key" ]]; then
   commit_deployment
-  run_post_reload_hook
+  finalize_deployment
   exit 0
 fi
 has_openrc=0
@@ -1950,17 +2050,17 @@ else
     exit 1
   fi
   commit_deployment
-  run_post_reload_hook
+  finalize_deployment
   exit 0
 fi
 if ! managed_service_active; then
   commit_deployment
-  run_post_reload_hook
+  finalize_deployment
   exit 0
 fi
 if restart_managed_service && sleep 1 && managed_service_active; then
   commit_deployment
-  run_post_reload_hook
+  finalize_deployment
   exit 0
 fi
 if rollback_deployment; then
@@ -1999,7 +2099,7 @@ acme_reload_hook_is_current(){
         getline block_end
         valid = initial_if == "  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then" &&
           initial_commit == "    commit_deployment" &&
-          initial_post == "    run_post_reload_hook" && initial_exit == "    exit 0" &&
+          initial_post == "    finalize_deployment" && initial_exit == "    exit 0" &&
           initial_end == "  fi" && rollback == "  rollback_deployment || true" &&
           normal_exit == "  exit 1" && block_end == "fi"
         exit
@@ -2007,9 +2107,13 @@ acme_reload_hook_is_current(){
       END { exit !valid }
     ' "$ACME_RELOAD" &&
     grep -Fqx 'post_reload="/etc/sb/acme_post_reload.sh"' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'store_root="/etc/cert-store"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'run_post_reload_hook(){' "$ACME_RELOAD" 2>/dev/null &&
-    [[ $(grep -Fxc '  run_post_reload_hook' "$ACME_RELOAD" 2>/dev/null || true) -eq 4 ]] &&
-    grep -Fqx '    run_post_reload_hook' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'store_publish(){' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'finalize_deployment(){' "$ACME_RELOAD" 2>/dev/null &&
+    [[ $(grep -Fxc '  finalize_deployment' "$ACME_RELOAD" 2>/dev/null || true) -eq 4 ]] &&
+    grep -Fqx '    finalize_deployment' "$ACME_RELOAD" 2>/dev/null &&
+    [[ $(grep -Fxc '  run_post_reload_hook' "$ACME_RELOAD" 2>/dev/null || true) -eq 1 ]] &&
     grep -Fqx 'source_cert="$source_dir/fullchain.pem"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'source_key="$source_dir/private.key"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'deployment_started=1' "$ACME_RELOAD" 2>/dev/null &&
@@ -4398,7 +4502,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v2}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v3}"
 }
 
 # shellcheck disable=SC2034
@@ -4451,7 +4555,8 @@ load_acme_renew_state(){
   [[ $check_count -eq 1 && $result_count -eq 1 && $exit_count -eq 1 &&
      $renewal_count -eq 1 && $fingerprint_count -eq 1 ]] || return 1
   [[ $check_epoch =~ ^[1-9][0-9]{0,11}$ ]] || return 1
-  [[ $result == renewed || $result == unchanged || $result == failed ]] || return 1
+  [[ $result == renewed || $result == unchanged || $result == skipped ||
+     $result == failed ]] || return 1
   [[ $exit_code =~ ^(0|[1-9][0-9]{0,2})$ ]] && ((exit_code <= 255)) || return 1
   [[ $renewal_epoch =~ ^(0|[1-9][0-9]{0,11})$ ]] &&
     ((renewal_epoch <= check_epoch)) || return 1
@@ -4596,6 +4701,7 @@ acme_renew_runner_is_current(){
   printf -v expected_identity_file 'identity_file=%q' "$ACME_IDENTITY"
   printf -v expected_lock_file 'lock_file=%q' "$(acme_lock_path)"
   printf -v expected_compat_lock_file 'compat_lock_file=%q' "$(acme_compat_lock_path)"
+  printf -v expected_store_root 'store_root=%q' "${CERT_STORE:-/etc/cert-store}"
   [[ -f $runner && ! -L $runner && -x $runner ]] || return 1
   mode=$(stat -c '%a' "$runner" 2>/dev/null || true)
   case $(uname -s 2>/dev/null) in
@@ -4612,13 +4718,15 @@ acme_renew_runner_is_current(){
     grep -Fqx -- "$expected_identity_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_lock_file" "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_compat_lock_file" "$runner" 2>/dev/null &&
+    grep -Fqx -- "$expected_store_root" "$runner" 2>/dev/null &&
     grep -Fqx -- "  1) [[ \${1-} == --force ]] || exit 2; force=1 ;;" "$runner" 2>/dev/null &&
     grep -Fqx -- '  *) exit 2 ;;' "$runner" 2>/dev/null &&
     grep -Fqx -- 'exec 9> "$lock_file" || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- 'if ! flock -w 10 9; then' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if ! exec 8> "$compat_lock_file"; then' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if ! flock -w 10 8; then' "$runner" 2>/dev/null &&
-    grep -Fqx -- "  acme_identity=\$(read_runner_acme_identity) || exit 1" "$runner" 2>/dev/null &&
+    grep -Fqx -- 'acme_identity=$(read_runner_acme_identity) || exit 1' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- '  if [[ -n $previous_renewal ]] && ((previous_renewal <= state_read_epoch)); then' "$runner" 2>/dev/null &&
     grep -Fqx -- "$expected_cron_command" "$runner" 2>/dev/null &&
@@ -4649,6 +4757,7 @@ write_acme_renew_runner(){
     printf 'identity_file=%q\n' "$ACME_IDENTITY"
     printf 'lock_file=%q\n' "$(acme_lock_path)"
     printf 'compat_lock_file=%q\n' "$(acme_compat_lock_path)"
+    printf 'store_root=%q\n' "${CERT_STORE:-/etc/cert-store}"
     cat <<'ACMERENEW'
 
 certificate_fingerprint(){
@@ -4720,9 +4829,7 @@ if [[ $compat_lock_file != "$lock_file" ]]; then
     exit 75
   fi
 fi
-if ((force)); then
-  acme_identity=$(read_runner_acme_identity) || exit 1
-fi
+acme_identity=$(read_runner_acme_identity) || exit 1
 
 last_renewal_epoch=0
 state_read_epoch=$(date +%s) || exit 1
@@ -4734,6 +4841,31 @@ if [[ -f $state_file && ! -L $state_file ]]; then
   fi
 fi
 
+# 共享证书库有 owner 且不是 sb 时，本机不续期（避免与另一个工具重复签发）。
+store_meta="$store_root/$acme_identity/meta.env"
+if [[ -d $store_root && ! -L $store_root &&
+      -f $store_meta && ! -L $store_meta ]]; then
+  store_owner=$(sed -n 's/^owner=//p' "$store_meta" 2>/dev/null | head -n 1)
+  if [[ -n $store_owner && $store_owner != sb ]]; then
+    current_fingerprint=$(certificate_fingerprint || true)
+    check_epoch=$(date +%s) || exit 1
+    state_tmp=$(mktemp "$sb_dir/.acme_renew.state.XXXXXX") || exit 1
+    trap 'rm -f -- "$state_tmp"' EXIT
+    trap 'exit 1' HUP INT TERM
+    if ! printf '%s\n' \
+      "last_check_epoch=$check_epoch" \
+      "last_result=skipped" \
+      "last_exit_code=0" \
+      "last_renewal_epoch=$last_renewal_epoch" \
+      "cert_fingerprint=$current_fingerprint" > "$state_tmp" ||
+       ! chmod 600 "$state_tmp" ||
+       ! mv -fT -- "$state_tmp" "$state_file"; then
+      exit 1
+    fi
+    trap - EXIT HUP INT TERM
+    exit 0
+  fi
+fi
 before_fingerprint=$(certificate_fingerprint || true)
 if ((force)); then
   HOME="$sb_dir" "$acme_bin" --home "$acme_home" --config-home "$acme_home" --renew -d "$acme_identity" --ecc --force
@@ -5148,6 +5280,7 @@ show_acme_renewal_status(){
     case $ACME_RENEW_LAST_RESULT in
       renewed) green "最近检查结果: 已续期并执行证书生效回调" ;;
       unchanged) green "最近检查结果: 成功，暂不需要续期" ;;
+      skipped) yellow "最近检查结果: 已跳过（共享证书库的续期由其他工具负责）" ;;
       failed) red "最近检查结果: 失败（退出码 $ACME_RENEW_LAST_EXIT_CODE）" ;;
     esac
     if [[ $ACME_RENEW_LAST_RENEWAL_EPOCH != 0 ]]; then

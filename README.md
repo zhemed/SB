@@ -68,7 +68,7 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`5.3.0`。
+- 当前项目版本：`5.4.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
@@ -144,6 +144,25 @@ nginx -t && systemctl reload nginx
 - 该文件位于 `/etc/sb` 内，卸载 sb 时会一并删除。
 - 申请 `*.example.com` 会同时包含 `example.com`（apex 与一级子域共用同一张证书）。
 - 若 nginx 以非 root 启动或运行在容器里，需要把证书路径以只读方式挂载/授权给 nginx 进程。
+
+## 共享证书库（sb 与 acme-nginx 共用）
+
+5.4.0 起 sb 支持 `/etc/cert-store` 共享证书库，用于 sb 与 acme-nginx 同机共用同一张证书：
+
+- **谁先签发谁发布**：签发方把证书原子发布进库（`/etc/cert-store/<域名>/current/` +
+  `meta.env` 记录 owner、指纹、有效期），另一个工具直接领养，不再重复申请；
+  同一域名同一时间只有一个"续期负责人（owner）"。
+- **领养**：证书管理菜单选择「使用共享证书库中的证书（领养，不再申请）」；sb 的 Hysteria2
+  配置直接指向 `/etc/cert-store/<域名>/current/fullchain.pem` 与 `.../private.key`，
+  并且不再建立 sb 自己的 ACME 续期任务。
+- **发布**：ACME 模式下选择「发布当前证书到共享证书库」；之后每次续期成功，reload hook
+  会自动把新证书原子发布回库（owner=sb）。
+- **续期**：只有 `meta.env` 里的 owner 工具会续期；非 owner 的 sb 续期检查会记录 `skipped`
+  并跳过，避免两个工具重复签发。
+- **健康检查**：证书管理页显示共享证书来源、owner、有效期与校验结果；owner 缺失或证书
+  无效会告警。
+- 卸载 sb 不会删除 `/etc/cert-store`；如需停用共享证书，在证书管理里切回自签或 ACME 即可。
+- acme-nginx 侧的启用方式（`CERT_SOURCE=store`）见该项目 README。
 
 ## 发布检查
 

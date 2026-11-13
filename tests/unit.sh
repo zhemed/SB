@@ -2134,6 +2134,54 @@ write_renew_state_fixture \
   'last_renewal_epoch=999999999999' \
   "cert_fingerprint=$(sha256sum "$ACME_CERT" | awk '{print $1}')"
 expect_success "ACME runner replaces a future inherited renewal time" "$renew_runner"
+
+runner_skips_when_store_owner_is_other(){
+  (
+    local store="$TEMP_DIR/cert-store-runner" marker="$TEMP_DIR/runner-called"
+    export CERT_STORE="$store"
+    rm -rf "$store"
+    mkdir -p "$store/example.com"
+    chmod 700 "$store" "$store/example.com"
+    printf 'owner=acme-nginx\n' > "$store/example.com/meta.env"
+    chmod 600 "$store/example.com/meta.env"
+    rm -f "$marker"
+    printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
+    chmod 700 "$ACME_BIN"
+    write_acme_renew_runner || return 1
+    "$renew_runner" || return 1
+    [[ ! -e $marker ]] || return 1
+    load_acme_renew_state || return 1
+    [[ $ACME_RENEW_LAST_RESULT == skipped && $ACME_RENEW_LAST_EXIT_CODE -eq 0 ]] || return 1
+    unset CERT_STORE
+    write_acme_renew_runner
+  )
+}
+expect_success "ACME runner skips renewal when the shared store owner is another tool" \
+  runner_skips_when_store_owner_is_other
+pass "non-owner renewal runner records a skipped check instead of issuing"
+
+runner_renews_when_store_owner_is_sb(){
+  (
+    local store="$TEMP_DIR/cert-store-runner-own" marker="$TEMP_DIR/runner-called-own"
+    export CERT_STORE="$store"
+    rm -rf "$store"
+    mkdir -p "$store/example.com"
+    chmod 700 "$store" "$store/example.com"
+    printf 'owner=sb\n' > "$store/example.com/meta.env"
+    chmod 600 "$store/example.com/meta.env"
+    rm -f "$marker"
+    printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
+    chmod 700 "$ACME_BIN"
+    write_acme_renew_runner || return 1
+    "$renew_runner" || return 1
+    [[ -e $marker ]] || return 1
+    unset CERT_STORE
+    write_acme_renew_runner
+  )
+}
+expect_success "ACME runner renews when the shared store owner is sb" \
+  runner_renews_when_store_owner_is_sb
+pass "owner renewal runner still calls acme.sh"
 expect_success "future renewal time replacement is readable" load_acme_renew_state
 [[ $ACME_RENEW_LAST_RENEWAL_EPOCH -eq 0 ]] ||
   fail "runner preserved an impossible future renewal time"
@@ -2169,7 +2217,8 @@ expect_success "generated ACME hook is current" acme_reload_hook_is_current
 expect_success "generated ACME hook passes bash -n" bash -n "$ACME_RELOAD"
 cp "$ACME_RELOAD" "$TEMP_DIR/good-acme-reload.sh"
 hook_fixture="$TEMP_DIR/acme-reload-fixture.sh"
-sed "s|/etc/sb|$SB_DIR|g" "$ACME_RELOAD" > "$hook_fixture"
+sed -e "s|/etc/sb|$SB_DIR|g" -e "s|/etc/cert-store|$SB_DIR/cert-store|g" \
+  "$ACME_RELOAD" > "$hook_fixture"
 chmod 700 "$hook_fixture"
 mkdir -p "$ACME_STAGE"
 cp -p "$CERT_FIXTURE_DIR/valid.pem" "$ACME_STAGE_CERT"
@@ -2321,6 +2370,53 @@ else
   pass "group-writable post-reload hook is covered on Linux CI"
   pass "symlinked post-reload hook is covered on Linux CI"
 fi
+
+# reload hook 成功部署后自动发布到共享证书库（owner 不是 sb 时跳过）。
+hook_publishes_to_shared_store(){
+  local store="$SB_DIR/cert-store"
+  rm -rf "$store"
+  mkdir "$store"
+  chmod 700 "$store"
+  SB_INITIAL_INSTALL=1 "$hook_fixture" || return 1
+  (
+    export CERT_STORE="$store"
+    cert_store_can_adopt example.com '*.example.com' || return 1
+    [[ $(cert_store_owner example.com) == sb ]]
+  )
+}
+expect_success "ACME hook publishes the deployed certificate to the shared store" \
+  hook_publishes_to_shared_store
+pass "reload hook publishes the deployed certificate to the shared store"
+
+hook_skips_publish_for_foreign_owner(){
+  local store="$SB_DIR/cert-store" before after
+  rm -rf "$store"
+  mkdir "$store"
+  chmod 700 "$store"
+  SB_INITIAL_INSTALL=1 "$hook_fixture" || return 1
+  (
+    export CERT_STORE="$store"
+    cert_store_take_ownership example.com acme-nginx
+  ) || return 1
+  before=$(readlink "$store/example.com/current") || return 1
+  SB_INITIAL_INSTALL=1 "$hook_fixture" || return 1
+  after=$(readlink "$store/example.com/current") || return 1
+  [[ $before == "$after" ]]
+}
+expect_success "ACME hook skips publishing when another tool owns the store entry" \
+  hook_skips_publish_for_foreign_owner
+pass "reload hook respects a foreign shared-store owner"
+
+hook_survives_unavailable_store(){
+  local store="$SB_DIR/cert-store"
+  rm -rf "$store"
+  : > "$store"
+  SB_INITIAL_INSTALL=1 "$hook_fixture" || return 1
+  rm -f "$store"
+}
+expect_success "ACME hook survives an unavailable shared store" \
+  hook_survives_unavailable_store
+pass "a broken shared store never fails the certificate deployment"
 
 awk '
   $0 == "if [[ ! -s $config ]]; then" { in_config_guard=1; print; next }

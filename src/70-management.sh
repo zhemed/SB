@@ -236,6 +236,7 @@ show_acme_renewal_status(){
     case $ACME_RENEW_LAST_RESULT in
       renewed) green "最近检查结果: 已续期并执行证书生效回调" ;;
       unchanged) green "最近检查结果: 成功，暂不需要续期" ;;
+      skipped) yellow "最近检查结果: 已跳过（共享证书库的续期由其他工具负责）" ;;
       failed) red "最近检查结果: 失败（退出码 $ACME_RENEW_LAST_EXIT_CODE）" ;;
     esac
     if [[ $ACME_RENEW_LAST_RENEWAL_EPOCH != 0 ]]; then
