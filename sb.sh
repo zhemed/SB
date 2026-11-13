@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.5.0"
+sb_version="v5.5.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1472,7 +1472,14 @@ publish_acme_certificate_to_store(){
        sed 's/^[[:space:]]*//' | grep -Fxiq -- "$wildcard"; then
     alt=$wildcard
   fi
-  if ! cert_store_publish "$identity" "$ACME_CERT" "$ACME_KEY" "$alt" sb letsencrypt; then
+  local cert_path=$ACME_CERT key_path=$ACME_KEY
+  if [[ -L $cert_path ]]; then
+    cert_path=$(readlink -f -- "$cert_path") || return 1
+  fi
+  if [[ -L $key_path ]]; then
+    key_path=$(readlink -f -- "$key_path") || return 1
+  fi
+  if ! cert_store_publish "$identity" "$cert_path" "$key_path" "$alt" sb letsencrypt; then
     red "发布到共享证书库失败"
     return 1
   fi
