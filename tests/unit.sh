@@ -2050,6 +2050,42 @@ acme_renew_runner_fails_closed_when_store_lock_unavailable(){
 expect_success "ACME runner fails closed when the shared store lock is unavailable" \
   acme_renew_runner_fails_closed_when_store_lock_unavailable
 pass "store lock failure skips the run and warns instead of renewing blindly"
+
+acme_renew_runner_records_failed_without_fingerprint(){
+  (
+    local store="$TEMP_DIR/runner-lock-fail-store2" marker="$TEMP_DIR/runner-lock-fail-called2"
+    local fakebin="$TEMP_DIR/fake-logger-bin2" logger_log="$TEMP_DIR/fake-logger2.log"
+    local output runner state state_bak="$TEMP_DIR/runner-state2.bak"
+    runner=$(acme_renew_runner_path) || return 1
+    state=$(acme_renew_state_path) || return 1
+    cp -p "$state" "$state_bak" 2>/dev/null || :
+    printf '%s\n' 'example.com' > "$ACME_IDENTITY"
+    rm -rf "$store" "$marker" "$fakebin" "$logger_log"
+    rm -f "$state"
+    mkdir -p "$store" "$fakebin" && chmod 700 "$store" "$fakebin" || return 1
+    mkdir "$store/.lock" || return 1
+    printf '%s\n' '#!/bin/bash' "printf '%s\n' \"\$*\" >> '$logger_log'" 'exit 0' > "$fakebin/logger"
+    chmod 700 "$fakebin/logger"
+    printf '%s\n' '#!/bin/bash' ": > '$marker'" 'exit 0' > "$ACME_BIN"
+    chmod 700 "$ACME_BIN"
+    # 用不存在的 cert_file 生成 runner（不动真实 ACME_CERT，避免破坏符号链接布局）
+    STORE_DIR="$store" CERT_STORE="$store" ACME_CERT="$TEMP_DIR/missing-cert.pem" \
+      write_acme_renew_runner || return 1
+    output=$(PATH="$fakebin:$PATH" STORE_DIR="$store" CERT_STORE="$store" "$runner" 2>&1) || return 1
+    [[ ! -e $marker ]] || return 1
+    [[ $output == *'共享证书库锁获取失败'* ]] || return 1
+    load_acme_renew_state || return 1
+    [[ $ACME_RENEW_LAST_RESULT == failed &&
+       $ACME_RENEW_LAST_EXIT_CODE -eq 1 &&
+       -z $ACME_RENEW_FINGERPRINT ]] || return 1
+    # 恢复测试前的状态与 canonical runner，避免影响后续用例
+    if [[ -f $state_bak ]]; then cp -p "$state_bak" "$state"; fi
+    write_acme_renew_runner
+  )
+}
+expect_success "ACME runner writes a loadable failed state when no certificate fingerprint exists" \
+  acme_renew_runner_records_failed_without_fingerprint
+pass "empty fingerprint is recorded as failed instead of an invalid skipped state"
 write_acme_renew_runner || fail "failed to restore the canonical renewal runner"
 recorded_renewal_epoch=$ACME_RENEW_LAST_RENEWAL_EPOCH
 
@@ -3276,7 +3312,30 @@ issue_acme_certificate_claims_before_issuing(){
     cert_store_owner_present(){ return 1; }
     issue_acme_certificate_deploy(){ return 1; }
     ! issue_acme_certificate 0 0 0 || return 1
-    [[ $(cert_store_owner example.com) == acme-nginx ]]
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # meta 损坏：claim 拒绝（3），签发部署阶段不被调用
+    rm -f "$store/example.com/meta.env"
+    printf '%s\n' 'unknown=1' > "$store/example.com/meta.env"
+    chmod 600 "$store/example.com/meta.env"
+    rm -f "$marker"
+    issue_acme_certificate_deploy(){ : > "$marker"; return 0; }
+    ! issue_acme_certificate 0 0 0 || return 1
+    [[ ! -e $marker ]] || return 1
+    # 崩溃回滚：部署阶段收到 TERM 时 EXIT trap 恢复原 owner
+    rm -f "$store/example.com/meta.env"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    cert_store_owner_present(){ return 1; }
+    issue_acme_certificate_deploy(){ kill -TERM "$BASHPID"; sleep 5; return 0; }
+    local rc=0
+    ( issue_acme_certificate 0 0 0 ) || rc=$?
+    [[ $rc -eq 143 ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 成功路径不回滚：owner 保持 claim 占位
+    issue_acme_certificate_deploy(){ return 0; }
+    issue_acme_certificate 0 0 0 || return 1
+    [[ $(cert_store_owner example.com) == sb ]]
   )
 }
 expect_success "issue certificate claims before issuing and releases on failure" \
@@ -3531,6 +3590,15 @@ cert_store_publish_rejects_corrupt_meta(){
     ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
       "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
     [[ $(readlink "$store/example.com/current") == "$current_before" ]] || return 1
+    grep -Fq 'meta.env 损坏，拒绝覆盖' "$messages" || return 1
+    # meta 换成符号链接（即使指向看似合法的内容）同样拒绝发布
+    rm -f "$store/example.com/meta.env"
+    printf '%s\n' 'version=1' > "$TEMP_DIR/corrupt-meta-target"
+    ln -s "$TEMP_DIR/corrupt-meta-target" "$store/example.com/meta.env"
+    : > "$messages"
+    ! cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    [[ $(readlink "$store/example.com/current") == "$current_before" ]] || return 1
     grep -Fq 'meta.env 损坏，拒绝覆盖' "$messages"
   )
 }
@@ -3568,7 +3636,25 @@ cert_store_claim_checks_live_owner_and_rolls_back(){
     # meta 缺失：claim 为 no-op 成功
     rm -rf "$store/example.com"
     cert_store_claim_issuance sb || return 1
-    [[ -z $CERT_STORE_CLAIM_PREVIOUS ]]
+    [[ -z $CERT_STORE_CLAIM_PREVIOUS ]] || return 1
+    # meta 存在但损坏（未知字段）：claim 返回 3，meta 不变
+    local claim_rc=0 corrupt_before=''
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    printf '%s\n' 'unknown=1' >> "$store/example.com/meta.env"
+    chmod 600 "$store/example.com/meta.env"
+    corrupt_before=$(cat "$store/example.com/meta.env")
+    cert_store_claim_issuance sb || claim_rc=$?
+    [[ $claim_rc -eq 3 ]] || return 1
+    [[ $(cat "$store/example.com/meta.env") == "$corrupt_before" ]] || return 1
+    # meta 换成符号链接也算损坏
+    rm -f "$store/example.com/meta.env"
+    printf '%s\n' 'version=1' > "$TEMP_DIR/claim-meta-target"
+    ln -s "$TEMP_DIR/claim-meta-target" "$store/example.com/meta.env"
+    claim_rc=0
+    cert_store_claim_issuance sb || claim_rc=$?
+    [[ $claim_rc -eq 3 ]] || return 1
+    rm -f "$store/example.com/meta.env"
   )
 }
 expect_success "store claim rejects a live other owner and rolls back on failure" \

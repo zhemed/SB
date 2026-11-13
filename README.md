@@ -68,7 +68,7 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`5.8.0`。
+- 当前项目版本：`5.8.1`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
@@ -170,9 +170,12 @@ nginx -t && systemctl reload nginx
   短暂持锁（flock -w 5，读完即放）。**签发前 double-check（B6）**：发起 ACME 签发前先在
   store 锁内 claim——若 owner 是其他"存活"工具则拒绝签发；否则把 owner 置为 sb 占位，
   签发失败/取消时回滚原 owner，成功则保持 owner 由发布流程写回（显式接管可跳过该检查）。
-- **meta 损坏**：发布时若域名目录的 `meta.env` 存在但解析失败，直接拒绝覆盖（不会跳过
-  owner 校验）；runner 在 store 锁获取失败时写 `skipped` 状态并跳过本次（fail-closed），
-  有 logger 时同时记录系统日志。
+- **meta 损坏**：发布时若域名目录的 `meta.env` 路径存在（常规文件/符号链接/目录）但解析
+  失败，直接拒绝覆盖（不会跳过 owner 校验）；签发前 claim 遇到损坏 meta 也会拒绝并提示修复；
+  runner 在 store 锁获取失败时写 `skipped` 状态并跳过本次（fail-closed，无证书指纹时记
+  `failed`），有 logger 时同时记录系统日志。
+- **own 模式**：库内存在同域名存活他方 owner 时，本工具 own 模式手动签发也会被 claim 拒绝
+  （提示先停用对方续期或使用接管流程）——这是防双签设计，避免两个工具同时向 CA 申请同一域名。
 - **健康检查**：证书管理页显示共享证书来源、owner、有效期与校验结果；owner 缺失或证书
   无效会告警。
 - 卸载 sb 不会删除 `/etc/cert-store`；如需停用共享证书，在证书管理里切回自签或 ACME 即可。

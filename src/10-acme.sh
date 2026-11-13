@@ -867,8 +867,8 @@ cert_store_publish_locked(){
     mkdir "$dir" || return 1
     chmod 700 "$dir" || return 1
   fi
-  # meta 损坏（常规文件但解析失败）时拒绝发布：不能跳过 owner 校验继续覆盖。
-  if [[ -f $dir/meta.env && ! -L $dir/meta.env ]] &&
+  # meta 路径存在（常规文件/符号链接/目录）但解析失败时拒绝发布：不能跳过 owner 校验继续覆盖。
+  if [[ -e $dir/meta.env || -L $dir/meta.env ]] &&
      ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
     yellow "共享证书库的 meta.env 损坏，拒绝覆盖（请先修复或清理该域名的 meta）"
     return 1
@@ -1051,15 +1051,24 @@ cert_store_claim_issuance(){
   CERT_STORE_CLAIM_PREVIOUS=
   [[ -d $root && ! -L $root ]] || return 0
   [[ -d $dir && ! -L $dir ]] || return 0
-  [[ -f $dir/meta.env && ! -L $dir/meta.env ]] || return 0
+  if [[ ! -e $dir/meta.env && ! -L $dir/meta.env ]]; then
+    return 0
+  fi
+  # meta 存在（常规文件/符号链接/目录）但无法按契约解析：拒绝签发，而不是当成"其他工具"。
+  if ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    return 3
+  fi
   cert_store_with_lock cert_store_claim_issuance_locked "$self" "$force" "$apex"
 }
 
 cert_store_claim_issuance_locked(){
   local self=$1 force=$2 apex=$3 dir owner
   dir=$(cert_store_domain_dir "$apex") || return 1
+  if [[ ! -e $dir/meta.env && ! -L $dir/meta.env ]]; then
+    return 0
+  fi
   if ! cert_store_read_meta "$apex" >/dev/null 2>&1; then
-    return 2
+    return 3
   fi
   owner=$CERT_STORE_META_OWNER
   case $owner in
@@ -2614,7 +2623,11 @@ issue_acme_certificate(){
     case $claim_rc in
       0) claim_previous=${CERT_STORE_CLAIM_PREVIOUS:-} ;;
       2)
-        red "共享证书库由其他工具负责续期，拒绝重复签发（如需接管请使用「接管续期」）"
+        red "共享证书库由其他工具负责续期，拒绝重复签发；如需接管请先停用对方续期后重试"
+        return 1
+        ;;
+      3)
+        red "共享证书库 meta 损坏，拒绝签发，请先修复"
         return 1
         ;;
       *)
@@ -2622,14 +2635,55 @@ issue_acme_certificate(){
         return 1
         ;;
     esac
+    arm_acme_claim_rollback "$claim_previous"
   fi
   if issue_acme_certificate_deploy; then
+    disarm_acme_claim_rollback
     return 0
   fi
+  disarm_acme_claim_rollback
   if [[ $skip_claim -ne 1 ]] && ! cert_store_release_claim sb "$claim_previous"; then
     yellow "签发失败，且共享证书库 owner 回滚失败，请检查 $(cert_store_root)"
   fi
   return 1
+}
+
+# ---------- item 4：claim 崩溃回滚 trap（EXIT/INT/TERM）----------
+ACME_CLAIM_ROLLBACK_ARMED=0
+ACME_CLAIM_ROLLBACK_PREVIOUS=
+ACME_CLAIM_SAVED_EXIT=
+ACME_CLAIM_SAVED_INT=
+ACME_CLAIM_SAVED_TERM=
+
+acme_claim_rollback_on_exit(){
+  if [[ ${ACME_CLAIM_ROLLBACK_ARMED:-0} -eq 1 ]]; then
+    cert_store_release_claim sb "${ACME_CLAIM_ROLLBACK_PREVIOUS:-}" >/dev/null 2>&1 || true
+    ACME_CLAIM_ROLLBACK_ARMED=0
+  fi
+}
+
+arm_acme_claim_rollback(){
+  ACME_CLAIM_ROLLBACK_PREVIOUS=${1-}
+  ACME_CLAIM_ROLLBACK_ARMED=1
+  ACME_CLAIM_SAVED_EXIT=$(trap -p EXIT)
+  ACME_CLAIM_SAVED_INT=$(trap -p INT)
+  ACME_CLAIM_SAVED_TERM=$(trap -p TERM)
+  # shellcheck disable=SC2064
+  trap 'acme_claim_rollback_on_exit' EXIT
+  # shellcheck disable=SC2064
+  trap 'exit 130' INT
+  # shellcheck disable=SC2064
+  trap 'exit 143' TERM
+}
+
+disarm_acme_claim_rollback(){
+  ACME_CLAIM_ROLLBACK_ARMED=0
+  if [[ -n ${ACME_CLAIM_SAVED_EXIT:-} ]]; then eval "$ACME_CLAIM_SAVED_EXIT"; else trap - EXIT; fi
+  if [[ -n ${ACME_CLAIM_SAVED_INT:-} ]]; then eval "$ACME_CLAIM_SAVED_INT"; else trap - INT; fi
+  if [[ -n ${ACME_CLAIM_SAVED_TERM:-} ]]; then eval "$ACME_CLAIM_SAVED_TERM"; else trap - TERM; fi
+  ACME_CLAIM_SAVED_EXIT=
+  ACME_CLAIM_SAVED_INT=
+  ACME_CLAIM_SAVED_TERM=
 }
 
 # 签发执行阶段（claim 之后的全部流程）；变量通过动态作用域从 issue_acme_certificate 读取。
