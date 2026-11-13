@@ -624,7 +624,7 @@ acme_cancel_keeps_the_live_state(){
     # shellcheck disable=SC2317
     readp(){ printf -v "$2" '%s' '1'; }
     # shellcheck disable=SC2317
-    issue_cloudflare_certificate(){ return 3; }
+    issue_acme_certificate(){ return 3; }
     # shellcheck disable=SC2317
     begin_acme_state_backup(){ return 0; }
     # shellcheck disable=SC2317
@@ -894,6 +894,167 @@ expect_failure "31-character Account ID is invalid" \
 expect_failure "non-hex Account ID is invalid" \
   valid_cloudflare_account_id 0123456789abcdef0123456789abcdeg
 
+
+dns_provider_names_are_validated(){
+  valid_dns_provider cloudflare && valid_dns_provider huaweicloud &&
+    ! valid_dns_provider '' && ! valid_dns_provider aws
+}
+expect_success "DNS provider validator accepts Cloudflare and Huawei Cloud" \
+  dns_provider_names_are_validated
+
+dns_providers_map_to_plugin_and_label(){
+  [[ $(dns_provider_plugin_file cloudflare) == dns_cf.sh ]] &&
+    [[ $(dns_provider_plugin_file huaweicloud) == dns_huaweicloud_aksk.sh ]] &&
+    ! dns_provider_plugin_file aws &&
+    [[ $(dns_provider_label cloudflare) == Cloudflare ]] &&
+    [[ $(dns_provider_label huaweicloud) == 华为云 ]] &&
+    ! dns_provider_label ''
+}
+expect_success "DNS provider maps to its plugin file and label" \
+  dns_providers_map_to_plugin_and_label
+
+huaweicloud_credential_validators_cover_legal_and_illegal_values(){
+  valid_huaweicloud_access_key_id 'AKIDEXAMPLE1234567890' &&
+    valid_huaweicloud_access_key_id 'ak_id-example_1234567' &&
+    ! valid_huaweicloud_access_key_id 'too-short' &&
+    ! valid_huaweicloud_access_key_id 'AKIDEXAMPLE1234567890!' &&
+    valid_huaweicloud_secret_access_key 'abcdefghijklmnop+/=' &&
+    valid_huaweicloud_secret_access_key 'sk-example_1234567890==' &&
+    ! valid_huaweicloud_secret_access_key 'short' &&
+    ! valid_huaweicloud_secret_access_key 'abcdefghijklmnop!' &&
+    valid_huaweicloud_region 'cn-north-4' &&
+    valid_huaweicloud_region 'cn_north_4' &&
+    ! valid_huaweicloud_region 'c' &&
+    ! valid_huaweicloud_region 'cn north 4'
+}
+expect_success "Huawei Cloud credential validators accept only legal values" \
+  huaweicloud_credential_validators_cover_legal_and_illegal_values
+
+# acme.sh 把凭据存进 account.conf；sb 不新增状态文件，只按 SAVED_* 推断供应商。
+acme_dns_provider_is_inferred_from_account_conf(){
+  (
+    local dir="$TEMP_DIR/dns-provider-detection" conf
+    rm -rf -- "$dir"
+    mkdir -p "$dir/acme"
+    # shellcheck disable=SC2030  # the subshell owns the ACME globals
+    ACME_HOME="$dir/acme"
+    conf="$ACME_HOME/account.conf"
+    printf '%s\n' \
+      "SAVED_CF_Token='fixture_token_123'" \
+      "SAVED_CF_Account_ID='0123456789abcdef0123456789abcdef'" > "$conf"
+    [[ $(acme_dns_provider_detected) == cloudflare ]] || return 1
+    acme_credentials_present || return 1
+    printf '%s\n' \
+      "SAVED_HUAWEICLOUD_ACCESS_KEY_ID='AKIDEXAMPLE1234567890'" \
+      "SAVED_HUAWEICLOUD_SECRET_ACCESS_KEY='abcdefghijklmnop+/='" \
+      "SAVED_HUAWEICLOUD_REGION='cn-north-4'" > "$conf"
+    [[ $(acme_dns_provider_detected) == huaweicloud ]] || return 1
+    acme_credentials_present || return 1
+    printf '%s\n' \
+      "SAVED_CF_Token='fixture_token_123'" \
+      "SAVED_CF_Account_ID='0123456789abcdef0123456789abcdef'" \
+      "SAVED_HUAWEICLOUD_ACCESS_KEY_ID='AKIDEXAMPLE1234567890'" \
+      "SAVED_HUAWEICLOUD_SECRET_ACCESS_KEY='abcdefghijklmnop+/='" \
+      "SAVED_HUAWEICLOUD_REGION='cn-north-4'" > "$conf"
+    ! acme_dns_provider_detected || return 1
+    ! acme_credentials_present || return 1
+    printf '%s\n' \
+      "SAVED_HUAWEICLOUD_ACCESS_KEY_ID='AKIDEXAMPLE1234567890'" \
+      "SAVED_HUAWEICLOUD_SECRET_ACCESS_KEY='abcdefghijklmnop+/='" > "$conf"
+    ! acme_dns_provider_detected || return 1
+    rm -f "$conf"
+    ! acme_dns_provider_detected || return 1
+    ! acme_credentials_present
+  )
+}
+expect_success "DNS provider is inferred from acme.sh account.conf" \
+  acme_dns_provider_is_inferred_from_account_conf
+
+huawei_aksk_plugin_is_written_atomically_and_repaired(){
+  (
+    local dir="$TEMP_DIR/huawei-aksk-plugin" plugin digest
+    rm -rf -- "$dir"
+    mkdir -p "$dir/acme/dnsapi"
+    # shellcheck disable=SC2030  # the subshell owns the ACME globals
+    ACME_HOME="$dir/acme"
+    plugin="$ACME_HOME/dnsapi/dns_huaweicloud_aksk.sh"
+    write_huawei_aksk_plugin || return 1
+    huawei_aksk_plugin_ok || return 1
+    [[ -f $plugin && ! -L $plugin ]] || return 1
+    [[ $(stat -c '%a' "$plugin") == 700 ]] || return 1
+    [[ $(grep -Fxc -- '# sb-huaweicloud-aksk: v1' "$plugin" || true) -eq 1 ]] || return 1
+    bash -n "$plugin" || return 1
+    digest=$(sha256sum "$plugin" | awk '{print $1}')
+    write_huawei_aksk_plugin || return 1
+    [[ $(sha256sum "$plugin" | awk '{print $1}') == "$digest" ]] || return 1
+    printf '%s\n' '#!/bin/sh' 'broken' > "$plugin"
+    ! huawei_aksk_plugin_ok || return 1
+    write_huawei_aksk_plugin || return 1
+    huawei_aksk_plugin_ok || return 1
+    rm -rf -- "$ACME_HOME/dnsapi"
+    ! write_huawei_aksk_plugin
+  )
+}
+expect_success "Huawei Cloud DNS plugin is atomic, idempotent and self-repairing" \
+  huawei_aksk_plugin_is_written_atomically_and_repaired
+
+install_official_acme_early_paths_are_provider_aware(){
+  (
+    local dir="$TEMP_DIR/acme-install-early"
+    rm -rf -- "$dir"
+    mkdir -p "$dir/acme/dnsapi"
+    # shellcheck disable=SC2030  # the subshell owns the ACME globals
+    ACME_HOME="$dir/acme"
+    # shellcheck disable=SC2030
+    ACME_BIN="$ACME_HOME/acme.sh"
+    # shellcheck disable=SC2034  # read through dynamic scope by install_official_acme
+    ACME_VERSION=3.1.4
+    # shellcheck disable=SC2016  # the mock script is written literally
+    printf '%s\n' '#!/bin/bash' \
+      'case ${1-} in' '  --version) printf "%s\n" "v3.1.4" ;;' 'esac' 'exit 0' > "$ACME_BIN"
+    chmod 700 "$ACME_BIN"
+    printf '%s\n' '# dns_cf fixture' > "$ACME_HOME/dnsapi/dns_cf.sh"
+    install_official_acme cloudflare || return 1
+    install_official_acme || return 1
+    [[ ! -e $ACME_HOME/dnsapi/dns_huaweicloud_aksk.sh ]] || return 1
+    install_official_acme huaweicloud || return 1
+    huawei_aksk_plugin_ok || return 1
+    ! install_official_acme aws
+  )
+}
+expect_success "official acme.sh early return path is provider-aware" \
+  install_official_acme_early_paths_are_provider_aware
+
+# 助手必须把读到的值写回调用方变量；曾因助手自己声明同名 local 而在 set -u 下炸掉。
+acme_credential_prompts_fill_caller_variables(){
+  (
+    local account_id cf_token hw_access_key hw_secret_key hw_region
+    local -a answers=('0123456789abcdef0123456789abcdef' 'fixture_token_123')
+    local index=0
+    # shellcheck disable=SC2317
+    readp(){
+      printf -v "$2" '%s' "${answers[$index]}"
+      index=$((index + 1))
+    }
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    # shellcheck disable=SC2317
+    red(){ :; }
+    prompt_cloudflare_acme_credentials account_id cf_token || return 1
+    [[ $account_id == 0123456789abcdef0123456789abcdef ]] || return 1
+    [[ $cf_token == fixture_token_123 ]] || return 1
+    answers=('AKIDEXAMPLE1234567890' 'abcdefghijklmnop+/=' 'cn-north-4')
+    index=0
+    prompt_huaweicloud_acme_credentials hw_access_key hw_secret_key hw_region || return 1
+    [[ $hw_access_key == AKIDEXAMPLE1234567890 ]] || return 1
+    [[ $hw_secret_key == 'abcdefghijklmnop+/=' ]] || return 1
+    [[ $hw_region == cn-north-4 ]]
+  )
+}
+expect_success "ACME credential prompts fill the caller's variables" \
+  acme_credential_prompts_fill_caller_variables
+
+
 normalize_acme_domain ' Example.COM. ' || fail "single-domain normalization"
 [[ $ACME_PRIMARY_DOMAIN == example.com && -z $ACME_WILDCARD_DOMAIN ]] ||
   fail "single-domain normalization values"
@@ -977,7 +1138,9 @@ STATE_DIR="$TEMP_DIR/state"
 export SB_DIR="$STATE_DIR/sb"
 # shellcheck disable=SC2031
 export SB_CONFIG="$SB_DIR/sb.json"
+# shellcheck disable=SC2031  # the subshell-local ACME fixtures restore it
 export ACME_HOME="$SB_DIR/acme"
+# shellcheck disable=SC2031
 export ACME_BIN="$ACME_HOME/acme.sh"
 export ACME_RELOAD="$SB_DIR/acme_reload.sh"
 export ACME_IDENTITY="$SB_DIR/acme_server_name"
@@ -1799,6 +1962,38 @@ if compgen -G "$SB_DIR/.acme_reload.*" >/dev/null; then
 fi
 pass "ACME hook leaves no temporary file"
 
+# 华为云主机：account.conf 里只有 SAVED_HUAWEICLOUD_* 时也必须能建立 cron + runner，
+# 自定义 DNS 插件缺失时由 setup 自愈补写（repair 与续期自检走同一条 ensure 路径）。
+cf_account_conf_fixture=$(<"$ACME_HOME/account.conf")
+printf '%s\n' \
+  "SAVED_HUAWEICLOUD_ACCESS_KEY_ID='AKIDEXAMPLE1234567890'" \
+  "SAVED_HUAWEICLOUD_SECRET_ACCESS_KEY='abcdefghijklmnop+/='" \
+  "SAVED_HUAWEICLOUD_REGION='cn-north-4'" > "$ACME_HOME/account.conf"
+huawei_plugin="$ACME_HOME/dnsapi/dns_huaweicloud_aksk.sh"
+rm -f "$huawei_plugin"
+expect_success "ACME setup installs the Huawei Cloud DNS plugin from account.conf" \
+  setup_acme_renew_cron
+[[ -f $huawei_plugin && ! -L $huawei_plugin ]] ||
+  fail "Huawei Cloud DNS plugin was not installed"
+pass "Huawei Cloud DNS plugin is installed by ACME setup"
+case $(uname -s 2>/dev/null) in
+  MINGW*|MSYS*) ;;
+  *) [[ $(stat -c '%a' "$huawei_plugin") == 700 ]] ||
+       fail "Huawei Cloud DNS plugin mode is not 700" ;;
+esac
+pass "Huawei Cloud DNS plugin is private"
+[[ $(grep -Fxc -- '# sb-huaweicloud-aksk: v1' "$huawei_plugin" || true) -eq 1 ]] ||
+  fail "Huawei Cloud DNS plugin marker is missing or duplicated"
+pass "Huawei Cloud DNS plugin carries one marker"
+rm -f "$huawei_plugin"
+expect_success "ACME setup self-heals a missing Huawei Cloud DNS plugin" setup_acme_renew_cron
+[[ -f $huawei_plugin ]] || fail "ACME setup did not restore the missing Huawei Cloud DNS plugin"
+pass "ACME setup restores a missing Huawei Cloud DNS plugin"
+rm -f "$ACME_HOME/account.conf"
+expect_failure "ACME setup rejects missing Huawei Cloud credentials" setup_acme_renew_cron
+printf '%s\n' "$cf_account_conf_fixture" > "$ACME_HOME/account.conf"
+rm -f "$huawei_plugin"
+
 printf '%s\n' '#!/bin/bash' '# old hook' > "$ACME_RELOAD"
 chmod 700 "$ACME_RELOAD"
 expect_success "ensure refreshes an old executable hook" ensure_acme_renew_cron
@@ -2418,7 +2613,7 @@ MANAGEMENT_ROLLBACK_CALLS=0
 ACME_CERT="$MANAGEMENT_TRANSACTION_DIR/acme-cert.pem"
 ACME_KEY="$MANAGEMENT_TRANSACTION_DIR/acme-private.key"
 certificate_action_service_ready(){ return 0; }
-issue_cloudflare_certificate(){
+issue_acme_certificate(){
   mkdir -p "$MANAGEMENT_TRANSACTION_DIR/old-acme-state"
   ACME_STATE_BACKUP="$MANAGEMENT_TRANSACTION_DIR/old-acme-state"
   return 0
@@ -2428,7 +2623,7 @@ activate_managed_certificate(){ return 2; }
 rollback_new_acme_state(){ MANAGEMENT_ROLLBACK_CALLS=$((MANAGEMENT_ROLLBACK_CALLS + 1)); }
 ACME_STATE_BACKUP=
 ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-expect_failure "ambiguous certificate activation reports failure" apply_new_cloudflare_certificate
+expect_failure "ambiguous certificate activation reports failure" apply_new_acme_certificate
 [[ $MANAGEMENT_ROLLBACK_CALLS -eq 0 ]] ||
   fail "ambiguous certificate activation deleted or restored ACME state"
 pass "ambiguous certificate activation does not run destructive rollback"

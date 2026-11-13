@@ -3,7 +3,7 @@
 Certificate deployment is the most safety-critical subsystem: it mutates the live TLS material of a
 running service, unattended, from cron. The design exists to make every step reversible.
 
-Primary sources: `src/10-acme.sh` (1494 lines), `src/60-cron.sh` (563), constants in
+Primary sources: `src/10-acme.sh` (1854 lines), `src/60-cron.sh` (614), constants in
 `src/00-bootstrap.sh:25-41`.
 
 ---
@@ -284,21 +284,85 @@ pinned byte-exactly by an identity check (`src/60-cron.sh:265-267`). It must nev
 ## 7. Secrets
 
 - The Cloudflare API Token is read through the ordinary **visible** `readp`
-  (`src/10-acme.sh:1270`); `tests/verify.sh:75-81` fails the build if a hidden read or a
-  "hidden input" message is introduced.
-- It is passed **only** via the environment and cleared on every exit path — failure first, then
-  success (`src/10-acme.sh:1315-1318`, `1324`).
+  (`src/10-acme.sh:1540-1556`); `tests/verify.sh` fails the build if a hidden read or a
+  "hidden input" message is introduced. Huawei Cloud AK/SK use the same visible-read policy
+  (`src/10-acme.sh:1561-1589`); the gate also bans hidden reads and any `HUAWEICLOUD_PASSWORD` remnant.
+- Credentials are passed **only** via the environment and cleared on every exit path — failure first,
+  then success (`src/10-acme.sh:1644`, `1650`, `1667`, `1677`, `1684`).
 - Alternative credential sources are explicitly neutralised so the script's own token is the only one
-  acme.sh can use: `CF_Zone_ID='' CF_Key='' CF_Email=''` (`src/10-acme.sh:1316`).
-- The token is **never printed**. Presence is verified by counting matching lines in acme.sh's own
-  `account.conf` (`src/10-acme.sh:226-229`). Repo-wide, the only `CF_Token` references are
-  `src/10-acme.sh:227` and `:1315`.
+  acme.sh can use: `CF_Zone_ID='' CF_Key='' CF_Email=''` (`src/10-acme.sh:1675`).
+- Tokens/secrets are **never printed**. Presence is verified by counting matching lines in acme.sh's own
+  `account.conf` (`src/10-acme.sh:222-228` Cloudflare, `:231-240` Huawei Cloud). Repo-wide, the only
+  `CF_Token` references are `src/10-acme.sh:225` and `:1674`.
 - The domain-conf reader **whitelists keys**, so secret-bearing acme.sh variables cannot be surfaced
   through it (`src/10-acme.sh:159-163`).
 - Secrets live in 700 directories / 600 files, with the Windows mode-check exception described in
   `managed-assets.md` §5.
 
 ---
+
+## 7.5 DNS providers (Cloudflare / Huawei Cloud AK/SK)
+
+Added in 5.2.0. Everything provider-specific is resolved through four helpers; the deployment,
+pointer, reload-hook and recovery-point machinery stays provider-agnostic.
+
+| Helper | Contract |
+|---|---|
+| `valid_dns_provider <p>` | true only for `cloudflare` / `huaweicloud` |
+| `dns_provider_plugin_file <p>` | prints `dns_cf.sh` / `dns_huaweicloud_aksk.sh`; unknown → non-zero |
+| `dns_provider_label <p>` | prints `Cloudflare` / `华为云` |
+| `acme_dns_provider_detected` | prints the provider, **fails unless exactly one provider's credentials are complete** |
+
+**Provider is inferred from acme.sh's own state, never stored in a new file.** `reset_acme_state`
+deletes `$ACME_HOME` before every issuance, so `account.conf` can only carry the current provider:
+
+- Cloudflare: `SAVED_CF_Token='…'` + `SAVED_CF_Account_ID='…'`
+- Huawei Cloud: `SAVED_HUAWEICLOUD_ACCESS_KEY_ID='…'` + `SAVED_HUAWEICLOUD_SECRET_ACCESS_KEY='…'` +
+  `SAVED_HUAWEICLOUD_REGION='…'` (written by the plugin through `_saveaccountconf_mutable`)
+
+Both providers present, or an incomplete set, is an error — never guess. Do **not** add a provider
+state file: the recovery-point whitelist (`validate_acme_state_backup`) and the backup/restore paths
+must stay untouched.
+
+### Custom Huawei Cloud plugin
+
+`dns_huaweicloud_aksk.sh` (161 lines, vendored from acme-nginx v0.3.0, SDK-HMAC-SHA256 against
+`dns.<region>.myhuaweicloud.com` v2 API) is a managed file under `$ACME_HOME/dnsapi/`:
+
+- written only by `write_huawei_aksk_plugin`: `mktemp` → `chmod 700` → `mv -fT` (atomic), then
+  re-validated;
+- `huawei_aksk_plugin_ok` requires a regular non-symlink file, the marker
+  `# sb-huaweicloud-aksk: v1` exactly once, and `bash -n`;
+- `ensure_acme_dns_plugin` is the single self-heal entry point, called by `install_official_acme`
+  (huaweicloud), `setup_acme_renew_cron`, and `repair_acme_certificate_from_storage`;
+- the plugin is **not** in the pinned acme.sh tarball: the CF path still requires `dnsapi/dns_cf.sh`
+  from the tarball, the HW path writes its plugin after install;
+- the plugin needs `od` for HMAC hex encoding; `core_dependencies_ready` lists it since 5.2.0.
+
+### Huawei Cloud credential contract
+
+| Field | Validation | Env key passed to acme.sh |
+|---|---|---|
+| AK | `^[A-Za-z0-9_-]{16,64}$` | `HUAWEICLOUD_ACCESS_KEY_ID` |
+| SK | `^[A-Za-z0-9+/=_-]{16,128}$` | `HUAWEICLOUD_SECRET_ACCESS_KEY` |
+| Region | `^[A-Za-z0-9_-]{2,32}$` (e.g. `cn-north-4`) | `HUAWEICLOUD_REGION` |
+
+Credentials are read with the **visible** `readp` (same policy as the Cloudflare token), passed only
+through the environment, cleared on every success/failure path, and never printed. The plugin
+persists them into `account.conf` (root 600) so `acme.sh --cron` renews unattended.
+
+### Issuance
+
+`issue_acme_certificate` (formerly `issue_cloudflare_certificate`) prompts domain → provider →
+credentials, then runs acme.sh with `--dns "${plugin%.sh}"`; everything after that (state backup,
+reset, install, reload hook, deployment registration) is unchanged. Cancelling at any prompt returns
+`3` without touching live state.
+
+### Adding a provider
+
+Add it to the three helpers + `acme_dns_provider_detected`, add its credential check, plugin lifecycle
+and `install_official_acme` branch, then extend `issue_acme_certificate`. Keep the provider list
+closed — the script must refuse unknown providers.
 
 ## 8. Recovery points
 
@@ -373,6 +437,10 @@ Regression coverage: `tests/repair.sh` → `interrupt_handler_restores_only_infl
    pattern.
 7. After every write, re-read and re-verify; a failed verification *is* the operation's failure.
 8. `bash scripts/build.sh && bash tests/verify.sh` before committing.
+9. Touching the provider layer: keep inference in `acme_dns_provider_detected` (exactly one complete
+   provider, never guess), update all three `ensure_acme_dns_plugin` call sites, keep the plugin
+   marker `# sb-huaweicloud-aksk: v1` exactly once, and keep the `tests/verify.sh` Huawei pins
+   (visible prompts, marker count, no `HUAWEICLOUD_PASSWORD`).
 
 ---
 

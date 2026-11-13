@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.1.3"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.1.3"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.1.3' ]] ||
-  fail "VERSION file is not 5.1.3"
-grep -Fq -- "当前项目版本：\`5.1.3\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.1.3"
+[[ $(grep -Fxc 'sb_version="v5.2.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.2.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.2.0' ]] ||
+  fail "VERSION file is not 5.2.0"
+grep -Fq -- "当前项目版本：\`5.2.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.2.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -86,6 +86,37 @@ if grep -Fq 'API Token 已读取' "$ROOT_DIR/sb.sh" ||
    grep -Eq 'read[^[:cntrl:]]+-s[^[:cntrl:]]+cf_token' "$ROOT_DIR/sb.sh"; then
   fail "hidden Cloudflare Token interaction remains"
 fi
+# 华为云走 AK/SK（自写 acme.sh dnsapi 插件），凭据同样必须是可见输入。
+for huawei_pattern in \
+  '请选择 DNS 供应商' \
+  'readp "请输入华为云 Access Key ID：' \
+  'readp "请输入华为云 Secret Access Key：' \
+  'readp "请输入华为云 Region（如 cn-north-4）：' \
+  'dns_huaweicloud_aksk' \
+  'SDK-HMAC-SHA256'; do
+  grep -Fq -- "$huawei_pattern" "$ROOT_DIR/sb.sh" ||
+    fail "missing Huawei Cloud DNS support: $huawei_pattern"
+done
+[[ $(grep -Fxc -- '# sb-huaweicloud-aksk: v1' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "Huawei Cloud DNS plugin marker is missing or duplicated"
+if grep -Fq -- 'HUAWEICLOUD_PASSWORD' "$ROOT_DIR/sb.sh"; then
+  fail "deprecated Huawei Cloud IAM password credentials remain"
+fi
+if grep -Eq 'read[^[:cntrl:]]+-s[^[:cntrl:]]+(hw_access_key|hw_secret_key)' "$ROOT_DIR/sb.sh"; then
+  fail "hidden Huawei Cloud credential interaction remains"
+fi
+# 交互签发路径没有端到端测试，这里静态钉住 provider 选择与凭据传递方式。
+# shellcheck disable=SC2016  # the pattern is literal generated-script text
+grep -Fq -- '--dns "${plugin%.sh}"' "$ROOT_DIR/sb.sh" ||
+  fail "ACME issuance does not select the DNS plugin from the provider"
+# shellcheck disable=SC2016  # the patterns are literal generated-script text
+for huawei_env in \
+  'HUAWEICLOUD_ACCESS_KEY_ID="$hw_access_key"' \
+  'HUAWEICLOUD_SECRET_ACCESS_KEY="$hw_secret_key"' \
+  'HUAWEICLOUD_REGION="$hw_region"'; do
+  grep -Fq -- "$huawei_env" "$ROOT_DIR/sb.sh" ||
+    fail "Huawei Cloud credentials are not passed through the environment: $huawei_env"
+done
 
 for success_message in \
   '证书模式切换成功' \
@@ -391,7 +422,7 @@ grep -Fqx "     ! install_managed_link \"\$key\" 'acme-live/current/private.key'
 grep -Fqx '    restore_managed_links=1' "$hook_candidate" ||
   fail "ACME compatibility-link rollback marker is missing"
 
-issue_function=$(awk '/^issue_cloudflare_certificate\(\)\{/{inside=1} /^inscertificate\(\)\{/{inside=0} inside' \
+issue_function=$(awk '/^issue_acme_certificate\(\)\{/{inside=1} /^inscertificate\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")
 [[ -n $issue_function ]] || fail "cannot extract ACME issue function"
 grep -Fq -- "register_acme_certificate_deployment \"\$ACME_PRIMARY_DOMAIN\" \"\$initial_install\"" \
@@ -413,7 +444,7 @@ grep -Fq -- 'ACME_COMPAT_LOCK="$SB_DIR/acme.lock"' "$ROOT_DIR/sb.sh" ||
 grep -Fq -- 'with_acme_lock resolve_orphaned_acme_state_backup || return 1' "$ROOT_DIR/sb.sh" ||
   fail "startup ACME recovery-point handling is missing"
 inscertificate_function=$(awk '/^inscertificate\(\)\{/{inside=1} inside' "$ROOT_DIR/sb.sh")
-[[ $(printf '%s\n' "$inscertificate_function" | grep -Fc -- 'issue_cloudflare_certificate 1' || true) -eq 2 ]] ||
+[[ $(printf '%s\n' "$inscertificate_function" | grep -Fc -- 'issue_acme_certificate 1' || true) -eq 2 ]] ||
   fail "only initial installation may mark ACME install hooks as initial"
 
 if command -v shellcheck >/dev/null 2>&1; then

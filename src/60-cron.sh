@@ -557,7 +557,8 @@ setup_acme_renew_cron(){
       return 1
     }
   fi
-  cloudflare_acme_credentials_present || return 1
+  acme_credentials_present || return 1
+  ensure_acme_dns_plugin || return 1
   write_acme_reload_hook || return 1
   if ! managed_acme_live_layout_is_valid ||
      ! acme_deployment_config_is_current "$identity"; then
@@ -589,7 +590,7 @@ ensure_acme_renew_cron(){
   current=$CURRENT_CRONTAB
   if config_uses_acme_certificate; then
     if ! identity=$(valid_acme_renewal_identity 2>/dev/null) ||
-       ! cloudflare_acme_credentials_present; then
+       ! acme_credentials_present; then
       if setup_acme_renew_cron; then
         return 0
       fi

@@ -119,15 +119,22 @@ show_acme_certificate_schedule(){
 }
 
 inspect_acme_renewal_health(){
-  local current state now identity reference_epoch
+  local current state now identity reference_epoch provider plugin
   ACME_RENEW_HEALTH=normal
   ACME_RENEW_HEALTH_DETAIL=正常
-  if [[ ! -x $ACME_BIN || ! -f $ACME_HOME/dnsapi/dns_cf.sh || ! -s $ACME_IDENTITY ]]; then
+  if [[ ! -x $ACME_BIN || ! -s $ACME_IDENTITY ]]; then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="acme.sh 组件不完整"
-  elif ! cloudflare_acme_credentials_present; then
+  elif ! provider=$(acme_dns_provider_detected 2>/dev/null); then
     ACME_RENEW_HEALTH=error
-    ACME_RENEW_HEALTH_DETAIL="Cloudflare 凭据缺失或格式异常"
+    ACME_RENEW_HEALTH_DETAIL="DNS 凭据缺失或无法识别"
+  elif ! plugin=$(dns_provider_plugin_file "$provider") ||
+       [[ ! -f $ACME_HOME/dnsapi/$plugin || -L $ACME_HOME/dnsapi/$plugin ]]; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="acme.sh DNS 插件不完整"
+  elif ! acme_credentials_present; then
+    ACME_RENEW_HEALTH=error
+    ACME_RENEW_HEALTH_DETAIL="DNS 凭据缺失或格式异常"
   elif ! identity=$(read_acme_identity 2>/dev/null); then
     ACME_RENEW_HEALTH=error
     ACME_RENEW_HEALTH_DETAIL="ACME 身份文件损坏"
@@ -313,11 +320,11 @@ restore_previous_active_acme(){
   return 1
 }
 
-apply_new_cloudflare_certificate(){
+apply_new_acme_certificate(){
   local activation_status backup_path
   certificate_action_service_ready || return 1
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  issue_cloudflare_certificate 0 1
+  issue_acme_certificate 0 1
   case $? in
     0) ;;
     3)
@@ -373,7 +380,7 @@ replace_active_acme_certificate(){
     return 1
   fi
   ACME_RESTORE_ACTIVE_ON_INTERRUPT=1
-  issue_cloudflare_certificate 0 1 1
+  issue_acme_certificate 0 1 1
   case $? in
     0) ;;
     3)
@@ -394,7 +401,7 @@ replace_active_acme_certificate(){
     if activate_managed_certificate "$ACME_CERT" "$ACME_KEY"; then
       finish_acme_replacement || true
       if [[ $CERT_ACTIVATION_MAINTENANCE_OK -eq 1 ]]; then
-        green "ACME 证书与 Cloudflare 凭据更换完成"
+        green "ACME 证书与 DNS 凭据更换完成"
       else
         yellow "新 ACME 证书已生效，但自动续期配置异常，请使用修复功能"
       fi
@@ -476,7 +483,7 @@ change_cert_mode(){
         green "1：立即执行计划续期检查"
         green "2：强制重新签发当前证书"
         green "3：修复自动续期"
-        green "4：更换域名、Account ID 或 Token"
+        green "4：更换域名、DNS 供应商或凭据"
         green "5：切换为自签 bing 证书"
         green "0：返回主菜单"
         readp "请选择【0-5】：" menu || return 1
@@ -500,7 +507,7 @@ change_cert_mode(){
       self_signed)
         if acme_name=$(detect_acme_identity 2>/dev/null); then
           green "1：切换为已有 ACME 证书 ($acme_name)"
-          green "2：申请新的 Cloudflare ACME 证书"
+          green "2：申请新的 ACME 证书（Cloudflare / 华为云）"
           green "0：返回主菜单"
           readp "请选择【0-2】：" menu || return 1
           case $menu in
@@ -510,19 +517,19 @@ change_cert_mode(){
               readp "按回车返回证书管理..."
               ;;
             2)
-              with_acme_lock apply_new_cloudflare_certificate
+              with_acme_lock apply_new_acme_certificate
               readp "按回车返回证书管理..."
               ;;
             ""|0) return 0 ;;
             *) red "请输入0、1或2"; sleep 1 ;;
           esac
         else
-          green "1：申请 Cloudflare ACME 证书"
+          green "1：申请 ACME 证书（Cloudflare / 华为云）"
           green "0：返回主菜单"
           readp "请选择【0-1】：" menu || return 1
           case $menu in
             1)
-              with_acme_lock apply_new_cloudflare_certificate
+              with_acme_lock apply_new_acme_certificate
               readp "按回车返回证书管理..."
               ;;
             ""|0) return 0 ;;
@@ -532,7 +539,7 @@ change_cert_mode(){
         ;;
       *)
         green "1：切换为自签 bing 证书"
-        green "2：申请并切换为 Cloudflare ACME 证书"
+        green "2：申请并切换为 ACME 证书（Cloudflare / 华为云）"
         green "0：返回主菜单"
         readp "请选择【0-2】：" menu || return 1
         case $menu in
@@ -542,7 +549,7 @@ change_cert_mode(){
             readp "按回车返回证书管理..."
             ;;
           2)
-            with_acme_lock apply_new_cloudflare_certificate
+            with_acme_lock apply_new_acme_certificate
             readp "按回车返回证书管理..."
             ;;
           ""|0) return 0 ;;

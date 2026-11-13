@@ -81,12 +81,14 @@ active_acme_pair_is_trusted(){
 }
 
 acme_maintenance_components_are_trusted(){
-  local identity=$1 conf
+  local identity=$1 conf provider plugin
   valid_hostname "$identity" || return 1
+  provider=$(acme_dns_provider_detected 2>/dev/null) || return 1
+  plugin=$(dns_provider_plugin_file "$provider") || return 1
   conf=$(acme_domain_conf_path "$identity") || return 1
   managed_tree_is_trusted "$ACME_HOME" &&
     managed_regular_file_is_trusted "$ACME_BIN" &&
-    managed_regular_file_is_trusted "$ACME_HOME/dnsapi/dns_cf.sh" &&
+    managed_regular_file_is_trusted "$ACME_HOME/dnsapi/$plugin" &&
     managed_regular_file_is_trusted "$ACME_HOME/account.conf" &&
     managed_regular_file_is_trusted "$conf"
 }
@@ -95,6 +97,9 @@ repair_acme_certificate_from_storage(){
   local identity stored_cert stored_key
   REPAIR_ACME_MAINTENANCE_OK=1
   if identity=$(detect_acme_identity 2>/dev/null) && active_acme_pair_is_trusted; then
+    if managed_tree_is_trusted "$ACME_HOME"; then
+      ensure_acme_dns_plugin 2>/dev/null || true
+    fi
     if ! acme_maintenance_components_are_trusted "$identity" ||
        ! write_acme_reload_hook ||
        { { ! managed_acme_live_layout_is_valid ||

@@ -26,7 +26,7 @@ bash <(curl -Ls https://raw.githubusercontent.com/zhemed/SB/main/sb.sh)
 | 路径 | 职责 |
 | --- | --- |
 | `src/00-bootstrap.sh` | 常量、环境检查、网络信息与内核下载 |
-| `src/10-acme.sh` | 证书校验、官方 acme.sh 与 Cloudflare DNS API |
+| `src/10-acme.sh` | 证书校验、官方 acme.sh 与 DNS API（Cloudflare / 华为云） |
 | `src/20-ports.sh` | 输入校验、Hysteria2 UDP 与可选 SOCKS5 TCP 端口选择 |
 | `src/30-server-config.sh` | Sing-box 服务端配置模板 |
 | `src/40-service.sh` | 托管目录、systemd/OpenRC 与配置提交 |
@@ -68,17 +68,21 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`5.1.3`。
+- 当前项目版本：`5.2.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
-- DNS API 默认使用 Cloudflare `Account ID + API Token`。
-- API Token 使用普通可见输入，Zone ID 由 acme.sh 自动识别。
+- DNS API 支持 Cloudflare 与华为云（5.2.0 起）。
+- Cloudflare 使用 `Account ID + API Token`；API Token 使用普通可见输入，Zone ID 由 acme.sh 自动识别。
+- 华为云使用 AK/SK + Region（如 `cn-north-4`）：AK/SK 在控制台「我的凭证」→「访问密钥」创建，
+  建议使用只授 DNS 云解析权限的子账号；Region 决定 API 域名 `dns.<region>.myhuaweicloud.com`。
+  凭据由 acme.sh 保存在仅 root 可读的 `/etc/sb/acme/account.conf`，任何状态页都不会回显。
 - 证书管理页会显示当前与备用证书的 SAN、签发机构、生效/到期时间、剩余天数、
   SHA-256 指纹和证书/私钥匹配状态；任何状态页都不会回显 API Token。
-- 单域名与 `*.example.com` 泛域名输入会自动选择对应申请参数。
+- 单域名与 `*.example.com` 泛域名输入会自动选择对应申请参数；申请时可选 Cloudflare 或华为云，
+  回车默认 Cloudflare。
 - ACME 续期由 root crontab 定时执行，并记录最近检查、结果和实际换证时间。证书管理支持
-  计划续期检查、强制重签、续期组件修复以及直接更换域名、Account ID 或 Token。
+  计划续期检查、强制重签、续期组件修复以及直接更换域名、DNS 供应商或凭据。
 - ACME 只写入受管暂存目录；证书与私钥校验通过后，通过 generation 指针一次切换同时生效，
   服务重启失败会恢复旧 generation。旧版普通证书文件会在续期自检时原地迁移。
 - 证书更新后，运行中的 sb 服务会通过 reload hook 重启并加载新证书；服务未运行时不会被续期任务强制启动。

@@ -143,6 +143,33 @@ unrecoverable_acme_certificate_falls_back_safely(){
   )
 }
 
+huawei_cloud_acme_maintenance_components_are_trusted(){
+  (
+    local case_dir="$TEMP_DIR/huawei-acme-trust"
+    ACME_HOME="$case_dir/acme"
+    ACME_BIN="$ACME_HOME/acme.sh"
+    mkdir -p "$ACME_HOME/dnsapi" "$ACME_HOME/certs/example.com_ecc" || return 1
+    chmod 700 "$case_dir" "$ACME_HOME" || return 1
+    printf '%s\n' '#!/bin/bash' 'exit 0' > "$ACME_BIN" || return 1
+    printf '%s\n' \
+      "SAVED_HUAWEICLOUD_ACCESS_KEY_ID='AKIDEXAMPLE1234567890'" \
+      "SAVED_HUAWEICLOUD_SECRET_ACCESS_KEY='abcdefghijklmnop+/='" \
+      "SAVED_HUAWEICLOUD_REGION='cn-north-4'" > "$ACME_HOME/account.conf" || return 1
+    printf '%s\n' "Le_Domain='example.com'" \
+      > "$ACME_HOME/certs/example.com_ecc/example.com.conf" || return 1
+    printf '%s\n' '#!/bin/sh' '# sb-huaweicloud-aksk: v1' \
+      > "$ACME_HOME/dnsapi/dns_huaweicloud_aksk.sh" || return 1
+    chmod 700 "$ACME_BIN" "$ACME_HOME/dnsapi/dns_huaweicloud_aksk.sh" || return 1
+    chmod 600 "$ACME_HOME/account.conf" \
+      "$ACME_HOME/certs/example.com_ecc/example.com.conf" || return 1
+    acme_maintenance_components_are_trusted example.com || return 1
+    rm -f "$ACME_HOME/dnsapi/dns_huaweicloud_aksk.sh" || return 1
+    ! acme_maintenance_components_are_trusted example.com || return 1
+    ensure_acme_dns_plugin || return 1
+    acme_maintenance_components_are_trusted example.com
+  )
+}
+
 damaged_original_config_is_not_reactivated(){
   (
     local broken="$SB_DIR/.sb.json.before-repair.broken" retained="$TEMP_DIR/retained-repair.json"
@@ -762,6 +789,9 @@ expect_success "valid ACME certificate remains active when maintenance component
 
 expect_success "unrecoverable ACME certificate falls back without losing node values" \
   unrecoverable_acme_certificate_falls_back_safely
+
+expect_success "Huawei Cloud ACME maintenance components are trusted and self-heal" \
+  huawei_cloud_acme_maintenance_components_are_trusted
 
 printf '%s\n' '# Managed by sb.sh' 'ExecStart=/broken' > "$SYSTEMD_UNIT"
 systemd_service_has_other_units(){ return 1; }
