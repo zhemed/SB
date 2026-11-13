@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.6.0"
+sb_version="v5.6.1"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1428,6 +1428,23 @@ ensure_nginx_shared_cert_reload_hook(){
   tmp=$(mktemp "$SB_DIR/.acme_post_reload.XXXXXX") || return 1
   if ! printf '%s\n' '#!/bin/bash' '# sb-managed nginx reload hook (auto-created)' \
        'nginx -t >/dev/null 2>&1 && systemctl reload nginx' > "$tmp" ||
+     ! chmod 700 "$tmp" || ! mv -fT -- "$tmp" "$hook"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
+# acme-nginx 已安装时，自动创建"证书部署后重启 sb"的对端钩子（不覆盖自定义钩子）。
+ensure_acme_nginx_sb_restart_hook(){
+  local hook="/etc/acme-nginx/post_reload.sh" tmp
+  [[ -d /etc/acme-nginx && ! -L /etc/acme-nginx ]] || return 0
+  [[ -e $hook || -L $hook ]] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [[ -d /run/systemd/system ]] || return 0
+  systemctl cat sb >/dev/null 2>&1 || return 0
+  tmp=$(mktemp "/etc/acme-nginx/.post_reload.XXXXXX") || return 1
+  if ! printf '%s\n' '#!/bin/bash' '# acme-nginx-managed sb restart hook (auto-created)' \
+       'systemctl restart sb' > "$tmp" ||
      ! chmod 700 "$tmp" || ! mv -fT -- "$tmp" "$hook"; then
     rm -f "$tmp"
     return 1
@@ -7801,6 +7818,7 @@ install_singbox(){
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   ensure_nginx_shared_cert_reload_hook || true
+  ensure_acme_nginx_sb_restart_hook || true
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
@@ -7962,6 +7980,7 @@ if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
   ensure_nginx_shared_cert_reload_hook || true
+  ensure_acme_nginx_sb_restart_hook || true
 fi
 
 menu

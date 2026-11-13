@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.6.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.6.0"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.6.0' ]] ||
-  fail "VERSION file is not 5.6.0"
-grep -Fq -- "当前项目版本：\`5.6.0\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.6.0"
+[[ $(grep -Fxc 'sb_version="v5.6.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.6.1"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.6.1' ]] ||
+  fail "VERSION file is not 5.6.1"
+grep -Fq -- "当前项目版本：\`5.6.1\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.6.1"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -182,6 +182,8 @@ grep -Fq -- 'ensure_nginx_shared_cert_reload_hook(){' "$ROOT_DIR/sb.sh" ||
   fail "sb does not auto-create the nginx reload hook"
 grep -Fq -- 'nginx -t >/dev/null 2>&1 && systemctl reload nginx' "$ROOT_DIR/sb.sh" ||
   fail "auto-created nginx reload hook content is missing"
+grep -Fq -- 'ensure_acme_nginx_sb_restart_hook(){' "$ROOT_DIR/sb.sh" ||
+  fail "sb does not auto-create the acme-nginx sb restart hook"
 
 for success_message in \
   '证书模式切换成功' \

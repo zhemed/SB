@@ -44,6 +44,7 @@ install_singbox(){
   fi
   save_last_good_config "$SB_CONFIG" || yellow "安装已完成，但最后可用配置快照保存失败"
   ensure_nginx_shared_cert_reload_hook || true
+  ensure_acme_nginx_sb_restart_hook || true
   yellow "请自行在系统防火墙和VPS厂商安全组放行 ${port_hy2}/udp"
   if [[ ${use_acme_cert:-0} -eq 1 ]]; then
     with_acme_lock setup_acme_renew_cron || yellow "ACME 自动续期任务设置失败，请手动检查 root crontab"
@@ -205,6 +206,7 @@ if is_installed; then
   update_shortcut >/dev/null 2>&1 || true
   with_acme_lock ensure_acme_renew_cron || yellow "ACME续期自检未通过，请处理上方提示"
   ensure_nginx_shared_cert_reload_hook || true
+  ensure_acme_nginx_sb_restart_hook || true
 fi
 
 menu

@@ -1054,6 +1054,23 @@ ensure_nginx_shared_cert_reload_hook(){
   fi
 }
 
+# acme-nginx 已安装时，自动创建"证书部署后重启 sb"的对端钩子（不覆盖自定义钩子）。
+ensure_acme_nginx_sb_restart_hook(){
+  local hook="/etc/acme-nginx/post_reload.sh" tmp
+  [[ -d /etc/acme-nginx && ! -L /etc/acme-nginx ]] || return 0
+  [[ -e $hook || -L $hook ]] && return 0
+  command -v systemctl >/dev/null 2>&1 || return 0
+  [[ -d /run/systemd/system ]] || return 0
+  systemctl cat sb >/dev/null 2>&1 || return 0
+  tmp=$(mktemp "/etc/acme-nginx/.post_reload.XXXXXX") || return 1
+  if ! printf '%s\n' '#!/bin/bash' '# acme-nginx-managed sb restart hook (auto-created)' \
+       'systemctl restart sb' > "$tmp" ||
+     ! chmod 700 "$tmp" || ! mv -fT -- "$tmp" "$hook"; then
+    rm -f "$tmp"
+    return 1
+  fi
+}
+
 shared_certificate_is_valid(){
   local apex wildcard
   config_uses_shared_certificate || return 1
