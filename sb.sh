@@ -1018,7 +1018,7 @@ write_acme_reload_hook(){
   if ! cat > "$hook_tmp" <<'ACMERELOAD'
 #!/bin/bash
 # Signal handlers and EXIT cleanup functions are invoked indirectly by Bash.
-# shellcheck disable=SC2317
+# shellcheck disable=SC2317,SC2329
 # sb-acme-reload-v2
 export LANG=en_US.UTF-8
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin

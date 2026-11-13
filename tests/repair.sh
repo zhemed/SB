@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016,SC2030,SC2031,SC2034,SC2317
+# shellcheck disable=SC2016,SC2030,SC2031,SC2034,SC2317,SC2329
 set -Eeuo pipefail
 
 export LC_ALL=C

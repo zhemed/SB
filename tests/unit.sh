@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2329  # stubs are invoked indirectly by the sourced product code
 set -Eeuo pipefail
 
 export LC_ALL=C
