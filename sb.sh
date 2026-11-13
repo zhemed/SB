@@ -41,7 +41,7 @@ ACME_STAGE_KEY="$ACME_STAGE/private.key"
 ACME_LIVE="$SB_DIR/acme-live"
 ACME_GENERATIONS="$ACME_LIVE/generations"
 ACME_CURRENT="$ACME_LIVE/current"
-ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"
+ACME_RELOAD_IDENTITY="# sb-acme-reload-v3"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 INSTALL_TRANSACTION_ACTIVE=0
@@ -108,7 +108,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.2.1"
+sb_version="v5.3.0"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1019,7 +1019,7 @@ write_acme_reload_hook(){
 #!/bin/bash
 # Signal handlers and EXIT cleanup functions are invoked indirectly by Bash.
 # shellcheck disable=SC2317,SC2329
-# sb-acme-reload-v2
+# sb-acme-reload-v3
 export LANG=en_US.UTF-8
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 base="/etc/sb"
@@ -1036,10 +1036,39 @@ old_current_target=
 deployment_started=0
 created_layout=0
 restore_managed_links=0
+post_reload="/etc/sb/acme_post_reload.sh"
 
 cleanup_deploy_files(){
   [[ -z $stage_cert ]] || rm -f -- "$stage_cert"
   [[ -z $stage_key ]] || rm -f -- "$stage_key"
+}
+
+# 证书成功切换后执行可选的第二个消费者钩子（例如 reload nginx）。
+# 只接受 root 所有、非符号链接、可执行、组/他人不可写的常规文件；失败只告警。
+warn_post_reload(){
+  echo "sb: $1" >&2
+  if command -v logger >/dev/null 2>&1; then
+    logger -t sb "acme post-reload: $1" 2>/dev/null || true
+  fi
+}
+
+run_post_reload_hook(){
+  local owner mode
+  [[ -e $post_reload || -L $post_reload ]] || return 0
+  if [[ ! -f $post_reload || -L $post_reload || ! -x $post_reload ]]; then
+    warn_post_reload "ignoring untrusted post-reload hook: $post_reload"
+    return 0
+  fi
+  owner=$(stat -c '%u' "$post_reload" 2>/dev/null) || return 0
+  mode=$(stat -c '%a' "$post_reload" 2>/dev/null) || return 0
+  if [[ $owner != "$(id -u)" ]] || (( (8#$mode & 0022) != 0 )); then
+    warn_post_reload "ignoring untrusted post-reload hook: $post_reload"
+    return 0
+  fi
+  if ! "$post_reload"; then
+    warn_post_reload "post-reload hook failed: $post_reload"
+  fi
+  return 0
 }
 
 switch_current(){
@@ -1321,6 +1350,7 @@ fi
 if [[ ! -s $config ]]; then
   if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then
     commit_deployment
+    run_post_reload_hook
     exit 0
   fi
   rollback_deployment || true
@@ -1336,6 +1366,7 @@ certificate_paths=$(jq -er '
 IFS=$'\t' read -r current_cert current_key <<< "$certificate_paths"
 if [[ $current_cert != "$cert" || $current_key != "$key" ]]; then
   commit_deployment
+  run_post_reload_hook
   exit 0
 fi
 has_openrc=0
@@ -1390,14 +1421,17 @@ else
     exit 1
   fi
   commit_deployment
+  run_post_reload_hook
   exit 0
 fi
 if ! managed_service_active; then
   commit_deployment
+  run_post_reload_hook
   exit 0
 fi
 if restart_managed_service && sleep 1 && managed_service_active; then
   commit_deployment
+  run_post_reload_hook
   exit 0
 fi
 if rollback_deployment; then
@@ -1428,19 +1462,25 @@ acme_reload_hook_is_current(){
       $0 == "if [[ ! -s $config ]]; then" {
         getline initial_if
         getline initial_commit
+        getline initial_post
         getline initial_exit
         getline initial_end
         getline rollback
         getline normal_exit
         getline block_end
         valid = initial_if == "  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then" &&
-          initial_commit == "    commit_deployment" && initial_exit == "    exit 0" &&
+          initial_commit == "    commit_deployment" &&
+          initial_post == "    run_post_reload_hook" && initial_exit == "    exit 0" &&
           initial_end == "  fi" && rollback == "  rollback_deployment || true" &&
           normal_exit == "  exit 1" && block_end == "fi"
         exit
       }
       END { exit !valid }
     ' "$ACME_RELOAD" &&
+    grep -Fqx 'post_reload="/etc/sb/acme_post_reload.sh"' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'run_post_reload_hook(){' "$ACME_RELOAD" 2>/dev/null &&
+    [[ $(grep -Fxc '  run_post_reload_hook' "$ACME_RELOAD" 2>/dev/null || true) -eq 4 ]] &&
+    grep -Fqx '    run_post_reload_hook' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'source_cert="$source_dir/fullchain.pem"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'source_key="$source_dir/private.key"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'deployment_started=1' "$ACME_RELOAD" 2>/dev/null &&

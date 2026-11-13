@@ -68,7 +68,7 @@ bash scripts/check-version-bump.sh
 
 ## 固定版本与证书
 
-- 当前项目版本：`5.2.1`。
+- 当前项目版本：`5.3.0`。
 - Sing-box 固定为 `1.10.7`。
 - acme.sh 固定为 `3.1.4`。
 - 两个上游下载均限制为 HTTPS，并在执行前核对项目内固定的 SHA-256。
@@ -88,6 +88,8 @@ bash scripts/check-version-bump.sh
 - ACME 只写入受管暂存目录；证书与私钥校验通过后，通过 generation 指针一次切换同时生效，
   服务重启失败会恢复旧 generation。旧版普通证书文件会在续期自检时原地迁移。
 - 证书更新后，运行中的 sb 服务会通过 reload hook 重启并加载新证书；服务未运行时不会被续期任务强制启动。
+- 证书成功切换后可执行可选后置钩子 `/etc/sb/acme_post_reload.sh`，用于让同机第二个服务（如 nginx）
+  加载新证书；详见下文「与 nginx 等第二个服务共用同一张证书」。
 - 修复、卸载、残缺安装清理、证书操作和自动续期共用 `/run/sb-acme.lock`，避免并发修改出半套状态。
 - **默认只安装 Hysteria2**（UUID 作为密码）。安装只询问 hy2 端口，只放行一个 UDP 端口。
 - **可选 TCP 入口是 SOCKS5**（固定用户名 `sb` + 独立随机密码），在菜单 [8] 里按需启用：
@@ -110,6 +112,38 @@ bash scripts/check-version-bump.sh
 - 首次安装中断或关键步骤失败时，会自动清理本次安装创建的服务、定时任务、目录和快捷命令。
 
 项目版本记录在 `VERSION`，并由构建器校验其与脚本内显示版本一致。
+
+## 与 nginx 等第二个服务共用同一张证书
+
+sb 只签发/续期一次，证书通过两个稳定路径对外提供（内部是 generation 指针，原子切换）：
+
+- `/etc/sb/acme-cert.pem`：fullchain
+- `/etc/sb/acme-private.key`：私钥
+
+同机的 nginx 直接引用这两个路径即可，不需要复制证书；nginx master 以 root 读取，
+`/etc/sb` 保持 700 不用放宽。sb 用 UDP 443、nginx 用 TCP 443，可以同机共存：
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name example.com;
+    ssl_certificate     /etc/sb/acme-cert.pem;
+    ssl_certificate_key /etc/sb/acme-private.key;
+}
+```
+
+续期后 nginx 需要重新加载证书。创建 `/etc/sb/acme_post_reload.sh`（root 所有、`chmod 700`）：
+
+```bash
+#!/bin/bash
+nginx -t && systemctl reload nginx
+```
+
+- 钩子只在证书**成功切换**后执行；失败只告警（stderr + syslog `sb`），不回滚 sb、不影响下一次续期。
+- 钩子必须 root 所有、非符号链接、可执行、组/他人不可写，否则会被忽略并告警。
+- 该文件位于 `/etc/sb` 内，卸载 sb 时会一并删除。
+- 申请 `*.example.com` 会同时包含 `example.com`（apex 与一级子域共用同一张证书）。
+- 若 nginx 以非 root 启动或运行在容器里，需要把证书路径以只读方式挂载/授权给 nginx 进程。
 
 ## 发布检查
 

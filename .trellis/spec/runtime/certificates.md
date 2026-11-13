@@ -119,17 +119,17 @@ awk '/<<'\''ACMERELOAD'\''/{inside=1; next} /^ACMERELOAD$/{inside=0} inside' \
 Repeated on the published artifact by `tests/verify.sh:249-254`. The extracted hook must also pass
 `bash -n` standalone.
 
-**(c) Versioned by identity.** `ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"`
-(`src/00-bootstrap.sh:39`) appears exactly once inside the hook. Any **semantic** change to the hook
-requires bumping this to `v3` and updating the anchor assertions — the identity is what marks an
+**(c) Versioned by identity.** `ACME_RELOAD_IDENTITY="# sb-acme-reload-v3"`
+(`src/00-bootstrap.sh:44`) appears exactly once inside the hook. Any **semantic** change to the hook
+requires bumping this to `v4` and updating the anchor assertions — the identity is what marks an
 installed old hook as stale.
 
-**(d) Anchor-pinned.** `acme_reload_hook_is_current` (`src/10-acme.sh:762-796`) verifies the identity
-count, the exact 7-line shape of the missing-config bypass, and a list of byte-exact source lines
-including their leading whitespace:
+**(d) Anchor-pinned.** `acme_reload_hook_is_current` (search `src/10-acme.sh`) verifies the identity
+count, the exact 8-line shape of the missing-config bypass, the post-reload-hook path/runner/call
+counts, and a list of byte-exact source lines including their leading whitespace:
 
 ```bash
-# src/10-acme.sh:788-789
+# acme_reload_hook_is_current anchors (excerpt)
     grep -Fqx '     ! mv -Tf -- "$pointer_tmp" "$base/acme-live/current"; then' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx "     ! install_managed_link \"\$cert\" 'acme-live/current/fullchain.pem'; then" "$ACME_RELOAD" 2>/dev/null &&
 ```
@@ -138,7 +138,17 @@ including their leading whitespace:
 triggers a silent rewrite.** That is intentional, not decorative.
 
 The missing-config bypass must stay provably limited to initial install (asserted by
-`tests/verify.sh:255-271`, the exact 7-line block at `src/10-acme.sh:767-783`).
+`tests/verify.sh`, the exact 8-line block `if [[ ! -s $config ]]` → initial commit →
+`run_post_reload_hook` → `exit 0` → `fi` → rollback → `exit 1` → `fi`).
+
+**(e) Optional post-deploy hook.** After a **successful** switch the hook runs
+`/etc/sb/acme_post_reload.sh` if it exists as a regular, non-symlink, executable, root-owned file
+with no group/other write bits (`run_post_reload_hook`). This is how a second consumer on the same
+host (nginx) learns about a renewal: nginx reads the stable paths
+`/etc/sb/acme-cert.pem` / `/etc/sb/acme-private.key` and is reloaded by that hook. A failing hook
+only warns — it never rolls back the deployment and never changes the hook's exit status — and it
+is skipped on every rollback/failure path. The hook file lives inside `/etc/sb`, so uninstall removes
+it with the rest of the managed directory.
 
 ---
 
@@ -432,7 +442,8 @@ Regression coverage: `tests/repair.sh` → `interrupt_handler_restores_only_infl
 ## 9. Change checklist
 
 1. Editing the hook body → **bump `ACME_RELOAD_IDENTITY`** and update every anchor grep in
-   `acme_reload_hook_is_current` (`src/10-acme.sh:762-796`) plus `tests/verify.sh:272-283`.
+   `acme_reload_hook_is_current` plus the matching `tests/verify.sh` hook pins (including the
+   missing-config block shape and the post-reload-hook path/runner/call counts).
 2. Keep the heredoc quoted, the terminator at column 0, exactly one `ACMERELOAD` line, and the hook
    `bash -n`-clean standalone.
 3. Never reuse a heredoc helper's name for a top-level function — the build rejects duplicates.

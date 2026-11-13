@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.2.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.2.1"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.2.1' ]] ||
-  fail "VERSION file is not 5.2.1"
-grep -Fq -- "当前项目版本：\`5.2.1\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.2.1"
+[[ $(grep -Fxc 'sb_version="v5.3.0"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.3.0"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.3.0' ]] ||
+  fail "VERSION file is not 5.3.0"
+grep -Fq -- "当前项目版本：\`5.3.0\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.3.0"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -111,6 +111,15 @@ fi
 if grep -Eq 'read[^[:cntrl:]]+-s[^[:cntrl:]]+(hw_access_key|hw_secret_key)' "$ROOT_DIR/sb.sh"; then
   fail "hidden Huawei Cloud credential interaction remains"
 fi
+# 与第二个消费者（nginx）共用证书：README 必须给出稳定路径与后置钩子示例。
+for shared_cert_pattern in \
+  '/etc/sb/acme-cert.pem' \
+  '/etc/sb/acme-private.key' \
+  'acme_post_reload.sh' \
+  'systemctl reload nginx'; do
+  grep -Fq -- "$shared_cert_pattern" "$ROOT_DIR/README.md" ||
+    fail "README does not document sharing the certificate with a second consumer: $shared_cert_pattern"
+done
 # 交互签发路径没有端到端测试，这里静态钉住 provider 选择与凭据传递方式。
 # shellcheck disable=SC2016  # the pattern is literal generated-script text
 grep -Fq -- '--dns "${plugin%.sh}"' "$ROOT_DIR/sb.sh" ||
@@ -402,13 +411,15 @@ awk '
   $0 == "if [[ ! -s $config ]]; then" {
     getline initial_if
     getline initial_commit
+    getline initial_post
     getline initial_exit
     getline initial_end
     getline rollback
     getline normal_exit
     getline block_end
     valid = initial_if == "  if [[ ${SB_INITIAL_INSTALL:-0} == 1 ]]; then" &&
-      initial_commit == "    commit_deployment" && initial_exit == "    exit 0" &&
+      initial_commit == "    commit_deployment" &&
+      initial_post == "    run_post_reload_hook" && initial_exit == "    exit 0" &&
       initial_end == "  fi" && rollback == "  rollback_deployment || true" &&
       normal_exit == "  exit 1" && block_end == "fi"
     exit
@@ -427,6 +438,19 @@ grep -Fqx "     ! install_managed_link \"\$key\" 'acme-live/current/private.key'
   "$hook_candidate" || fail "ACME private-key compatibility link is missing"
 grep -Fqx '    restore_managed_links=1' "$hook_candidate" ||
   fail "ACME compatibility-link rollback marker is missing"
+grep -Fqx 'post_reload="/etc/sb/acme_post_reload.sh"' "$hook_candidate" ||
+  fail "ACME post-reload hook path is missing"
+grep -Fqx 'run_post_reload_hook(){' "$hook_candidate" ||
+  fail "ACME post-reload hook runner is missing"
+[[ $(grep -Fxc '  run_post_reload_hook' "$hook_candidate" || true) -eq 4 ]] ||
+  fail "ACME post-reload hook is not called on every success path"
+grep -Fqx '    run_post_reload_hook' "$hook_candidate" ||
+  fail "ACME initial-install path does not run the post-reload hook"
+grep -Fqx 'warn_post_reload(){' "$hook_candidate" ||
+  fail "ACME post-reload failure reporting is missing"
+# shellcheck disable=SC2016  # the pattern is literal generated-hook text
+grep -Fqx '    logger -t sb "acme post-reload: $1" 2>/dev/null || true' "$hook_candidate" ||
+  fail "ACME post-reload failures are not logged to syslog"
 
 issue_function=$(awk '/^issue_acme_certificate\(\)\{/{inside=1} /^inscertificate\(\)\{/{inside=0} inside' \
   "$ROOT_DIR/sb.sh")

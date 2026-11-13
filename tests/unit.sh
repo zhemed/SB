@@ -77,7 +77,7 @@ export SHORTCUT=/usr/bin/sb
 export ACME_HOME="$SB_DIR/acme"
 export ACME_BIN="$ACME_HOME/acme.sh"
 export ACME_RELOAD="$SB_DIR/acme_reload.sh"
-export ACME_RELOAD_IDENTITY="# sb-acme-reload-v2"
+export ACME_RELOAD_IDENTITY="# sb-acme-reload-v3"
 export ACME_CRON_MARKER="# sb-managed-acme"
 export RESTART_CRON_MARKER="# sb-managed-restart"
 
@@ -1967,6 +1967,59 @@ else
   pass "compatibility-link signal rollback is covered on Linux CI"
   pass "compatibility-link signal pair preservation is covered on Linux CI"
 fi
+
+# 证书成功切换后的可选后置钩子：执行、失败不阻断、不可信时忽略。
+post_hook="$SB_DIR/acme_post_reload.sh"
+post_marker="$TEMP_DIR/post-reload-ran"
+write_post_reload_hook(){
+  rm -f "$post_hook"
+  printf '%s\n' '#!/bin/bash' "$1" > "$post_hook"
+  chmod 700 "$post_hook"
+}
+run_hook_with_post_reload(){
+  rm -f "$post_marker"
+  SB_INITIAL_INSTALL=1 "$hook_fixture"
+}
+if [[ $TEST_HAS_NATIVE_SYMLINKS -eq 1 ]]; then
+  write_post_reload_hook "touch '$post_marker'"
+  expect_success "ACME hook runs a trusted post-reload hook" run_hook_with_post_reload
+  [[ -e $post_marker ]] || fail "trusted post-reload hook did not run"
+  pass "trusted post-reload hook runs after a successful deployment"
+
+  write_post_reload_hook "touch '$post_marker'; exit 1"
+  expect_success "failing post-reload hook does not fail the deployment" run_hook_with_post_reload
+  [[ -e $post_marker ]] || fail "failing post-reload hook did not run"
+  pass "failing post-reload hook is reported without failing the deployment"
+
+  write_post_reload_hook "touch '$post_marker'"
+  chmod 600 "$post_hook"
+  expect_success "non-executable post-reload hook is ignored" run_hook_with_post_reload
+  [[ ! -e $post_marker ]] || fail "non-executable post-reload hook ran"
+  pass "non-executable post-reload hook is ignored"
+
+  write_post_reload_hook "touch '$post_marker'"
+  chmod 702 "$post_hook"
+  expect_success "group-writable post-reload hook is ignored" run_hook_with_post_reload
+  [[ ! -e $post_marker ]] || fail "group-writable post-reload hook ran"
+  pass "group-writable post-reload hook is ignored"
+
+  rm -f "$post_hook"
+  post_target="$TEMP_DIR/post-reload-target.sh"
+  printf '%s\n' '#!/bin/bash' "touch '$post_marker'" > "$post_target"
+  chmod 700 "$post_target"
+  ln -s "$post_target" "$post_hook"
+  expect_success "symlinked post-reload hook is ignored" run_hook_with_post_reload
+  [[ ! -e $post_marker ]] || fail "symlinked post-reload hook ran"
+  pass "symlinked post-reload hook is ignored"
+  rm -f "$post_hook"
+else
+  pass "trusted post-reload hook execution is covered on Linux CI"
+  pass "failing post-reload hook is covered on Linux CI"
+  pass "non-executable post-reload hook is covered on Linux CI"
+  pass "group-writable post-reload hook is covered on Linux CI"
+  pass "symlinked post-reload hook is covered on Linux CI"
+fi
+
 awk '
   $0 == "if [[ ! -s $config ]]; then" { in_config_guard=1; print; next }
   in_config_guard && $0 == "  exit 1" { in_config_guard=0; next }
