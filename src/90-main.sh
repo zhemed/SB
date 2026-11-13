@@ -213,6 +213,11 @@ if is_installed; then
   ensure_shared_cert_store_published || true
   ensure_nginx_shared_cert_reload_hook || true
   ensure_acme_nginx_sb_restart_hook || true
+  # 启动自检也要对账共享证书库的续期负责人，避免重装/换工具后留下名义 owner。
+  if config_uses_shared_certificate; then
+    shared_apex=$(shared_certificate_domain 2>/dev/null || true)
+    [[ -n $shared_apex ]] && cert_store_reconcile_ownership "$shared_apex" || true
+  fi
 fi
 
 menu

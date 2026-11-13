@@ -1645,6 +1645,9 @@ shared_certificate_mode_is_detected(){
     export CERT_STORE="$store"
     cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
       "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    # 健康的共享消费模式：续期由对端工具负责（单测用桩代替 /etc/acme-nginx 探测）。
+    cert_store_take_ownership example.com acme-nginx || return 1
+    cert_store_owner_present(){ [[ ${1-} == acme-nginx ]]; }
     export SB_CONFIG="$TEMP_DIR/shared-mode.json"
     write_shared_cert_config "$store" example.com || return 1
     config_uses_shared_certificate || return 1
@@ -1662,6 +1665,35 @@ shared_certificate_mode_is_detected(){
 expect_success "shared certificate mode is detected and validated" \
   shared_certificate_mode_is_detected
 pass "shared certificate mode uses store paths and reports healthy renewal"
+
+# P1-4：本机从 owner 切成 shared 消费者后，owner=sb 必须交还为 none，健康检查随之报错。
+shared_certificate_adoption_releases_stale_sb_owner(){
+  (
+    local store="$TEMP_DIR/cert-store-stale-owner" messages="$TEMP_DIR/stale-owner-messages"
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    yellow(){ printf '%s\n' "$1" >> "$messages"; }
+    rm -rf "$store" "$messages"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    # 本机仍留有旧的 ACME 签发身份（所以 reconcile 不会自动交还），但已切到 shared 消费模式。
+    printf '%s\n' 'example.com' > "$ACME_IDENTITY" || return 1
+    export SB_CONFIG="$TEMP_DIR/shared-stale-owner.json"
+    write_shared_cert_config "$store" example.com || return 1
+    cert_shared example.com '*.example.com' || return 1
+    [[ $(cert_store_owner example.com) == none ]] || return 1
+    grep -Fq '已交还续期责任，需另一方或重新签发接管' "$messages" || return 1
+    inspect_acme_renewal_health || return 1
+    [[ $ACME_RENEW_HEALTH == error &&
+       $ACME_RENEW_HEALTH_DETAIL == *'无有效续期负责人'* ]]
+  )
+}
+expect_success "shared adoption hands back a stale sb ownership" \
+  shared_certificate_adoption_releases_stale_sb_owner
+pass "owner=sb + shared consumer mode releases ownership and reports it unhealthy"
 
 shared_certificate_mode_reports_missing_owner(){
   (
@@ -3142,5 +3174,98 @@ pass "ambiguous certificate activation does not run destructive rollback"
    $ACME_RESTORE_ACTIVE_ON_INTERRUPT -eq 0 ]] ||
   fail "ambiguous certificate activation did not preserve its recovery state"
 pass "ambiguous certificate activation preserves the recovery state for inspection"
+
+
+# --- v5.7.5：自动创建的对端钩子按标记升级（P1-1）---
+peer_hook_is_managed_matches_known_markers(){
+  local dir="$TEMP_DIR/peer-hook-markers"
+  mkdir -p "$dir" || return 1
+  printf '%s\n' '#!/bin/bash' '# shared-cert-store peer hook v1' > "$dir/v1"
+  printf '%s\n' '#!/bin/bash' '# sb-managed nginx reload hook' > "$dir/legacy"
+  printf '%s\n' '#!/bin/bash' '# acme-nginx-managed sb restart hook' > "$dir/peer"
+  printf '%s\n' '#!/bin/bash' '# my custom hook' > "$dir/custom"
+  peer_hook_is_managed "$dir/v1" &&
+    peer_hook_is_managed "$dir/legacy" &&
+    peer_hook_is_managed "$dir/peer" &&
+    ! peer_hook_is_managed "$dir/custom" &&
+    ! peer_hook_is_managed "$dir/missing"
+}
+expect_success "managed peer hook markers are recognized" \
+  peer_hook_is_managed_matches_known_markers
+
+nginx_reload_hook_upgrade_is_marker_scoped(){
+  (
+    local base="$TEMP_DIR/peer-hook-sb-dir" hook first_hash
+    SB_DIR="$base"
+    mkdir -p "$base" || return 1
+    hook="$base/acme_post_reload.sh"
+    # 测试环境没有 nginx/systemd 服务：用函数桩让前置检查通过。
+    nginx(){ :; }
+    systemctl(){ return 0; }
+    config_uses_acme_certificate(){ return 1; }
+    config_uses_shared_certificate(){ return 0; }
+    printf '%s\n' '#!/bin/bash' '# sb-managed nginx reload hook' \
+      'systemctl reload nginx' > "$hook"
+    chmod 700 "$hook"
+    ensure_nginx_shared_cert_reload_hook || return 1
+    grep -Fq '# shared-cert-store peer hook v2' "$hook" || return 1
+    first_hash=$(sha256sum "$hook" | awk '{print $1}')
+    ensure_nginx_shared_cert_reload_hook || return 1
+    [[ $(sha256sum "$hook" | awk '{print $1}') == "$first_hash" ]] || return 1
+    printf '%s\n' '#!/bin/bash' '# my custom hook' 'echo custom' > "$hook"
+    chmod 700 "$hook"
+    ensure_nginx_shared_cert_reload_hook || return 1
+    grep -Fqx '# my custom hook' "$hook"
+  )
+}
+if [[ -d /run/systemd/system ]]; then
+  expect_success "auto-created nginx reload hook upgrades only managed markers" \
+    nginx_reload_hook_upgrade_is_marker_scoped
+else
+  pass "auto-created nginx reload hook upgrade is covered on systemd CI"
+fi
+
+# --- v5.7.5：发布共享证书前拒绝用到期更早的旧证书覆盖新证书（P2）---
+cert_store_rejects_older_certificate_downgrade(){
+  (
+    local store="$TEMP_DIR/cert-store-downgrade"
+    local newer_dir="$TEMP_DIR/cert-downgrade-newer" older_dir="$TEMP_DIR/cert-downgrade-older"
+    local current_before
+    # shellcheck disable=SC2317
+    yellow(){ :; }
+    rm -rf "$store" "$newer_dir" "$older_dir"
+    export CERT_STORE="$store"
+    mkdir -p "$newer_dir" "$older_dir" || return 1
+    cat > "$TEMP_DIR/downgrade.cnf" <<'CERTCONFIG'
+[req]
+distinguished_name = subject
+x509_extensions = extensions
+prompt = no
+
+[subject]
+CN = example.com
+
+[extensions]
+subjectAltName = DNS:example.com,DNS:*.example.com
+CERTCONFIG
+    openssl ecparam -genkey -name prime256v1 -out "$newer_dir/key.pem" >/dev/null 2>&1 || return 1
+    openssl req -new -x509 -days 30 -key "$newer_dir/key.pem" \
+      -out "$newer_dir/cert.pem" -config "$TEMP_DIR/downgrade.cnf" >/dev/null 2>&1 || return 1
+    openssl ecparam -genkey -name prime256v1 -out "$older_dir/key.pem" >/dev/null 2>&1 || return 1
+    openssl req -new -x509 -days 2 -key "$older_dir/key.pem" \
+      -out "$older_dir/cert.pem" -config "$TEMP_DIR/downgrade.cnf" >/dev/null 2>&1 || return 1
+    cert_store_publish example.com "$newer_dir/cert.pem" "$newer_dir/key.pem" \
+      '' sb letsencrypt || return 1
+    current_before=$(readlink "$store/example.com/current") || return 1
+    ! cert_store_publish example.com "$older_dir/cert.pem" "$older_dir/key.pem" \
+      '' sb letsencrypt || return 1
+    [[ $(readlink "$store/example.com/current") == "$current_before" ]] || return 1
+    # 同一张证书重发（到期时间相同）仍允许。
+    cert_store_publish example.com "$newer_dir/cert.pem" "$newer_dir/key.pem" \
+      '' sb letsencrypt
+  )
+}
+expect_success "store publish refuses to overwrite a newer certificate with an older one" \
+  cert_store_rejects_older_certificate_downgrade
 
 printf '1..%d\n' "$passed"

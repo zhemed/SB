@@ -849,6 +849,7 @@ cert_store_publish(){
 cert_store_publish_locked(){
   local apex=$1 cert=$2 key=$3 alt=$4 owner=$5 issuer=$6 fingerprint=$7
   local root dir generations gen current now meta_tmp generation current_target old_current
+  local new_not_after existing_alt
   root=$(cert_store_root) || return 1
   dir=$(cert_store_domain_dir "$apex") || return 1
   if [[ -e $root || -L $root ]]; then
@@ -883,6 +884,18 @@ cert_store_publish_locked(){
      [[ $(sha256sum "$gen/fullchain.pem" | awk '{print $1}') != "$fingerprint" ]]; then
     rm -rf -- "$gen"
     return 1
+  fi
+  # 防旧覆盖新：库里已有完整有效的证书且到期时间更晚时，拒绝用更旧的证书覆盖它。
+  new_not_after=${CERT_META_NOT_AFTER_EPOCH:-0}
+  if cert_store_read_meta "$apex" >/dev/null 2>&1; then
+    existing_alt=$CERT_STORE_META_ALT
+    if cert_store_certificate_state "$apex" "$existing_alt" >/dev/null 2>&1 &&
+       [[ ${CERT_STORE_META_NOT_AFTER:-} =~ ^[0-9]{1,12}$ ]] &&
+       ((new_not_after < CERT_STORE_META_NOT_AFTER)); then
+      rm -rf -- "$gen"
+      yellow "共享证书库已有到期更晚的证书，拒绝用更旧的证书覆盖"
+      return 1
+    fi
   fi
   old_current=$(readlink "$dir/current" 2>/dev/null || true)
   current=$(mktemp "$dir/.current.XXXXXX") || {
@@ -1043,6 +1056,13 @@ cert_shared(){
   certificatep_hy2=$CERT_STORE_KEY
   use_acme_cert=0
   cert_store_reconcile_ownership "$apex" || true
+  # 本机已切为共享证书消费者：库里若仍记着 owner=sb（本工具之前签发过），续期责任
+  # 已不在本机，交还 owner 让对端或重新签发接管，避免留下"名义 owner"。
+  if cert_store_read_meta "$apex" >/dev/null 2>&1 && [[ $CERT_STORE_META_OWNER == sb ]]; then
+    if cert_store_release_ownership sb; then
+      yellow "已交还续期责任，需另一方或重新签发接管"
+    fi
+  fi
 }
 
 config_uses_shared_certificate(){
@@ -1073,6 +1093,15 @@ shared_certificate_domain(){
   printf '%s\n' "$apex"
 }
 
+# 自动创建的对端钩子只认已知标记：命中才允许按内容升级，否则一律视为用户自定义钩子。
+# （-F 与 -E 不能混用：GNU grep 直接报错，BusyBox 则永不匹配。）
+peer_hook_is_managed(){
+  local hook=$1
+  grep -Fq -e 'shared-cert-store peer hook' \
+    -e 'sb-managed nginx reload hook' \
+    -e 'acme-nginx-managed sb restart hook' "$hook" 2>/dev/null
+}
+
 # 检测到本机 nginx 时，自动创建续期后的 reload 钩子（不覆盖自定义钩子；自动创建的钩子会随内容升级重写）。
 ensure_nginx_shared_cert_reload_hook(){
   local hook="$SB_DIR/acme_post_reload.sh" tmp
@@ -1101,7 +1130,7 @@ HOOK
       rm -f "$tmp"
       return 0
     fi
-    if grep -FqE 'shared-cert-store peer hook|sb-managed nginx reload hook|acme-nginx-managed sb restart hook' "$hook" 2>/dev/null; then
+    if peer_hook_is_managed "$hook"; then
       if cmp -s -- "$tmp" "$hook"; then
         rm -f "$tmp"
         return 0
@@ -1147,7 +1176,7 @@ HOOK
       rm -f "$tmp"
       return 0
     fi
-    if grep -FqE 'shared-cert-store peer hook|sb-managed nginx reload hook|acme-nginx-managed sb restart hook' "$hook" 2>/dev/null; then
+    if peer_hook_is_managed "$hook"; then
       if cmp -s -- "$tmp" "$hook"; then
         rm -f "$tmp"
         return 0

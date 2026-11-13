@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.7.4"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.7.4"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.4' ]] ||
-  fail "VERSION file is not 5.7.4"
-grep -Fq -- "当前项目版本：\`5.7.4\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.7.4"
+[[ $(grep -Fxc 'sb_version="v5.7.5"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.7.5"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.7.5' ]] ||
+  fail "VERSION file is not 5.7.5"
+grep -Fq -- "当前项目版本：\`5.7.5\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.7.5"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -191,6 +191,20 @@ for owner_pattern in 'cert_store_release_ownership(){' 'cert_store_reconcile_own
   grep -Fq -- "$owner_pattern" "$ROOT_DIR/sb.sh" ||
     fail "dynamic ownership support is missing: $owner_pattern"
 done
+# v5.7.5：对端钩子按标记升级、owner→consumer 交接、发布拒绝旧证书覆盖新证书。
+grep -Fq -- 'peer_hook_is_managed(){' "$ROOT_DIR/sb.sh" ||
+  fail "peer hook upgrade detection helper is missing"
+grep -Fq -- '已交还续期责任，需另一方或重新签发接管' "$ROOT_DIR/sb.sh" ||
+  fail "owner-to-consumer handover message is missing"
+grep -Fq -- '共享证书库已有到期更晚的证书，拒绝用更旧的证书覆盖' "$ROOT_DIR/sb.sh" ||
+  fail "store publish downgrade guard is missing"
+# shellcheck disable=SC2016  # the literal generated line is being counted
+[[ $(grep -Fc -- 'cert_store_reconcile_ownership "$shared_apex"' "$ROOT_DIR/sb.sh" || true) -eq 2 ]] ||
+  fail "startup shared-store ownership reconciliation is missing"
+# 钩子升级判定不能再用 -F 与 -E 冲突的 grep 组合（GNU 报错、BusyBox 永不匹配）。
+if grep -Fq -- 'grep -FqE' "$ROOT_DIR/sb.sh"; then
+  fail "hook upgrade detection uses the invalid grep -FqE combination"
+fi
 
 for success_message in \
   '证书模式切换成功' \
