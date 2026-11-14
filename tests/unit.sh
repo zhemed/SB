@@ -77,7 +77,7 @@ export SHORTCUT=/usr/bin/sb
 export ACME_HOME="$SB_DIR/acme"
 export ACME_BIN="$ACME_HOME/acme.sh"
 export ACME_RELOAD="$SB_DIR/acme_reload.sh"
-export ACME_RELOAD_IDENTITY="# sb-acme-reload-v4"
+export ACME_RELOAD_IDENTITY="# sb-acme-reload-v5"
 export ACME_CRON_MARKER="# sb-managed-acme"
 export RESTART_CRON_MARKER="# sb-managed-restart"
 export CERT_STORE_VERSION=1
@@ -1695,6 +1695,37 @@ expect_success "shared adoption hands back a stale sb ownership" \
   shared_certificate_adoption_releases_stale_sb_owner
 pass "owner=sb + shared consumer mode releases ownership and reports it unhealthy"
 
+# F2：切换为共享消费者只交还当前领养域名的 owner，库里其他 sb owner 的域名必须保留。
+shared_certificate_adoption_releases_only_current_domain(){
+  (
+    local store="$TEMP_DIR/cert-store-scope" messages="$TEMP_DIR/scope-messages"
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    yellow(){ printf '%s\n' "$1" >> "$messages"; }
+    rm -rf "$store" "$messages"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
+    # 另一个域名同样记着 owner=sb（按契约写入的原始库条目）。
+    write_raw_cert_store_entry "$store" other.example.com \
+      "$CERT_FIXTURE_DIR/valid.pem" "$CERT_FIXTURE_DIR/valid.key" '' || return 1
+    # 本机仍留有旧的 ACME 签发身份，reconcile 不会自动交还，必须走显式交还路径。
+    printf '%s\n' 'example.com' > "$ACME_IDENTITY" || return 1
+    export SB_CONFIG="$TEMP_DIR/shared-scope.json"
+    write_shared_cert_config "$store" example.com || return 1
+    cert_shared example.com '*.example.com' || return 1
+    [[ $(cert_store_owner example.com) == none ]] || return 1
+    [[ $(cert_store_owner other.example.com) == sb ]] || return 1
+    grep -Fq '已交还续期责任，需另一方或重新签发接管' "$messages"
+  )
+}
+expect_success "shared adoption hands back only the current domain's ownership" \
+  shared_certificate_adoption_releases_only_current_domain
+pass "adoption leaves other sb-owned domains untouched"
+
 shared_certificate_mode_reports_missing_owner(){
   (
     local store="$TEMP_DIR/cert-store-ownerless"
@@ -1744,6 +1775,9 @@ pass "adoptable shared certificates can be chosen non-interactively"
 # 不得继续发布/改 owner，否则会把旧证书写进共享库并错误接管续期。
 takeover_shared_renewal_aborts_when_not_switched(){
   (
+    # 子 shell 里继承的 EXIT 清理 trap 不执行；接管回滚会保存/恢复 trap，
+    # 先清掉它，避免 disarm 时把测试套件的 rm -rf TEMP_DIR 重新激活。
+    trap - EXIT
     local store="$TEMP_DIR/cert-store-takeover-cancel"
     local messages="$TEMP_DIR/takeover-cancel-messages" publish_calls=0
     # shellcheck disable=SC2317
@@ -1774,6 +1808,54 @@ takeover_shared_renewal_aborts_when_not_switched(){
 expect_success "shared takeover aborts without publishing when the mode was not switched" \
   takeover_shared_renewal_aborts_when_not_switched
 pass "cancel path keeps the store owner untouched and skips publish"
+
+# F3：接管续期必须在签发前把 owner 置 none（对方工具窗口内无法续期），
+# 取消/失败/中断时恢复原 owner；成功才由 takeover=1 发布写回 owner=sb。
+takeover_shared_renewal_places_owner_none_and_rolls_back(){
+  (
+    # 同上：子 shell 不继承执行 EXIT 清理，先清掉再让接管回滚保存/恢复 trap。
+    trap - EXIT
+    local store="$TEMP_DIR/cert-store-takeover-owner"
+    local messages="$TEMP_DIR/takeover-owner-messages" observed='' rc=0
+    # shellcheck disable=SC2317
+    red(){ :; }
+    # shellcheck disable=SC2317
+    green(){ :; }
+    # shellcheck disable=SC2317
+    yellow(){ printf '%s\n' "$1" >> "$messages"; }
+    rm -rf "$store" "$messages"
+    export CERT_STORE="$store"
+    cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
+      "$CERT_FIXTURE_DIR/valid.key" '' sb letsencrypt || return 1
+    cert_store_take_ownership example.com acme-nginx || return 1
+    export SB_CONFIG="$TEMP_DIR/takeover-owner.json"
+    write_shared_cert_config "$store" example.com || return 1
+    # shellcheck disable=SC2317
+    certificate_action_service_ready(){ return 0; }
+    # 签发失败：签发前 owner 必须已是 none，失败后恢复 acme-nginx。
+    # shellcheck disable=SC2317
+    apply_new_acme_certificate(){ observed=$(cert_store_owner example.com); return 1; }
+    ! takeover_shared_renewal || return 1
+    [[ $observed == none ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 取消（apply 返回 0 但配置未切到 ACME）：同样恢复原 owner。
+    # shellcheck disable=SC2317
+    apply_new_acme_certificate(){ observed=$(cert_store_owner example.com); return 0; }
+    takeover_shared_renewal || return 1
+    [[ $observed == none ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]] || return 1
+    # 中断：签发中被 TERM 打断，EXIT trap 必须恢复原 owner。
+    cert_store_take_ownership example.com acme-nginx || return 1
+    # shellcheck disable=SC2317
+    apply_new_acme_certificate(){ kill -TERM "$BASHPID"; sleep 5; return 0; }
+    ( takeover_shared_renewal ) || rc=$?
+    [[ $rc -eq 143 ]] || return 1
+    [[ $(cert_store_owner example.com) == acme-nginx ]]
+  )
+}
+expect_success "shared takeover places owner=none before issuing and rolls it back" \
+  takeover_shared_renewal_places_owner_none_and_rolls_back
+pass "takeover window blocks the peer owner and restores it on cancel/failure/interrupt"
 
 publish_to_store_requires_own_acme_certificate(){
   (
@@ -2071,7 +2153,10 @@ acme_renew_runner_records_failed_without_fingerprint(){
     # 用不存在的 cert_file 生成 runner（不动真实 ACME_CERT，避免破坏符号链接布局）
     STORE_DIR="$store" CERT_STORE="$store" ACME_CERT="$TEMP_DIR/missing-cert.pem" \
       write_acme_renew_runner || return 1
-    output=$(PATH="$fakebin:$PATH" STORE_DIR="$store" CERT_STORE="$store" "$runner" 2>&1) || return 1
+    local rc=0
+    output=$(PATH="$fakebin:$PATH" STORE_DIR="$store" CERT_STORE="$store" "$runner" 2>&1) || rc=$?
+    # 无指纹时 state 记 failed/exit 1，进程必须同样以非 0 退出。
+    [[ $rc -eq 1 ]] || return 1
     [[ ! -e $marker ]] || return 1
     [[ $output == *'共享证书库锁获取失败'* ]] || return 1
     load_acme_renew_state || return 1
@@ -2581,6 +2666,26 @@ hook_skips_publish_for_foreign_owner(){
 expect_success "ACME hook skips publishing when another tool owns the store entry" \
   hook_skips_publish_for_foreign_owner
 pass "reload hook respects a foreign shared-store owner"
+
+# F1：hook 侧损坏 meta 闸——meta 路径存在（含符号链接/目录）但内容不合法时跳过发布并告警。
+hook_refuses_corrupt_store_meta(){
+  local store="$SB_DIR/cert-store" before after output
+  rm -rf "$store"
+  mkdir "$store"
+  chmod 700 "$store"
+  SB_INITIAL_INSTALL=1 "$hook_fixture" || return 1
+  before=$(readlink "$store/example.com/current") || return 1
+  # 用符号链接破坏 meta：路径存在但不是常规文件。
+  mv "$store/example.com/meta.env" "$store/example.com/meta.real" || return 1
+  ln -s meta.real "$store/example.com/meta.env" || return 1
+  output=$(SB_INITIAL_INSTALL=1 "$hook_fixture" 2>&1) || return 1
+  after=$(readlink "$store/example.com/current") || return 1
+  [[ $before == "$after" ]] || return 1
+  [[ $output == *'shared certificate store meta is corrupt; skip publish: example.com'* ]]
+}
+expect_success "ACME reload hook refuses to publish over a corrupt store meta" \
+  hook_refuses_corrupt_store_meta
+pass "corrupt store metadata makes the reload hook skip publishing and keep the current generation"
 
 hook_survives_unavailable_store(){
   local store="$SB_DIR/cert-store"
@@ -3505,7 +3610,8 @@ cert_shared_warns_when_release_fails(){
     cert_store_publish example.com "$CERT_FIXTURE_DIR/valid.pem" \
       "$CERT_FIXTURE_DIR/valid.key" '*.example.com' sb letsencrypt || return 1
     printf '%s\n' 'example.com' > "$ACME_IDENTITY" || return 1
-    cert_store_release_ownership(){ return 1; }
+    # 切为消费者时只走域级交还；全局遍历版只保留给卸载路径。
+    cert_store_release_domain_ownership(){ return 1; }
     cert_shared example.com '*.example.com' || return 1
     grep -Fq '交还续期责任失败' "$messages"
   )
@@ -3528,8 +3634,10 @@ hook_store_publish_skips_older_certificate(){
     mkdir -p "$SB_DIR" "$newer_dir" "$older_dir" || return 1
     mkdir -p "$store" && chmod 700 "$store" || return 1
     write_acme_reload_hook || return 1
-    # 从生成的 reload hook 中抽出 store_publish 单独验证（hook 内硬编码的 store_root 用变量覆盖）。
-    awk '/^store_publish\(\)\{/{inside=1} inside{print} inside && /^}$/{exit}' "$hook" > "$fn" || return 1
+    # 从生成的 reload hook 中抽出 meta 校验与 store_publish 单独验证
+    # （hook 内硬编码的 store_root 用变量覆盖）。
+    awk '/^store_meta_is_valid\(\)\{/{inside=1} inside{print} inside && /^}$/{exit}' "$hook" >> "$fn" || return 1
+    awk '/^store_publish\(\)\{/{inside=1} inside{print} inside && /^}$/{exit}' "$hook" >> "$fn" || return 1
     [[ -s $fn ]] || return 1
     # shellcheck source=/dev/null
     source "$fn"

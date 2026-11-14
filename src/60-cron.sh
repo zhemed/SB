@@ -104,7 +104,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v8}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v9}"
 }
 
 # shellcheck disable=SC2034
@@ -341,7 +341,8 @@ acme_renew_runner_is_current(){
     grep -Fq -- 'command -v logger' "$runner" 2>/dev/null &&
     grep -Fq -- '没有可用证书指纹时不能写 skipped' "$runner" 2>/dev/null &&
     grep -Fqx -- '    result=failed' "$runner" 2>/dev/null &&
-    grep -Fqx -- '    write_skipped_state "$current_fingerprint"' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  [[ -n $fingerprint ]]' "$runner" 2>/dev/null &&
+    grep -Fqx -- '    write_skipped_state "$current_fingerprint" || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- 'runner_config_uses_shared_certificate(){' "$runner" 2>/dev/null &&
     grep -Fqx -- '        store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
@@ -418,6 +419,7 @@ log_renewal_warning(){
 
 # 跳过本次续期时写 canonical 状态（保持 last_renewal_epoch 不变）。
 # 没有可用证书指纹时不能写 skipped（加载器要求 skipped 带指纹），改记 failed/exit 1。
+# 返回值与写入的 last_exit_code 一致，调用方据此决定进程退出码（不能 state 失败却 exit 0）。
 write_skipped_state(){
   local fingerprint=$1 check_epoch state_tmp result exit_code
   if [[ -n $fingerprint ]]; then
@@ -442,6 +444,7 @@ write_skipped_state(){
     exit 1
   fi
   trap - EXIT HUP INT TERM
+  [[ -n $fingerprint ]]
 }
 
 # 只有本机配置确实引用共享证书时，才把续期让给库 owner。
@@ -525,7 +528,8 @@ if [[ -d $store_root && ! -L $store_root ]]; then
   if [[ $store_lock_ok -ne 1 ]]; then
     log_renewal_warning "共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）"
     current_fingerprint=$(certificate_fingerprint || true)
-    write_skipped_state "$current_fingerprint"
+    # 进程退出码必须与 state 一致：无指纹时 state 记 failed/exit 1，不能仍以 0 退出。
+    write_skipped_state "$current_fingerprint" || exit 1
     exit 0
   fi
 fi

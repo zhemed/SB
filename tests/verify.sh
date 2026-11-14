@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.8.1"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.8.1"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.8.1' ]] ||
-  fail "VERSION file is not 5.8.1"
-grep -Fq -- "当前项目版本：\`5.8.1\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.8.1"
+[[ $(grep -Fxc 'sb_version="v5.8.2"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.8.2"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.8.2' ]] ||
+  fail "VERSION file is not 5.8.2"
+grep -Fq -- "当前项目版本：\`5.8.2\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.8.2"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -186,11 +186,22 @@ grep -Fq -- 'ensure_acme_nginx_sb_restart_hook(){' "$ROOT_DIR/sb.sh" ||
   fail "sb does not auto-create the acme-nginx sb restart hook"
 grep -Fq -- 'ensure_shared_cert_store_published(){' "$ROOT_DIR/sb.sh" ||
   fail "clean-machine shared store bootstrap is missing"
-for owner_pattern in 'cert_store_release_ownership(){' 'cert_store_reconcile_ownership(){' \
-  'cert_store_owner_present(){'; do
+for owner_pattern in 'cert_store_release_ownership(){' 'cert_store_release_domain_ownership(){' \
+  'cert_store_reconcile_ownership(){' 'cert_store_owner_present(){'; do
   grep -Fq -- "$owner_pattern" "$ROOT_DIR/sb.sh" ||
     fail "dynamic ownership support is missing: $owner_pattern"
 done
+# F2：切为共享证书消费者只交还当前领养域名，不能遍历库里所有域名。
+# shellcheck disable=SC2016  # the pattern is literal generated-script text
+[[ $(grep -Fc -- 'cert_store_release_domain_ownership "$apex" sb' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "shared adoption does not hand back only the current domain's ownership"
+# F3：接管续期必须在签发前置 owner=none 并挂回滚 trap。
+# shellcheck disable=SC2016
+grep -Fq -- 'cert_store_force_owner_none "$apex"' "$ROOT_DIR/sb.sh" ||
+  fail "shared takeover does not place owner=none before issuing"
+# shellcheck disable=SC2016
+grep -Fq -- 'arm_shared_takeover_rollback "$apex" "$previous_owner"' "$ROOT_DIR/sb.sh" ||
+  fail "shared takeover does not arm the owner rollback trap"
 # v5.7.5：对端钩子按标记升级、owner→consumer 交接、发布拒绝旧证书覆盖新证书。
 grep -Fq -- 'peer_hook_is_managed(){' "$ROOT_DIR/sb.sh" ||
   fail "peer hook upgrade detection helper is missing"
@@ -205,8 +216,8 @@ grep -Fq -- '共享证书库已有到期更晚的证书，拒绝用更旧的证�
 # R6 接管续期入口与主发布 owner 主闸。
 # shellcheck disable=SC2016
 for locking_pattern in \
-  '# sb-acme-reload-v4' \
-  '# sb-acme-renew-v8' \
+  '# sb-acme-reload-v5' \
+  '# sb-acme-renew-v9' \
   'shared certificate store already has a newer certificate; skip publishing older one' \
   '共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）' \
   '    flock -w 30 7 || exit 1' \
@@ -231,6 +242,14 @@ for takeover_pattern in \
   'arm_acme_claim_rollback(){' \
   'disarm_acme_claim_rollback(){' \
   'acme_claim_rollback_on_exit(){' \
+  '  [[ -n $fingerprint ]]' \
+  '    write_skipped_state "$current_fingerprint" || exit 1' \
+  'cert_store_force_owner_none(){' \
+  'cert_store_restore_owner(){' \
+  'arm_shared_takeover_rollback(){' \
+  'disarm_shared_takeover_rollback(){' \
+  'takeover_rollback_on_exit(){' \
+  'shared_takeover_rollback(){' \
   '没有可用证书指纹时不能写 skipped' \
   'log_renewal_warning(){' \
   'write_skipped_state(){' \
@@ -560,6 +579,13 @@ grep -Fqx '    finalize_deployment' "$hook_candidate" ||
   fail "ACME initial-install path does not finalize the deployment"
 grep -Fqx 'store_root="/etc/cert-store"' "$hook_candidate" ||
   fail "ACME reload hook does not know the shared certificate store"
+grep -Fqx 'store_meta_is_valid(){' "$hook_candidate" ||
+  fail "ACME reload hook does not validate the shared store metadata"
+# shellcheck disable=SC2016  # the pattern is literal generated-hook text
+grep -Fqx '      if ! store_meta_is_valid "$store_dir/meta.env"; then' "$hook_candidate" ||
+  fail "ACME reload hook skips the corrupt-metadata publish gate"
+grep -Fq -- 'shared certificate store meta is corrupt; skip publish' "$hook_candidate" ||
+  fail "ACME reload hook does not warn when skipping a corrupt store entry"
 grep -Fqx 'store_publish(){' "$hook_candidate" ||
   fail "ACME reload hook does not publish to the shared certificate store"
 grep -Fqx 'finalize_deployment(){' "$hook_candidate" ||

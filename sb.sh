@@ -41,7 +41,7 @@ ACME_STAGE_KEY="$ACME_STAGE/private.key"
 ACME_LIVE="$SB_DIR/acme-live"
 ACME_GENERATIONS="$ACME_LIVE/generations"
 ACME_CURRENT="$ACME_LIVE/current"
-ACME_RELOAD_IDENTITY="# sb-acme-reload-v4"
+ACME_RELOAD_IDENTITY="# sb-acme-reload-v5"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 CERT_STORE="/etc/cert-store"
@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.8.1"
+sb_version="v5.8.2"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
@@ -1489,6 +1489,47 @@ cert_store_release_claim_locked(){
   cert_store_set_owner_locked "$apex" "$restore"
 }
 
+# 接管续期前置：在 store 锁内把该域名 owner 置 none 并记录原 owner，避免签发窗口内
+# 仍是 owner 的对方工具并发续期；记录值供取消/失败/中断时恢复。
+CERT_STORE_TAKEOVER_PREVIOUS=
+cert_store_force_owner_none(){
+  local apex=$1 root
+  [[ -n $apex ]] || return 1
+  valid_hostname "$apex" || return 1
+  root=$(cert_store_root) || return 1
+  [[ -d $root && ! -L $root ]] || return 1
+  CERT_STORE_TAKEOVER_PREVIOUS=
+  cert_store_with_lock cert_store_force_owner_none_locked "$apex"
+}
+
+cert_store_force_owner_none_locked(){
+  local apex=$1 owner
+  # 接管要求库里已有可解析的 meta（shared 模式已校验过）；损坏时拒绝，不猜 owner。
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 1
+  owner=$CERT_STORE_META_OWNER
+  CERT_STORE_TAKEOVER_PREVIOUS=$owner
+  [[ $owner == none ]] && return 0
+  cert_store_set_owner_locked "$apex" none
+}
+
+# 接管续期失败/取消时恢复原 owner：只有占位仍是 none 时才写回，避免覆盖并发接管。
+cert_store_restore_owner(){
+  local apex=$1 owner=$2 root
+  [[ -n $apex ]] || return 1
+  valid_hostname "$apex" || return 1
+  cert_store_valid_owner "$owner" || return 1
+  root=$(cert_store_root) || return 1
+  [[ -d $root && ! -L $root ]] || return 0
+  cert_store_with_lock cert_store_restore_owner_locked "$apex" "$owner"
+}
+
+cert_store_restore_owner_locked(){
+  local apex=$1 owner=$2
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 0
+  [[ $CERT_STORE_META_OWNER == none ]] || return 0
+  cert_store_set_owner_locked "$apex" "$owner"
+}
+
 # 卸载/重装时交还续期权，避免留下"名义 owner"。
 cert_store_release_ownership(){
   local owner=$1 root dir apex
@@ -1505,6 +1546,24 @@ cert_store_release_ownership(){
     [[ $CERT_STORE_META_OWNER == "$owner" ]] || continue
     cert_store_with_lock cert_store_set_owner_locked "$apex" none >/dev/null 2>&1 || true
   done
+}
+
+# 只交还指定域名的续期权：切为共享证书消费者只影响当前领养的域名，不能遍历所有域名。
+cert_store_release_domain_ownership(){
+  local apex=$1 owner=$2
+  cert_store_valid_owner "$owner" || return 1
+  [[ $owner != none ]] || return 1
+  [[ -n $apex ]] || return 1
+  valid_hostname "$apex" || return 1
+  cert_store_with_lock cert_store_release_domain_ownership_locked "$apex" "$owner"
+}
+
+cert_store_release_domain_ownership_locked(){
+  local apex=$1 owner=$2
+  # meta 读不出来时无法确认 owner，视为无需交还；损坏的 meta 由发布/签发闸拒绝。
+  cert_store_read_meta "$apex" >/dev/null 2>&1 || return 0
+  [[ $CERT_STORE_META_OWNER == "$owner" ]] || return 0
+  cert_store_set_owner_locked "$apex" none
 }
 
 # 领养时对账：owner 指向 sb 但本机没有签发状态（重装）→ 交还为 none。
@@ -1528,9 +1587,9 @@ cert_shared(){
   use_acme_cert=0
   cert_store_reconcile_ownership "$apex" || true
   # 本机已切为共享证书消费者：库里若仍记着 owner=sb（本工具之前签发过），续期责任
-  # 已不在本机，交还 owner 让对端或重新签发接管，避免留下"名义 owner"。
+  # 已不在本机，只交还当前领养域名的 owner，避免误伤库里其他仍由 sb 负责的域名。
   if cert_store_read_meta "$apex" >/dev/null 2>&1 && [[ $CERT_STORE_META_OWNER == sb ]]; then
-    if cert_store_release_ownership sb; then
+    if cert_store_release_domain_ownership "$apex" sb; then
       yellow "已交还续期责任，需另一方或重新签发接管"
     else
       yellow "已切换为共享证书消费模式，但交还续期责任失败；请检查共享证书库锁与权限"
@@ -1826,7 +1885,7 @@ write_acme_reload_hook(){
 #!/bin/bash
 # Signal handlers and EXIT cleanup functions are invoked indirectly by Bash.
 # shellcheck disable=SC2317,SC2329
-# sb-acme-reload-v4
+# sb-acme-reload-v5
 export LANG=en_US.UTF-8
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 base="/etc/sb"
@@ -1879,6 +1938,40 @@ run_post_reload_hook(){
   return 0
 }
 
+# 发布前严格校验共享库 meta.env：常规文件、非符号链接、恰好 10 个已知字段各一次、
+# 关键字段格式正确；路径存在但内容损坏时不能跳过 owner 判定继续覆盖。
+store_meta_is_valid(){
+  local meta=$1 owner alt issued_at not_after updated_at fingerprint updated_by
+  [[ -f $meta && ! -L $meta ]] || return 1
+  case $(uname -s 2>/dev/null) in
+    MINGW*|MSYS*) ;;
+    *) [[ $(stat -c '%a' "$meta" 2>/dev/null || true) == 600 ]] || return 1 ;;
+  esac
+  [[ $(sed -n 's/^\([a-z_]*\)=.*/\1/p' "$meta" 2>/dev/null | sort | tr '\n' ' ') == \
+     'alt domain fingerprint issued_at issuer not_after owner updated_at updated_by version ' ]] || return 1
+  grep -Fqx 'version=1' "$meta" 2>/dev/null || return 1
+  grep -Fqx "domain=$identity" "$meta" 2>/dev/null || return 1
+  owner=$(sed -n 's/^owner=//p' "$meta" 2>/dev/null | head -n 1)
+  case $owner in
+    sb|acme-nginx|none) ;;
+    *) return 1 ;;
+  esac
+  alt=$(sed -n 's/^alt=//p' "$meta" 2>/dev/null | head -n 1)
+  [[ -z $alt || $alt == "*.$identity" ]] || return 1
+  issued_at=$(sed -n 's/^issued_at=//p' "$meta" 2>/dev/null | head -n 1)
+  not_after=$(sed -n 's/^not_after=//p' "$meta" 2>/dev/null | head -n 1)
+  updated_at=$(sed -n 's/^updated_at=//p' "$meta" 2>/dev/null | head -n 1)
+  fingerprint=$(sed -n 's/^fingerprint=//p' "$meta" 2>/dev/null | head -n 1)
+  updated_by=$(sed -n 's/^updated_by=//p' "$meta" 2>/dev/null | head -n 1)
+  [[ $issued_at =~ ^[0-9]{1,12}$ && $not_after =~ ^[0-9]{1,12}$ &&
+     $updated_at =~ ^[0-9]{1,12}$ ]] || return 1
+  [[ $fingerprint =~ ^[0-9a-f]{64}$ ]] || return 1
+  case $updated_by in
+    sb|acme-nginx) ;;
+    *) return 1 ;;
+  esac
+}
+
 # 证书成功切换后把当前证书发布到共享证书库（/etc/cert-store）。
 # 仅当库已存在且该域名的 owner 为 sb/none/空时发布；失败只告警，不影响部署结果。
 store_publish(){
@@ -1894,7 +1987,12 @@ store_publish(){
     chmod 600 "$store_root/.lock" || exit 1
     flock -w 30 7 || exit 1
     # owner 判定必须在锁内：与接管方改写 meta 的窗口期错开，避免把别人的证书覆盖掉。
-    if [[ -f $store_dir/meta.env && ! -L $store_dir/meta.env ]]; then
+    if [[ -e $store_dir/meta.env || -L $store_dir/meta.env ]]; then
+      # meta 存在但损坏（常规文件/符号链接/目录都算）：跳过发布并告警，不阻断部署。
+      if ! store_meta_is_valid "$store_dir/meta.env"; then
+        warn_post_reload "shared certificate store meta is corrupt; skip publish: $identity"
+        exit 0
+      fi
       owner=$(sed -n 's/^owner=//p' "$store_dir/meta.env" 2>/dev/null | head -n 1)
       case $owner in
         sb|none|'') ;;
@@ -2397,6 +2495,9 @@ acme_reload_hook_is_current(){
     grep -Fqx 'post_reload="/etc/sb/acme_post_reload.sh"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'store_root="/etc/cert-store"' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'run_post_reload_hook(){' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx 'store_meta_is_valid(){' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fqx '      if ! store_meta_is_valid "$store_dir/meta.env"; then' "$ACME_RELOAD" 2>/dev/null &&
+    grep -Fq -- 'shared certificate store meta is corrupt; skip publish' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx 'store_publish(){' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx '    flock -w 30 7 || exit 1' "$ACME_RELOAD" 2>/dev/null &&
     grep -Fqx '      existing_not_after=$(sed -n '\''s/^not_after=//p'\'' "$store_dir/meta.env" 2>/dev/null | head -n 1)' "$ACME_RELOAD" 2>/dev/null &&
@@ -3064,6 +3165,62 @@ disarm_acme_claim_rollback(){
   ACME_CLAIM_SAVED_EXIT=
   ACME_CLAIM_SAVED_INT=
   ACME_CLAIM_SAVED_TERM=
+}
+
+# ---------- R7：接管续期前置回滚 trap（EXIT/INT/TERM）----------
+# 接管续期在签发前把 owner 置 none；签发取消/失败/中断时把原 owner 写回。
+TAKEOVER_ROLLBACK_ARMED=0
+TAKEOVER_ROLLBACK_APEX=
+TAKEOVER_ROLLBACK_PREVIOUS=
+TAKEOVER_SAVED_EXIT=
+TAKEOVER_SAVED_INT=
+TAKEOVER_SAVED_TERM=
+
+takeover_rollback_on_exit(){
+  if [[ ${TAKEOVER_ROLLBACK_ARMED:-0} -eq 1 ]]; then
+    cert_store_restore_owner "${TAKEOVER_ROLLBACK_APEX:-}" \
+      "${TAKEOVER_ROLLBACK_PREVIOUS:-}" >/dev/null 2>&1 || true
+    TAKEOVER_ROLLBACK_ARMED=0
+  fi
+}
+
+arm_shared_takeover_rollback(){
+  TAKEOVER_ROLLBACK_APEX=${1-}
+  TAKEOVER_ROLLBACK_PREVIOUS=${2-}
+  TAKEOVER_ROLLBACK_ARMED=1
+  TAKEOVER_SAVED_EXIT=$(trap -p EXIT)
+  TAKEOVER_SAVED_INT=$(trap -p INT)
+  TAKEOVER_SAVED_TERM=$(trap -p TERM)
+  # shellcheck disable=SC2064
+  trap 'takeover_rollback_on_exit' EXIT
+  # shellcheck disable=SC2064
+  trap 'exit 130' INT
+  # shellcheck disable=SC2064
+  trap 'exit 143' TERM
+}
+
+disarm_shared_takeover_rollback(){
+  TAKEOVER_ROLLBACK_ARMED=0
+  if [[ -n ${TAKEOVER_SAVED_EXIT:-} ]]; then eval "$TAKEOVER_SAVED_EXIT"; else trap - EXIT; fi
+  if [[ -n ${TAKEOVER_SAVED_INT:-} ]]; then eval "$TAKEOVER_SAVED_INT"; else trap - INT; fi
+  if [[ -n ${TAKEOVER_SAVED_TERM:-} ]]; then eval "$TAKEOVER_SAVED_TERM"; else trap - TERM; fi
+  TAKEOVER_SAVED_EXIT=
+  TAKEOVER_SAVED_INT=
+  TAKEOVER_SAVED_TERM=
+  TAKEOVER_ROLLBACK_APEX=
+  TAKEOVER_ROLLBACK_PREVIOUS=
+}
+
+# 接管失败/取消时回滚原 owner 并撤掉 trap；回滚失败只告警，不掩盖原始错误。
+shared_takeover_rollback(){
+  local failed=0
+  if ! cert_store_restore_owner "${TAKEOVER_ROLLBACK_APEX:-}" \
+       "${TAKEOVER_ROLLBACK_PREVIOUS:-}" >/dev/null 2>&1; then
+    failed=1
+    yellow "共享证书库 owner 恢复失败，请检查 $(cert_store_root)"
+  fi
+  disarm_shared_takeover_rollback
+  return "$failed"
 }
 
 # 签发执行阶段（claim 之后的全部流程）；变量通过动态作用域从 issue_acme_certificate 读取。
@@ -4892,7 +5049,7 @@ acme_renew_state_path(){
 }
 
 acme_renew_runner_identity(){
-  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v8}"
+  printf '%s\n' "${ACME_RENEW_IDENTITY:-# sb-acme-renew-v9}"
 }
 
 # shellcheck disable=SC2034
@@ -5129,7 +5286,8 @@ acme_renew_runner_is_current(){
     grep -Fq -- 'command -v logger' "$runner" 2>/dev/null &&
     grep -Fq -- '没有可用证书指纹时不能写 skipped' "$runner" 2>/dev/null &&
     grep -Fqx -- '    result=failed' "$runner" 2>/dev/null &&
-    grep -Fqx -- '    write_skipped_state "$current_fingerprint"' "$runner" 2>/dev/null &&
+    grep -Fqx -- '  [[ -n $fingerprint ]]' "$runner" 2>/dev/null &&
+    grep -Fqx -- '    write_skipped_state "$current_fingerprint" || exit 1' "$runner" 2>/dev/null &&
     grep -Fqx -- 'runner_config_uses_shared_certificate(){' "$runner" 2>/dev/null &&
     grep -Fqx -- '        store_owner=$(sed -n '\''s/^owner=//p'\'' "$store_meta" 2>/dev/null | head -n 1)' "$runner" 2>/dev/null &&
     grep -Fqx -- 'state_read_epoch=$(date +%s) || exit 1' "$runner" 2>/dev/null &&
@@ -5206,6 +5364,7 @@ log_renewal_warning(){
 
 # 跳过本次续期时写 canonical 状态（保持 last_renewal_epoch 不变）。
 # 没有可用证书指纹时不能写 skipped（加载器要求 skipped 带指纹），改记 failed/exit 1。
+# 返回值与写入的 last_exit_code 一致，调用方据此决定进程退出码（不能 state 失败却 exit 0）。
 write_skipped_state(){
   local fingerprint=$1 check_epoch state_tmp result exit_code
   if [[ -n $fingerprint ]]; then
@@ -5230,6 +5389,7 @@ write_skipped_state(){
     exit 1
   fi
   trap - EXIT HUP INT TERM
+  [[ -n $fingerprint ]]
 }
 
 # 只有本机配置确实引用共享证书时，才把续期让给库 owner。
@@ -5313,7 +5473,8 @@ if [[ -d $store_root && ! -L $store_root ]]; then
   if [[ $store_lock_ok -ne 1 ]]; then
     log_renewal_warning "共享证书库锁获取失败，跳过本次续期（无法确认续期负责人）"
     current_fingerprint=$(certificate_fingerprint || true)
-    write_skipped_state "$current_fingerprint"
+    # 进程退出码必须与 state 一致：无指纹时 state 记 failed/exit 1，不能仍以 0 退出。
+    write_skipped_state "$current_fingerprint" || exit 1
     exit 0
   fi
 fi
@@ -5930,34 +6091,51 @@ apply_new_acme_certificate(){
   return 1
 }
 
-# R6：共享证书消费模式下接管续期——重新签发当前域名，并用显式接管参数把 owner 写回 sb。
+# R6/R7：共享证书消费模式下接管续期——重新签发当前域名，并用显式接管参数把 owner 写回 sb。
+# 签发前先在 store 锁内把该域名 owner 置 none（记录原 owner），避免签发窗口内对方工具并发
+# 续期；取消/失败/中断时由 trap 恢复原 owner，成功则由 takeover=1 发布写回 owner=sb。
 takeover_shared_renewal(){
-  local apex identity alt='' wildcard cert_path key_path
+  local apex identity alt='' wildcard cert_path key_path previous_owner=''
   certificate_action_service_ready || return 1
   apex=$(shared_certificate_domain 2>/dev/null) || {
     red "无法读取当前共享证书域名，未执行接管"
     return 1
   }
   yellow "接管续期：将为 $apex 重新签发 sb 自己的 ACME 证书，并把共享证书库 owner 改为 sb"
+  # 接管前置：锁内把 owner 置 none 并记录原 owner；对方工具在这段时间无法续期，
+  # 避免两边同时签发/发布。取消、失败或中断时由 trap 把原 owner 写回。
+  if ! cert_store_force_owner_none "$apex"; then
+    red "无法在共享证书库锁内交还续期责任，未执行接管"
+    return 1
+  fi
+  previous_owner=${CERT_STORE_TAKEOVER_PREVIOUS:-}
+  arm_shared_takeover_rollback "$apex" "$previous_owner"
   # 复用 ACME 申请+切换流程：签发成功后 sb 用回自己的证书并恢复自动续期。
   # 显式接管允许跳过 B6 claim 的“存活对方”拒绝（用户已确认接管意图）。
-  apply_new_acme_certificate "$apex" 1 || return 1
+  if ! apply_new_acme_certificate "$apex" 1; then
+    shared_takeover_rollback || true
+    return 1
+  fi
   # 用户取消（issue 取消码 3 被 apply 映射为 return 0）或切换失败时配置仍是共享模式，
   # 此时绝不能继续发布/改 owner，否则会把旧证书写进库并错误地接管续期。
   if ! config_uses_acme_certificate; then
+    shared_takeover_rollback || true
     yellow "已取消或未切换为 ACME 证书，未接管共享证书库 owner"
     return 0
   fi
   identity=$(read_acme_identity 2>/dev/null) || {
     red "证书已签发，但无法读取 ACME 身份文件，未接管共享证书库 owner"
+    shared_takeover_rollback || true
     return 1
   }
   if [[ $identity != "$apex" ]]; then
     red "签发的域名（$identity）与当前共享证书域名（$apex）不一致，未接管共享证书库 owner"
+    shared_takeover_rollback || true
     return 1
   fi
   if ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" || [[ $CERT_META_STATE != valid ]]; then
     red "证书已签发，但当前 ACME 证书无效，未接管共享证书库 owner"
+    shared_takeover_rollback || true
     return 1
   fi
   wildcard="*.$identity"
@@ -5968,15 +6146,23 @@ takeover_shared_renewal(){
   cert_path=$ACME_CERT
   key_path=$ACME_KEY
   if [[ -L $cert_path ]]; then
-    cert_path=$(readlink -f -- "$cert_path") || return 1
+    if ! cert_path=$(readlink -f -- "$cert_path"); then
+      shared_takeover_rollback || true
+      return 1
+    fi
   fi
   if [[ -L $key_path ]]; then
-    key_path=$(readlink -f -- "$key_path") || return 1
+    if ! key_path=$(readlink -f -- "$key_path"); then
+      shared_takeover_rollback || true
+      return 1
+    fi
   fi
   if ! cert_store_publish "$identity" "$cert_path" "$key_path" "$alt" sb letsencrypt 1; then
+    shared_takeover_rollback || true
     yellow "证书已签发并恢复自动续期，但共享证书库发布失败（owner 未接管）"
     return 1
   fi
+  disarm_shared_takeover_rollback
   green "已接管共享证书续期：owner=sb，自动续期已恢复"
 }
 

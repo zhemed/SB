@@ -412,34 +412,51 @@ apply_new_acme_certificate(){
   return 1
 }
 
-# R6：共享证书消费模式下接管续期——重新签发当前域名，并用显式接管参数把 owner 写回 sb。
+# R6/R7：共享证书消费模式下接管续期——重新签发当前域名，并用显式接管参数把 owner 写回 sb。
+# 签发前先在 store 锁内把该域名 owner 置 none（记录原 owner），避免签发窗口内对方工具并发
+# 续期；取消/失败/中断时由 trap 恢复原 owner，成功则由 takeover=1 发布写回 owner=sb。
 takeover_shared_renewal(){
-  local apex identity alt='' wildcard cert_path key_path
+  local apex identity alt='' wildcard cert_path key_path previous_owner=''
   certificate_action_service_ready || return 1
   apex=$(shared_certificate_domain 2>/dev/null) || {
     red "无法读取当前共享证书域名，未执行接管"
     return 1
   }
   yellow "接管续期：将为 $apex 重新签发 sb 自己的 ACME 证书，并把共享证书库 owner 改为 sb"
+  # 接管前置：锁内把 owner 置 none 并记录原 owner；对方工具在这段时间无法续期，
+  # 避免两边同时签发/发布。取消、失败或中断时由 trap 把原 owner 写回。
+  if ! cert_store_force_owner_none "$apex"; then
+    red "无法在共享证书库锁内交还续期责任，未执行接管"
+    return 1
+  fi
+  previous_owner=${CERT_STORE_TAKEOVER_PREVIOUS:-}
+  arm_shared_takeover_rollback "$apex" "$previous_owner"
   # 复用 ACME 申请+切换流程：签发成功后 sb 用回自己的证书并恢复自动续期。
   # 显式接管允许跳过 B6 claim 的“存活对方”拒绝（用户已确认接管意图）。
-  apply_new_acme_certificate "$apex" 1 || return 1
+  if ! apply_new_acme_certificate "$apex" 1; then
+    shared_takeover_rollback || true
+    return 1
+  fi
   # 用户取消（issue 取消码 3 被 apply 映射为 return 0）或切换失败时配置仍是共享模式，
   # 此时绝不能继续发布/改 owner，否则会把旧证书写进库并错误地接管续期。
   if ! config_uses_acme_certificate; then
+    shared_takeover_rollback || true
     yellow "已取消或未切换为 ACME 证书，未接管共享证书库 owner"
     return 0
   fi
   identity=$(read_acme_identity 2>/dev/null) || {
     red "证书已签发，但无法读取 ACME 身份文件，未接管共享证书库 owner"
+    shared_takeover_rollback || true
     return 1
   }
   if [[ $identity != "$apex" ]]; then
     red "签发的域名（$identity）与当前共享证书域名（$apex）不一致，未接管共享证书库 owner"
+    shared_takeover_rollback || true
     return 1
   fi
   if ! load_certificate_metadata "$ACME_CERT" "$ACME_KEY" || [[ $CERT_META_STATE != valid ]]; then
     red "证书已签发，但当前 ACME 证书无效，未接管共享证书库 owner"
+    shared_takeover_rollback || true
     return 1
   fi
   wildcard="*.$identity"
@@ -450,15 +467,23 @@ takeover_shared_renewal(){
   cert_path=$ACME_CERT
   key_path=$ACME_KEY
   if [[ -L $cert_path ]]; then
-    cert_path=$(readlink -f -- "$cert_path") || return 1
+    if ! cert_path=$(readlink -f -- "$cert_path"); then
+      shared_takeover_rollback || true
+      return 1
+    fi
   fi
   if [[ -L $key_path ]]; then
-    key_path=$(readlink -f -- "$key_path") || return 1
+    if ! key_path=$(readlink -f -- "$key_path"); then
+      shared_takeover_rollback || true
+      return 1
+    fi
   fi
   if ! cert_store_publish "$identity" "$cert_path" "$key_path" "$alt" sb letsencrypt 1; then
+    shared_takeover_rollback || true
     yellow "证书已签发并恢复自动续期，但共享证书库发布失败（owner 未接管）"
     return 1
   fi
+  disarm_shared_takeover_rollback
   green "已接管共享证书续期：owner=sb，自动续期已恢复"
 }
 

@@ -41,7 +41,7 @@ ACME_STAGE_KEY="$ACME_STAGE/private.key"
 ACME_LIVE="$SB_DIR/acme-live"
 ACME_GENERATIONS="$ACME_LIVE/generations"
 ACME_CURRENT="$ACME_LIVE/current"
-ACME_RELOAD_IDENTITY="# sb-acme-reload-v4"
+ACME_RELOAD_IDENTITY="# sb-acme-reload-v5"
 ACME_CRON_MARKER="# sb-managed-acme"
 RESTART_CRON_MARKER="# sb-managed-restart"
 CERT_STORE="/etc/cert-store"
@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.8.1"
+sb_version="v5.8.2"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
