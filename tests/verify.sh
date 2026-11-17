@@ -46,12 +46,12 @@ if grep -Fq -- '--install-online' "$ROOT_DIR/sb.sh"; then
 fi
 [[ $(grep -Fxc 'SOCKS_USERNAME="sb"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
   fail "SOCKS5 username is not fixed to sb"
-[[ $(grep -Fxc 'sb_version="v5.8.2"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
-  fail "script version is not 5.8.2"
-[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.8.2' ]] ||
-  fail "VERSION file is not 5.8.2"
-grep -Fq -- "当前项目版本：\`5.8.2\`" "$ROOT_DIR/README.md" ||
-  fail "README project version is not 5.8.2"
+[[ $(grep -Fxc 'sb_version="v5.8.3"' "$ROOT_DIR/sb.sh" || true) -eq 1 ]] ||
+  fail "script version is not 5.8.3"
+[[ $(tr -d '\r\n' < "$ROOT_DIR/VERSION") == '5.8.3' ]] ||
+  fail "VERSION file is not 5.8.3"
+grep -Fq -- "当前项目版本：\`5.8.3\`" "$ROOT_DIR/README.md" ||
+  fail "README project version is not 5.8.3"
 for lifecycle_pattern in \
   'INSTALL_TRANSACTION_ACTIVE=0' \
   'cleanup_install_transaction()' \
@@ -63,6 +63,9 @@ for lifecycle_pattern in \
   'green " 1. 安装"' \
   'green " 2. 修复"' \
   'green " 8. 可选功能"' \
+  'yellow " 8. 可选功能（需先安装）"' \
+  '请先用菜单[1]安装，或用菜单[2]修复' \
+  '可选功能（SOCKS5 入口/上游中转）需要 Sing-box 已安装并运行' \
   'green " 9. 卸载"' \
   'readp "请输入数字 [0-9]: " Input' \
   'manage_optional_features()' \

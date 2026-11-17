@@ -85,7 +85,7 @@ install_singbox(){
 }
 
 menu(){
-  local Input insV sb_ver status_text status_color
+  local Input insV sb_ver status_text status_color installed
   while true; do
     clear
     white "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
@@ -106,14 +106,25 @@ menu(){
     [[ -n $v4 ]] && echo -e "  IPV4: ${blue}${v4}${plain}${v4dq:+ (${v4dq})}"
     [[ -n $v6 ]] && echo -e "  IPV6: ${blue}${v6}${plain}${v6dq:+ (${v6dq})}"
     red "~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~"
+    installed=0
+    is_installed && installed=1
     green " 1. 安装"
     green " 2. 修复"
-    green " 3. 查看节点配置"
-    green " 4. 证书管理"
-    green " 5. 更改端口"
-    green " 6. 更改协议凭据"
-    green " 7. 切换IP优先级"
-    green " 8. 可选功能"
+    if ((installed)); then
+      green " 3. 查看节点配置"
+      green " 4. 证书管理"
+      green " 5. 更改端口"
+      green " 6. 更改协议凭据"
+      green " 7. 切换IP优先级"
+      green " 8. 可选功能"
+    else
+      yellow " 3. 查看节点配置（需先安装）"
+      yellow " 4. 证书管理（需先安装）"
+      yellow " 5. 更改端口（需先安装）"
+      yellow " 6. 更改协议凭据（需先安装）"
+      yellow " 7. 切换IP优先级（需先安装）"
+      yellow " 8. 可选功能（需先安装）"
+    fi
     green " 9. 卸载"
     green " 0. 退出脚本"
     echo
@@ -135,19 +146,17 @@ menu(){
         repair_singbox
         ;;
       3)
-        if is_installed; then
+        if ((installed)); then
           sbshare || red "节点配置生成失败，请检查上方错误"
           readp "按回车返回主菜单..."
         else
-          red "请先安装 Sing-box"
+          red "查看节点配置需要 Sing-box 已安装"
+          yellow "请先用菜单[1]安装，或用菜单[2]修复"
           sleep 1
         fi
         ;;
       4|5|6|7|8)
-        if ! is_installed; then
-          red "请先安装或修复 Sing-box"
-          sleep 1
-        else
+        if ((installed)); then
           case "$Input" in
             4) change_cert_mode ;;
             5) change_ports ;;
@@ -155,6 +164,14 @@ menu(){
             7) switch_ip_priority ;;
             8) manage_optional_features ;;
           esac
+        else
+          if [[ $Input == 8 ]]; then
+            red "可选功能（SOCKS5 入口/上游中转）需要 Sing-box 已安装并运行"
+          else
+            red "该功能需要 Sing-box 已安装"
+          fi
+          yellow "请先用菜单[1]安装，或用菜单[2]修复"
+          sleep 1
         fi
         ;;
       9)

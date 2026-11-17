@@ -113,7 +113,7 @@ esac
 
 hostname=$(hostname 2>/dev/null)
 [[ $hostname =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || hostname=sb
-sb_version="v5.8.2"
+sb_version="v5.8.3"
 
 valid_ipv4(){
   local ip=$1 IFS=. octets octet
